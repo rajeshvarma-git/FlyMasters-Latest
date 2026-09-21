@@ -6,7 +6,7 @@
 signup code in a public repository:
 
 ```
-startCommand = "JWT_SECRET=flymasters-admin-dev-secret ADMIN_SIGNUP_CODE=850065 npm run start:prod"
+startCommand = "JWT_SECRET=<the old dev secret> ADMIN_SIGNUP_CODE=<a 6-digit code> npm run start:prod"
 ```
 
 Anyone who read that repo could sign an admin token and call the production API.

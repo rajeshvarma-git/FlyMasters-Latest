@@ -9,7 +9,7 @@ Run these in order. Do not skip step 0.
 `flymaster-admin-portal/railway.toml` published this in a public repo:
 
 ```
-JWT_SECRET=flymasters-admin-dev-secret  ADMIN_SIGNUP_CODE=850065
+JWT_SECRET=<the old dev secret>  ADMIN_SIGNUP_CODE=<a 6-digit code>
 ```
 
 A JWT secret is the key that signs "this person is an admin". Anyone who read
