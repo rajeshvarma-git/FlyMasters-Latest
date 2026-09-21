@@ -107,7 +107,22 @@ The smoke test cannot see the screen. Do these yourself:
 2. In the same browser, open `/counselor`. **You should not be asked to sign in
    again** if your account has both. Before the merge you would have been.
 
-**Per portal, sign in and confirm the first screen loads with real data:**
+**The single staff door:**
+
+Open `/staff`. Sign in as an admin, then a counsellor, then a telecaller (use a
+fresh browser tab or a private window each time). Each should land in their own
+portal without choosing anything:
+
+| Role | Should land on |
+|---|---|
+| super_admin, admin, branch_head | `/admin` |
+| counselor | `/counselor` |
+| telecaller | `/telecaller/queue` |
+
+Also check that an old bookmark still works: `/admin/login` should bounce you
+to `/staff`.
+
+**Per portal, confirm the first screen loads with real data:**
 
 | Portal | Check |
 |---|---|
@@ -123,12 +138,34 @@ The smoke test cannot see the screen. Do these yourself:
 
 ---
 
-## Step 5 — Switch the traffic
+## Step 5 — Domains: one link or two
 
-Move each custom domain onto the new service, one at a time, starting with
-telecaller (fewest users) and ending with student (most).
+Everything runs from **one deployment**. How many web addresses you hand out is
+purely a DNS choice and costs nothing either way.
 
-URLs do not change: `/admin/leads` is still `/admin/leads`.
+**Recommended — two hostnames, both pointing at the same service:**
+
+| Hostname | Who uses it |
+|---|---|
+| `flymasters.in` | students and the public |
+| `staff.flymasters.in` | everyone who works for you |
+
+Staff then get **one link to remember**: `staff.flymasters.in`. They sign in
+there and land in their own portal automatically.
+
+Why two rather than one: students never see a staff address, the staff link is
+short enough to say over the phone, and later you can add IP restrictions or
+extra protection to the staff hostname alone without touching the student site.
+
+In Railway: Settings → Networking → Custom Domain, add both. Same service, two
+entries. No code change, no extra cost.
+
+**If you prefer one hostname**, that works today with no changes — staff go to
+`flymasters.in/staff`.
+
+Move the domains across one at a time, starting with telecaller (fewest users)
+and ending with student (most). Internal URLs do not change: `/admin/leads` is
+still `/admin/leads`.
 
 ---
 

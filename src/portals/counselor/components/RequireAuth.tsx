@@ -1,3 +1,4 @@
+import RedirectToStaffSignIn from "@shared/RedirectToStaffSignIn";
 import { Navigate } from "react-router-dom";
 import { useAuth } from "@counselor/context/AuthContext";
 import type { Role } from "@counselor/lib/types";
@@ -23,7 +24,7 @@ export function RequireAuth({
     );
   }
 
-  if (!user) return <Navigate to="/login" replace />;
-  if (roles && role && !roles.includes(role) && role !== "student") return <Navigate to="/login" replace />;
+  if (!user) return <RedirectToStaffSignIn />;
+  if (roles && role && !roles.includes(role) && role !== "student") return <RedirectToStaffSignIn />;
   return <>{children}</>;
 }

@@ -89,14 +89,22 @@ export type PortalRole =
   | "partner"
   | "student";
 
-/** Where a role lands after signing in. One sign-in page, one redirect table. */
-export const HOME_FOR_ROLE: Record<PortalRole, string> = {
+/**
+ * Where a role lands after signing in. One sign-in page, one redirect table.
+ *
+ * These must be pages that exist AND are behind that role's own guard.
+ * /telecaller is the telecaller sign-in redirect, so a telecaller is sent to
+ * /telecaller/queue instead — sending them to /telecaller would bounce them
+ * straight back to /staff in a loop.
+ *
+ * Roles with no portal yet (accountant, partner) are deliberately absent:
+ * StaffSignIn shows them a clear message rather than a broken screen.
+ */
+export const HOME_FOR_ROLE: Partial<Record<PortalRole, string>> = {
   super_admin: "/admin",
   admin: "/admin",
   branch_head: "/admin",
   counselor: "/counselor",
-  telecaller: "/telecaller",
-  accountant: "/admin",
-  partner: "/partner",
+  telecaller: "/telecaller/queue",
   student: "/",
 };

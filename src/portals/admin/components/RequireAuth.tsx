@@ -1,3 +1,4 @@
+import RedirectToStaffSignIn from "@shared/RedirectToStaffSignIn";
 import { Navigate } from "react-router-dom";
 import { useAuth } from "@admin/context/AuthContext";
 import type { ReactNode } from "react";
@@ -16,6 +17,6 @@ export function RequireAuth({ children }: { children: ReactNode }) {
     );
   }
 
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user) return <RedirectToStaffSignIn />;
   return <>{children}</>;
 }

@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from "react";
+import RedirectToStaffSignIn from "@shared/RedirectToStaffSignIn";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "@admin/context/AuthContext";
 import Auth from "@admin/pages/Auth";
@@ -61,9 +62,10 @@ export default function App() {
       <AuthProvider>
         <>
           <Routes>
-            <Route path="/login" element={<Auth />} />
+            {/* one staff door: /staff. Signup keeps its own page. */}
+            <Route path="/login" element={<RedirectToStaffSignIn />} />
             <Route path="/signup" element={<Auth />} />
-            <Route path="/auth" element={<Navigate to="/login" replace />} />
+            <Route path="/auth" element={<RedirectToStaffSignIn />} />
             <Route
               path="/"
               element={<AdminLayout />}

@@ -33,6 +33,8 @@ echo "$H" | grep -q '"ok":true' && ok "health endpoint" || bad "health endpoint"
 # ---- 2. the SPA is being served -------------------------------------------
 C=$(code "$BASE/")
 [ "$C" = "200" ] && ok "student portal responds" || bad "student portal responds" "$C"
+C=$(code "$BASE/staff")
+[ "$C" = "200" ] && ok "staff sign-in door responds" || bad "staff sign-in door responds" "$C"
 for p in admin counselor telecaller; do
   C=$(code "$BASE/$p")
   [ "$C" = "200" ] && ok "/$p responds" || bad "/$p responds" "$C"

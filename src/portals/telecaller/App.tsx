@@ -2,7 +2,7 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "@telecaller/context/AuthContext";
 import { ErrorBoundary } from "@telecaller/components/ErrorBoundary";
 import { RequireTelecaller } from "@telecaller/components/RequireTelecaller";
-import SignIn from "@telecaller/pages/SignIn";
+import RedirectToStaffSignIn from "@shared/RedirectToStaffSignIn";
 import SignUp from "@telecaller/pages/SignUp";
 import NotFound from "@telecaller/pages/NotFound";
 import Layout from "@telecaller/screens/Layout";
@@ -18,9 +18,10 @@ export default function App() {
       <AuthProvider>
         <>
           <Routes>
-            <Route path="/" element={<SignIn />} />
+            {/* one staff door: /staff. Signup keeps its own page. */}
+            <Route path="/" element={<RedirectToStaffSignIn />} />
             <Route path="/signup" element={<SignUp />} />
-            <Route path="/login" element={<Navigate to="/" replace />} />
+            <Route path="/login" element={<RedirectToStaffSignIn />} />
             <Route
               element={
                 <RequireTelecaller>

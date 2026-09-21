@@ -2,12 +2,25 @@
 
 One repository, one deploy, one login for all four portals.
 
-| URL | Portal | Roles |
+**Two doors, one deployment.**
+
+| URL | Who | Notes |
 |---|---|---|
-| `/` | Student | student, public |
-| `/admin` | Admin | super_admin, admin, branch_head |
-| `/counselor` | Counselor | counselor |
-| `/telecaller` | Telecaller | telecaller |
+| `/` | Students and the public | the student portal |
+| `/staff` | **All staff** | one sign-in for super_admin, admin, branch_head, counselor, telecaller |
+
+After signing in at `/staff` the role decides where you land — nobody picks a
+portal, and nobody needs a different link:
+
+| Role | Lands on |
+|---|---|
+| super_admin, admin, branch_head | `/admin` |
+| counselor | `/counselor` |
+| telecaller | `/telecaller/queue` |
+
+The old portal sign-in URLs (`/admin/login`, `/counselor/login`,
+`/telecaller`) still work — they redirect to `/staff`, so existing bookmarks
+are not broken.
 
 ## Run locally
 

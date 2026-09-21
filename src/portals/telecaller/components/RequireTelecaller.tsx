@@ -1,3 +1,4 @@
+import RedirectToStaffSignIn from "@shared/RedirectToStaffSignIn";
 import { Navigate } from "react-router-dom";
 import { useAuth } from "@telecaller/context/AuthContext";
 import type { ReactNode } from "react";
@@ -20,6 +21,6 @@ export function RequireTelecaller({ children }: { children: ReactNode }) {
     );
   }
 
-  if (!user || user.role !== "telecaller") return <Navigate to="/" replace />;
+  if (!user || user.role !== "telecaller") return <RedirectToStaffSignIn />;
   return <>{children}</>;
 }

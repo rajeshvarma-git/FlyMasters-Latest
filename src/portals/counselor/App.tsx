@@ -1,4 +1,5 @@
 import { Component, type ReactNode } from "react";
+import RedirectToStaffSignIn from "@shared/RedirectToStaffSignIn";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "@counselor/context/AuthContext";
 import { RequireAuth } from "@counselor/components/RequireAuth";
@@ -56,8 +57,9 @@ export default function App() {
     <AuthProvider>
       <>
         <Routes>
-          <Route path="/login" element={<Auth />} />
-          <Route path="/auth" element={<Navigate to="/login" replace />} />
+          {/* one staff door: /staff */}
+          <Route path="/login" element={<RedirectToStaffSignIn />} />
+          <Route path="/auth" element={<RedirectToStaffSignIn />} />
 
           <Route
             path="/"

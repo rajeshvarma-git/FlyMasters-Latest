@@ -2,7 +2,18 @@
 
 ## The short answer
 
-**Staff share one login. Students still have a separate one.**
+**Two doors. Staff share one login at `/staff`. Students have their own at `/`.**
+
+| Door | Who | Roles |
+|---|---|---|
+| `/staff` | staff | super_admin, admin, branch_head, counselor, telecaller |
+| `/` | students | student |
+
+All five staff roles use the **same sign-in page and the same endpoint**. The
+role decides which portal you land in. Nobody chooses a portal, and nobody is
+given a different link.
+
+Students are still on a separate mechanism, described below.
 
 | | Admin / Counselor / Telecaller | Student |
 |---|---|---|
@@ -21,6 +32,9 @@ path.
 ## Is that good or not?
 
 **It is fine to deploy. It is not fine to leave.** Three specific reasons.
+
+Everything in this section is about the **student** login only. The five staff
+roles are already unified and there is nothing outstanding for them.
 
 ### 1. The two paths treat the same password table differently
 
