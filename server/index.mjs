@@ -18,6 +18,7 @@ import { existsSync } from "fs";
 
 import { ROOT, PORT, IS_PRODUCTION, assertBootConfig } from "./lib/env.mjs";
 import { migrate } from "./lib/migrate.mjs";
+import { preflight } from "./lib/preflight.mjs";
 import { pool } from "./lib/db.mjs";
 import coreRoutes, { startUnassignedWatcher } from "./routes/core.mjs";
 import counselorRoutes from "./routes/counselor.mjs";
@@ -87,6 +88,12 @@ async function start() {
   } catch (error) {
     console.error("Migration failed:", error.message || error);
     if (IS_PRODUCTION) process.exit(1);
+  }
+
+  try {
+    await preflight();
+  } catch (error) {
+    console.error("Preflight failed:", error.message || error);
   }
 
   try {

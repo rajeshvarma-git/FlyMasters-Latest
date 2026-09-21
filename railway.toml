@@ -1,6 +1,8 @@
 [build]
 builder = "NIXPACKS"
-buildCommand = "npm ci && npm run build"
+# --include=dev is required: vite/tailwind/postcss are devDependencies and
+# Railway sets NODE_ENV=production, which would otherwise skip them.
+buildCommand = "npm ci --include=dev && npm run build"
 
 [deploy]
 # No secrets here. JWT_SECRET, DATABASE_URL and the signup codes are set in
