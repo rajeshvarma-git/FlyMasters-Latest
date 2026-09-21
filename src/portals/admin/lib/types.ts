@@ -1,4 +1,27 @@
-export type Role = "student" | "telecaller" | "counselor" | "admin" | "super_admin";
+export type Role =
+  | "student"
+  | "telecaller"
+  | "counselor"
+  | "branch_head"
+  | "accountant"
+  | "admin"
+  | "super_admin";
+
+/** A branch as the API returns it. */
+export interface Branch {
+  id: string;
+  name: string;
+  code: string;
+  city?: string | null;
+  state?: string | null;
+  area?: string | null;
+  address?: string | null;
+  phone?: string | null;
+  is_active: boolean;
+  is_head_office: boolean;
+  staff_count?: number;
+  lead_count?: number;
+}
 
 export interface AppUser {
   id: string;

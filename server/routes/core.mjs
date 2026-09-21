@@ -25,9 +25,12 @@ import {
   TELECALLER_SIGNUP_CODE,
   WHATSAPP,
 } from "../lib/env.mjs";
+import { branchExists, setUserBranches, listBranches, allocateBranchCode, suggestBranchCode } from "../lib/branches.mjs";
 import {
   ROLES,
   ADMIN_ROLES,
+  BRANCH_SCOPED_ROLES,
+  STAFF_ROLES,
   signUser,
   session,
   requireRole,
@@ -40,6 +43,24 @@ import {
   staffAuth as staffChatAuth,
   superAdminAuth,
 } from "../lib/auth.mjs";
+
+/**
+ * Roles an admin can assign from the dashboard.
+ *
+ * Straight from the CRM document: Super Admin, Admin, Branch Head, Counsellor,
+ * Tele caller, Accountant, Student. Agents and freelancers are deliberately
+ * NOT here — they are rows in `partners`, not accounts, because they never
+ * sign in.
+ */
+const ASSIGNABLE_ROLES = [
+  "super_admin",
+  "admin",
+  "branch_head",
+  "counselor",
+  "telecaller",
+  "accountant",
+  "student",
+];
 
 const WHATSAPP_VERIFY_TOKEN = WHATSAPP.verifyToken;
 const WHATSAPP_ACCESS_TOKEN = WHATSAPP.accessToken;
@@ -1058,7 +1079,27 @@ async function applyLeadPatch(id, patch) {
   return merged;
 }
 
-async function loadState() {
+/**
+ * Reads a real table, restricted to the caller's branches.
+ *
+ * Only the tables that migration 002 gave a branch_id to can be scoped here.
+ * Conversations, messages and notifications are keyed to a specific user
+ * rather than a branch, so they are filtered by ownership further down.
+ */
+async function scopedRows(table, orderBy, scope) {
+  const params = [];
+  let where = "";
+  if (scope && !scope.allBranches) {
+    if (!scope.branchIds?.length) return { rows: [] };
+    params.push(scope.branchIds);
+    where = " WHERE branch_id = ANY($1::uuid[])";
+  }
+  return pool
+    .query(`SELECT * FROM ${table}${where} ORDER BY ${orderBy}`, params)
+    .catch(() => ({ rows: [] }));
+}
+
+async function loadState(scope = null) {
   const [
     sqlLeads,
     jsonLeads,
@@ -1089,34 +1130,34 @@ async function loadState() {
     counselors,
     users,
   ] = await Promise.all([
-    pool.query("SELECT * FROM student_leads ORDER BY created_at DESC").catch(() => ({ rows: [] })),
-    jsonTable("student_leads"),
-    pool.query("SELECT * FROM documents ORDER BY created_at DESC").catch(() => ({ rows: [] })),
-    jsonTable("documents"),
-    jsonTable("applications"),
-    pool.query("SELECT * FROM university_shortlists ORDER BY created_at DESC").catch(() => ({ rows: [] })),
-    jsonTable("university_shortlists"),
+    scopedRows("student_leads", "created_at DESC", scope),
+    jsonTable("student_leads", { scope }),
+    scopedRows("documents", "created_at DESC", scope),
+    jsonTable("documents", { scope }),
+    jsonTable("applications", { scope }),
+    scopedRows("university_shortlists", "created_at DESC", scope),
+    jsonTable("university_shortlists", { scope }),
     pool.query("SELECT * FROM private_conversations ORDER BY last_message_at DESC NULLS LAST").catch(() => ({ rows: [] })),
-    jsonTable("private_conversations"),
+    jsonTable("private_conversations", { scope }),
     pool.query("SELECT * FROM private_messages ORDER BY created_at ASC").catch(() => ({ rows: [] })),
-    jsonTable("private_messages"),
-    pool.query("SELECT * FROM counselor_leave_requests ORDER BY applied_on DESC").catch(() => ({ rows: [] })),
+    jsonTable("private_messages", { scope }),
+    scopedRows("counselor_leave_requests", "applied_on DESC", scope),
     pool.query(
       `SELECT id, counselor_id, date::text AS date, clock_in::text AS clock_in, clock_out::text AS clock_out, total_hours, status
        FROM counselor_attendance ORDER BY date DESC`,
     ).catch(() => ({ rows: [] })),
-    pool.query("SELECT * FROM counselor_salary_records ORDER BY year DESC, month DESC").catch(() => ({ rows: [] })),
-    jsonTable("notifications"),
+    scopedRows("counselor_salary_records", "year DESC, month DESC", scope),
+    jsonTable("notifications", { scope }),
     pool.query("SELECT * FROM notifications ORDER BY created_at DESC").catch(() => ({ rows: [] })),
     jsonTable("universities"),
     jsonTableCount("university_programs"),
     jsonTable("document_checklists"),
     jsonTable("chat_sessions"),
     jsonTable("chat_messages"),
-    jsonTable("telecaller_conversations"),
-    jsonTable("telecaller_messages"),
-    jsonTable("whatsapp_conversations"),
-    jsonTable("whatsapp_messages"),
+    jsonTable("telecaller_conversations", { scope }),
+    jsonTable("telecaller_messages", { scope }),
+    jsonTable("whatsapp_conversations", { scope }),
+    jsonTable("whatsapp_messages", { scope }),
     studentDirectory(),
     loadCounselors(),
     loadUsers(),
@@ -1540,7 +1581,7 @@ async function ownedStudentLead(telecallerId, studentId) {
 
 router.get("/api/telecaller/state", telecallerAuth, async (req, res) => {
   try {
-    const state = await loadState();
+    const state = await loadState(req.scope);
     const mine = state.leads.filter(
       (lead) => String(lead.assigned_telecaller_id || "") === String(req.user.id),
     );
@@ -1582,7 +1623,7 @@ router.get("/api/telecaller/state", telecallerAuth, async (req, res) => {
 
 router.get("/api/telecaller/whatsapp", telecallerAuth, async (req, res) => {
   try {
-    const state = await loadState();
+    const state = await loadState(req.scope);
     const mineOpen = state.leads.filter(
       (lead) =>
         String(lead.assigned_telecaller_id || "") === String(req.user.id) &&
@@ -1800,7 +1841,7 @@ router.post("/api/telecaller/leads", telecallerAuth, async (req, res) => {
         ],
       ).catch(() => {});
     }
-    await jsonUpsert("student_leads", payload);
+    await jsonUpsert("student_leads", payload, { branchId: req.scope?.allBranches ? null : req.scope?.branchId });
     res.json(payload);
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not create the lead" });
@@ -2030,7 +2071,7 @@ router.post("/api/system/alerts/run", auth, async (_req, res) => {
 
 router.get("/api/state", auth, async (req, res) => {
   try {
-    const state = await loadState();
+    const state = await loadState(req.scope);
     state.notifications = state.notifications.filter((row) => String(row.user_id) === String(req.user.id));
     res.json(state);
   } catch (error) {
@@ -2084,7 +2125,7 @@ router.post("/api/leads", auth, async (req, res) => {
       ],
     ).catch(() => {});
   }
-  await jsonUpsert("student_leads", payload);
+  await jsonUpsert("student_leads", payload, { branchId: req.scope?.allBranches ? null : req.scope?.branchId });
   if (telecallerId || counselorId) {
     await whatsapp.syncConversationForLead(payload);
   }
@@ -2424,7 +2465,40 @@ router.post("/api/users", auth, async (req, res) => {
   const role = String(req.body.role || "student");
   const phone = String(req.body.phone || "");
   if (!email || password.length < 6) return res.status(400).json({ error: "Email and a password of at least 6 characters are required." });
-  if (!["student", "telecaller", "counselor", "admin", "super_admin"].includes(role)) return res.status(400).json({ error: "Invalid role." });
+
+  // "partner" is absent on purpose: agents and freelancers never sign in.
+  if (!ASSIGNABLE_ROLES.includes(role)) {
+    return res.status(400).json({ error: `Invalid role. Allowed: ${ASSIGNABLE_ROLES.join(", ")}.` });
+  }
+
+  // Only a super admin may mint another super admin.
+  if (role === "super_admin" && req.user.role !== "super_admin") {
+    return res.status(403).json({ error: "Only a super admin can create another super admin." });
+  }
+
+  // Which branches this person will be able to see. A branch-scoped role with
+  // no branch can see nothing, so it is refused here rather than silently
+  // creating an account that shows an empty screen.
+  const requestedBranches = Array.isArray(req.body.branchIds)
+    ? req.body.branchIds.map(String).filter(Boolean)
+    : [req.body.branchId].map(String).filter((v) => v && v !== "undefined" && v !== "null");
+
+  if (BRANCH_SCOPED_ROLES.includes(role) && !requestedBranches.length) {
+    return res.status(400).json({ error: `A ${role.replace("_", " ")} must be assigned to at least one branch.` });
+  }
+
+  // An admin cannot hand out access to a branch they cannot see themselves.
+  if (!req.scope.allBranches) {
+    const outside = requestedBranches.filter((b) => !req.scope.branchIds.includes(b));
+    if (outside.length) {
+      return res.status(403).json({ error: "You can only assign branches you manage." });
+    }
+  }
+  for (const branchId of requestedBranches) {
+    if (!(await branchExists(branchId))) {
+      return res.status(400).json({ error: `Unknown branch: ${branchId}` });
+    }
+  }
   const existing = await pool.query("SELECT id FROM auth_users WHERE lower(email) = $1", [email]);
   if (existing.rows[0]) return res.status(400).json({ error: "An account with this email already exists." });
   const id = role === "counselor" ? crypto.randomUUID() : `user-${crypto.randomUUID()}`;
@@ -2432,7 +2506,14 @@ router.post("/api/users", auth, async (req, res) => {
     "INSERT INTO auth_users (id, email, password, user_metadata) VALUES ($1,$2,$3,$4::jsonb)",
     [id, email, hashPassword(password), JSON.stringify({ first_name: firstName, last_name: lastName })],
   );
-  await jsonUpsert("user_roles", { id: `role-${id}`, user_id: id, role });
+  await jsonUpsert("user_roles", {
+    id: `role-${id}`,
+    user_id: id,
+    role,
+    branch_id: requestedBranches[0] || null,
+  });
+  await setUserBranches(id, requestedBranches, req.user.id);
+  await audit(req, "user.create", "auth_users", id, { email, role, branches: requestedBranches });
   await jsonUpsert("profiles", {
     id: `profile-${id}`,
     user_id: id,
@@ -3252,5 +3333,160 @@ export function startUnassignedWatcher() {
   setInterval(() => void checkUnassignedLeads(), ALERT_INTERVAL_HOURS * 3600000);
   console.log(`[alerts] unassigned lead watcher every ${ALERT_INTERVAL_HOURS}h`);
 }
+
+// ---------------------------------------------------------------------------
+// Branches
+//
+// CRM document: "Super Admin can create branch accounts directly and can also
+// authorize selected Admins or Branch Heads to create branches within approved
+// limits." Creation is therefore admin-and-above; branch heads read only.
+// ---------------------------------------------------------------------------
+
+router.get("/api/branches", [session, requireRole(STAFF_ROLES, "Staff"), branchScope], async (req, res) => {
+  try {
+    res.json({ branches: await listBranches(req.scope) });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not load branches" });
+  }
+});
+
+/** What code would this branch get? Lets the form preview it before saving. */
+router.get("/api/branches/suggest-code", auth, async (req, res) => {
+  res.json({
+    code: suggestBranchCode({
+      name: req.query.name,
+      city: req.query.city,
+      area: req.query.area,
+    }),
+  });
+});
+
+router.post("/api/branches", [session, requireRole(ADMIN_ROLES, "Admin"), branchScope], async (req, res) => {
+  try {
+    const name = String(req.body.name || "").trim();
+    if (!name) return res.status(400).json({ error: "A branch needs a name." });
+
+    const city = String(req.body.city || "").trim();
+    const area = String(req.body.area || "").trim();
+    const code = await allocateBranchCode({ name, city, area }, req.body.code);
+
+    const { rows } = await pool.query(
+      `INSERT INTO branches (name, code, city, state, area, address, phone)
+       VALUES ($1,$2,$3,$4,$5,$6,$7)
+       RETURNING *`,
+      [name, code, city || null, String(req.body.state || "").trim() || null,
+       area || null, String(req.body.address || "").trim() || null,
+       String(req.body.phone || "").trim() || null],
+    );
+
+    await audit(req, "branch.create", "branches", rows[0].id, { name, code });
+    res.json({ branch: rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not create branch" });
+  }
+});
+
+router.patch("/api/branches/:id", [session, requireRole(ADMIN_ROLES, "Admin"), branchScope], async (req, res) => {
+  try {
+    const fields = [];
+    const params = [req.params.id];
+    for (const key of ["name", "city", "state", "area", "address", "phone", "is_active"]) {
+      if (req.body[key] === undefined) continue;
+      params.push(req.body[key]);
+      fields.push(`${key} = $${params.length}`);
+    }
+    if (!fields.length) return res.status(400).json({ error: "Nothing to update." });
+
+    const { rows } = await pool.query(
+      `UPDATE branches SET ${fields.join(", ")} WHERE id = $1 RETURNING *`,
+      params,
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Branch not found." });
+
+    await audit(req, "branch.update", "branches", req.params.id, req.body);
+    res.json({ branch: rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not update branch" });
+  }
+});
+
+/** Move a person between branches, or give a branch head a second branch. */
+router.put("/api/users/:id/branches", [session, requireRole(ADMIN_ROLES, "Admin"), branchScope], async (req, res) => {
+  try {
+    const branchIds = (req.body.branchIds || []).map(String).filter(Boolean);
+    for (const branchId of branchIds) {
+      if (!(await branchExists(branchId))) return res.status(400).json({ error: `Unknown branch: ${branchId}` });
+    }
+    await setUserBranches(req.params.id, branchIds, req.user.id);
+    await pool.query("UPDATE user_roles SET branch_id = $2, updated_at = now() WHERE user_id = $1",
+      [req.params.id, branchIds[0] || null]);
+    await audit(req, "user.branches", "auth_users", req.params.id, { branchIds });
+    res.json({ ok: true, branchIds });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not update branches" });
+  }
+});
+
+/** Move a lead to another branch. Both the blob row and the table row. */
+router.post("/api/leads/:id/branch", [session, requireRole(ADMIN_ROLES, "Admin"), branchScope], async (req, res) => {
+  try {
+    const branchId = String(req.body.branchId || "");
+    if (!(await branchExists(branchId))) return res.status(400).json({ error: "Unknown branch." });
+    await pool.query("UPDATE app_records SET branch_id = $2, updated_at = now() WHERE id = $1 AND table_name = 'student_leads'",
+      [req.params.id, branchId]);
+    await pool.query("UPDATE student_leads SET branch_id = $2 WHERE id::text = $1", [req.params.id, branchId]).catch(() => {});
+    await audit(req, "lead.branch", "student_leads", req.params.id, { branchId });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not move lead" });
+  }
+});
+
+/**
+ * The accountant's slice of the world.
+ *
+ * CRM document, section 7: the Accountant handles payroll, salaries,
+ * reimbursements, commissions, invoices and payout tracking "across assigned
+ * branches". They are deliberately NOT given /api/state — an accountant has no
+ * business reading the whole lead pipeline, and hiding it in the menu while
+ * leaving the endpoint open would not be a restriction at all.
+ *
+ * Same response shape as /api/state so the screens need no special casing;
+ * everything outside finance and HR comes back empty.
+ */
+router.get("/api/hr/state", [session, requireRole([ROLES.ACCOUNTANT], "Accountant"), branchScope], async (req, res) => {
+  try {
+    const [leave, attendance, salary, counselors, users] = await Promise.all([
+      scopedRows("counselor_leave_requests", "applied_on DESC", req.scope),
+      scopedRows("counselor_attendance", "date DESC", req.scope),
+      scopedRows("counselor_salary_records", "year DESC, month DESC", req.scope),
+      loadCounselors(),
+      loadUsers(),
+    ]);
+
+    const allowed = new Set((req.scope.branchIds || []).map(String));
+    const inScope = (row) => req.scope.allBranches || allowed.has(String(row.branch_id || ""));
+
+    res.json({
+      users: users.filter((row) => ["counselor", "telecaller", "branch_head"].includes(row.role)),
+      counselors: counselors.filter(inScope),
+      telecallers: [],
+      leads: [],
+      documents: [],
+      applications: [],
+      shortlists: [],
+      conversations: [],
+      messages: [],
+      leave: leave.rows,
+      attendance: attendance.rows,
+      salary: salary.rows,
+      notifications: [],
+      universities: [],
+      checklists: [],
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not load finance data" });
+  }
+});
 
 export default router;

@@ -43,8 +43,10 @@ export async function preflight() {
         "SELECT count(*)::int AS n FROM auth_users u WHERE NOT EXISTS (SELECT 1 FROM user_roles r WHERE r.user_id = u.id)",
       ),
       pool.query("SELECT count(*)::int AS n FROM auth_users WHERE password NOT LIKE 'scrypt:%'"),
-      pool.query("SELECT count(*)::int AS n FROM student_leads"),
-      pool.query("SELECT count(*)::int AS n FROM student_leads WHERE branch_id IS NULL"),
+      // Leads live in app_records, not the student_leads table — that is the
+      // copy the application actually reads, so it is the one worth checking.
+      pool.query("SELECT count(*)::int AS n FROM app_records WHERE table_name = 'student_leads'"),
+      pool.query("SELECT count(*)::int AS n FROM app_records WHERE table_name = 'student_leads' AND branch_id IS NULL"),
       pool.query("SELECT count(*)::int AS n FROM partners"),
     ]);
 
@@ -52,6 +54,8 @@ export async function preflight() {
     lines.push(`roles: ${roles.rows.map((r) => `${r.role}=${r.n}`).join(" ") || "none"}`);
     lines.push(`leads: ${leads.rows[0].n}`);
     lines.push(`partners: ${partners.rows[0].n}`);
+    const branches = await pool.query("SELECT code FROM branches WHERE is_active ORDER BY is_head_office DESC, name");
+    lines.push(`branches: ${branches.rows.map((r) => r.code).join(" ") || "none"}`);
 
     if (orphans.rows[0].n > 0) {
       warnings.push(
@@ -68,7 +72,8 @@ export async function preflight() {
     }
     if (unbranched.rows[0].n > 0) {
       warnings.push(
-        `${unbranched.rows[0].n} lead(s) have no branch_id. Branch-scoped roles will not see them.`,
+        `${unbranched.rows[0].n} lead(s) have no branch. Branch heads, counsellors and ` +
+          "telecallers cannot see them. Assign them from the Branches screen.",
       );
     }
   } catch (error) {

@@ -63,14 +63,68 @@ async function writeUserRole(data) {
   return { id: `role-${row.user_id}`, ...row };
 }
 
-export async function jsonTable(tableName, { limit = null } = {}) {
+/**
+ * Record types that belong to a branch. Everything else in app_records is
+ * shared reference data — the university catalogue, document checklists,
+ * message templates — and must NOT be scoped, or courses would disappear for
+ * branch staff.
+ *
+ * Adding a new branch-owned record type means adding it here AND to the
+ * backfill list in migration 004.
+ */
+export const BRANCH_OWNED_TABLES = new Set([
+  "student_leads",
+  "documents",
+  "applications",
+  "university_shortlists",
+  "private_conversations",
+  "private_messages",
+  "notifications",
+  "telecaller_conversations",
+  "telecaller_messages",
+  "whatsapp_conversations",
+  "whatsapp_messages",
+  "counselors",
+  "profiles",
+]);
+
+export function isBranchOwned(tableName) {
+  return BRANCH_OWNED_TABLES.has(tableName);
+}
+
+/**
+ * Reads a JSONB-backed record type.
+ *
+ * Pass `scope` (from req.scope) to restrict the read to the caller's branches.
+ * Without it the read is unscoped, which is correct for super admins and for
+ * the shared reference data, and is what every pre-existing call site expects.
+ */
+export async function jsonTable(tableName, { limit = null, scope = null } = {}) {
   if (tableName === "user_roles") return readUserRoles();
-  const sql = limit
-    ? "SELECT id, data, created_at FROM app_records WHERE table_name = $1 ORDER BY created_at DESC LIMIT $2"
-    : "SELECT id, data, created_at FROM app_records WHERE table_name = $1 ORDER BY created_at DESC";
-  const params = limit ? [tableName, limit] : [tableName];
+
+  const params = [tableName];
+  let where = "WHERE table_name = $1";
+
+  if (scope && !scope.allBranches && isBranchOwned(tableName)) {
+    const ids = scope.branchIds || [];
+    if (!ids.length) return [];
+    params.push(ids);
+    where += ` AND branch_id = ANY($${params.length}::uuid[])`;
+  }
+
+  let sql = `SELECT id, data, branch_id, created_at FROM app_records ${where} ORDER BY created_at DESC`;
+  if (limit) {
+    params.push(limit);
+    sql += ` LIMIT $${params.length}`;
+  }
+
   const result = await pool.query(sql, params);
-  return result.rows.map((row) => ({ id: row.id, ...row.data, created_at: row.created_at }));
+  return result.rows.map((row) => ({
+    id: row.id,
+    ...row.data,
+    branch_id: row.branch_id,
+    created_at: row.created_at,
+  }));
 }
 
 export async function jsonFind(tableName, field, value) {
@@ -82,20 +136,35 @@ export async function jsonFind(tableName, field, value) {
   return row ? { id: row.id, ...row.data, created_at: row.created_at } : null;
 }
 
-export async function jsonUpsert(tableName, data) {
+/**
+ * Writes a JSONB-backed record.
+ *
+ * `branchId` stamps the owning branch. For a branch-owned record type it is
+ * required on creation — an untagged lead is invisible to every branch-scoped
+ * user, which is the failure mode that makes leads quietly disappear.
+ * On update, omitting it leaves the existing branch untouched.
+ */
+export async function jsonUpsert(tableName, data, { branchId = null } = {}) {
   if (tableName === "user_roles") return writeUserRole(data);
+
   const id = String(data.id || "");
   const payload = { ...data };
   delete payload.created_at;
+  delete payload.branch_id;
+
   const result = await pool.query(
-    `INSERT INTO app_records (id, table_name, data)
-     VALUES (COALESCE(NULLIF($1, ''), gen_random_uuid()::text), $2, $3::jsonb)
-     ON CONFLICT (id) DO UPDATE SET data = app_records.data || EXCLUDED.data, updated_at = now()
-     RETURNING id, data, created_at`,
-    [id, tableName, JSON.stringify(payload)],
+    `INSERT INTO app_records (id, table_name, data, branch_id)
+     VALUES (COALESCE(NULLIF($1, ''), gen_random_uuid()::text), $2, $3::jsonb,
+             COALESCE($4::uuid, CASE WHEN $5 THEN (SELECT id FROM branches WHERE is_head_office LIMIT 1) END))
+     ON CONFLICT (id) DO UPDATE
+       SET data = app_records.data || EXCLUDED.data,
+           branch_id = COALESCE(EXCLUDED.branch_id, app_records.branch_id),
+           updated_at = now()
+     RETURNING id, data, branch_id, created_at`,
+    [id, tableName, JSON.stringify(payload), branchId || data.branch_id || null, isBranchOwned(tableName)],
   );
   const row = result.rows[0];
-  return { id: row.id, ...row.data, created_at: row.created_at };
+  return { id: row.id, ...row.data, branch_id: row.branch_id, created_at: row.created_at };
 }
 
 export async function withTransaction(fn) {

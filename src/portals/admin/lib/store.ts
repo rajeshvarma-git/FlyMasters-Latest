@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api } from "@admin/lib/api";
+import { api, readStoredUser } from "@admin/lib/api";
 import type { AdminState } from "@admin/lib/types";
 
 const empty: AdminState = {
@@ -52,7 +52,11 @@ export function getStoreError() {
 
 export async function refreshStore() {
   try {
-    cache = await api<AdminState>("/state");
+    // Accountants get the finance slice; everyone else gets the full admin
+    // state. The server decides what each role may read — this only picks the
+    // right door rather than acting as the restriction itself.
+    const role = readStoredUser<{ role?: string }>()?.role;
+    cache = await api<AdminState>(role === "accountant" ? "/hr/state" : "/state");
     lastError = "";
     emit();
   } catch (error) {

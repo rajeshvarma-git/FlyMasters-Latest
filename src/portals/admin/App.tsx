@@ -20,6 +20,7 @@ import ChatMonitor from "@admin/admin/ChatMonitor";
 import AiChat from "@admin/admin/AiChat";
 import WhatsAppChat from "@admin/admin/WhatsAppChat";
 import UsersPage from "@admin/admin/Users";
+import Branches from "@admin/admin/Branches";
 import HR from "@admin/admin/HR";
 import Universities from "@admin/admin/Universities";
 import Checklists from "@admin/admin/Checklists";
@@ -84,6 +85,7 @@ export default function App() {
               <Route path="whatsapp" element={<WhatsAppChat />} />
               <Route path="ai-chat" element={<AiChat />} />
               <Route path="users" element={<UsersPage />} />
+              <Route path="branches" element={<Branches />} />
               <Route path="counselors" element={<CounselorsHub />} />
               <Route path="counselors/:id" element={<CounselorDetail />} />
               <Route path="hr" element={<HR />} />

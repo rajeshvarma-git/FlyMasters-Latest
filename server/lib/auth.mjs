@@ -21,8 +21,12 @@ export const ROLES = Object.freeze({
   COUNSELOR: "counselor",
   TELECALLER: "telecaller",
   ACCOUNTANT: "accountant",
-  PARTNER: "partner", // agents and freelancers share this role; partners.type separates them
   STUDENT: "student",
+  // NOTE: there is deliberately no "partner" login role. Agents and
+  // freelancers never sign in — they get a referral code, a read-only status
+  // link and WhatsApp updates. They live in the `partners` table, which needs
+  // no account. The database CHECK constraint still permits the value so the
+  // migration stays reversible, but nothing can assign it.
 });
 
 export const ALL_ROLES = Object.values(ROLES);
@@ -59,7 +63,15 @@ export function signUser(user) {
  */
 async function identityFor(userId) {
   const result = await pool.query(
-    `SELECT u.id, u.email, COALESCE(r.role, 'student') AS role, r.branch_id, r.is_active
+    `SELECT u.id,
+            u.email,
+            COALESCE(r.role, 'student') AS role,
+            r.branch_id,
+            r.is_active,
+            COALESCE(
+              (SELECT array_agg(ub.branch_id) FROM user_branches ub WHERE ub.user_id = u.id),
+              CASE WHEN r.branch_id IS NULL THEN '{}'::uuid[] ELSE ARRAY[r.branch_id] END
+            ) AS branch_ids
        FROM auth_users u
        LEFT JOIN user_roles r ON r.user_id = u.id
       WHERE u.id = $1`,
@@ -90,6 +102,7 @@ export async function session(req, res, next) {
       email: identity.email,
       role: identity.role,
       branch_id: identity.branch_id || null,
+      branch_ids: (identity.branch_ids || []).map(String).filter(Boolean),
     };
     next();
   } catch (error) {
@@ -118,27 +131,40 @@ export function requireRole(roles, label = "Authorized") {
 export function branchScope(req, res, next) {
   const role = req.user?.role;
   if (!BRANCH_SCOPED_ROLES.includes(role)) {
-    req.scope = { allBranches: true, branchId: null };
+    req.scope = { allBranches: true, branchIds: [], branchId: null };
     return next();
   }
-  const branchId = req.user?.branch_id;
-  if (!branchId) {
+  const branchIds = req.user?.branch_ids || [];
+  if (!branchIds.length) {
     return res.status(403).json({ error: "No branch assigned to this account. Ask an admin." });
   }
-  req.scope = { allBranches: false, branchId };
+  // branchId stays as the home branch, used when stamping new records.
+  req.scope = {
+    allBranches: false,
+    branchIds,
+    branchId: req.user?.branch_id || branchIds[0],
+  };
   next();
 }
 
 /** Appends a branch predicate to a query. Keeps scoping in SQL, not in JavaScript. */
 export function scopeClause(scope, column = "branch_id", params = []) {
   if (!scope || scope.allBranches) return { text: "", params };
-  params.push(scope.branchId);
-  return { text: ` AND ${column} = $${params.length}`, params };
+  params.push(scope.branchIds);
+  return { text: ` AND ${column} = ANY($${params.length}::uuid[])`, params };
 }
 
 export function assertInScope(scope, row, column = "branch_id") {
   if (!scope || scope.allBranches) return true;
-  return String(row?.[column] || "") === String(scope.branchId);
+  const value = String(row?.[column] || "");
+  return Boolean(value) && scope.branchIds.map(String).includes(value);
+}
+
+/** Filters an already-loaded array of records down to the caller's branches. */
+export function filterToScope(scope, rows, column = "branch_id") {
+  if (!scope || scope.allBranches) return rows;
+  const allowed = new Set(scope.branchIds.map(String));
+  return rows.filter((row) => allowed.has(String(row?.[column] || "")));
 }
 
 /** Write-side audit trail. Never throws into the request path. */
@@ -164,12 +190,15 @@ export async function audit(req, action, entity, entityId, detail = {}) {
 }
 
 // Ready-made middleware stacks, mirroring the old names so ported routes keep working.
-export const adminAuth = [session, requireRole(ADMIN_ROLES, "Admin"), branchScope];
+// Branch heads use the admin screens, restricted to their own branches by
+// branchScope. The CRM document: "Manage daily branch operations ... Only the
+// branch or branches assigned to the Branch Head."
+export const adminAuth = [session, requireRole(BRANCH_ADMIN_ROLES, "Admin"), branchScope];
 export const branchAdminAuth = [session, requireRole(BRANCH_ADMIN_ROLES, "Admin"), branchScope];
 export const superAdminAuth = [session, requireRole([ROLES.SUPER_ADMIN], "Super admin"), branchScope];
 export const counselorAuth = [session, requireRole([ROLES.COUNSELOR], "Counselor"), branchScope];
 export const telecallerAuth = [session, requireRole([ROLES.TELECALLER], "Telecaller"), branchScope];
+export const branchHeadAuth = [session, requireRole([ROLES.BRANCH_HEAD, ...ADMIN_ROLES], "Branch head"), branchScope];
 export const accountantAuth = [session, requireRole([ROLES.ACCOUNTANT, ...ADMIN_ROLES], "Accountant"), branchScope];
-export const partnerAuth = [session, requireRole([ROLES.PARTNER], "Partner"), branchScope];
 export const studentAuth = [session, requireRole([ROLES.STUDENT], "Student")];
 export const staffAuth = [session, requireRole(STAFF_ROLES, "Staff"), branchScope];

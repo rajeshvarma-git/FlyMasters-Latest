@@ -14,12 +14,11 @@ import { HOME_FOR_ROLE, setToken, setStoredUser, type PortalRole } from "./lib/s
  */
 
 /** Roles that have a portal to land in today. */
-const STAFF_ROLES = ["super_admin", "admin", "branch_head", "counselor", "telecaller"];
+const STAFF_ROLES = ["super_admin", "admin", "branch_head", "counselor", "telecaller", "accountant"];
 
 /** Roles that exist in the database but have no screens built yet. */
 const NOT_BUILT_YET: Record<string, string> = {
-  accountant: "The accountant portal is not built yet.",
-  partner: "Partners do not sign in. You get a status link instead.",
+  partner: "Partners do not sign in — you receive a status link instead.",
 };
 
 export default function StaffSignIn() {
