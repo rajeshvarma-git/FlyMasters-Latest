@@ -1,0 +1,17 @@
+[build]
+builder = "NIXPACKS"
+buildCommand = "npm ci && npm run build"
+
+[deploy]
+# No secrets here. JWT_SECRET, DATABASE_URL and the signup codes are set in
+# Railway -> Variables. The previous admin service put its live signing key and
+# admin signup code in this file, in a public repository.
+startCommand = "npm run start:prod"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 120
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+
+[variables]
+NIXPACKS_SPA_CADDY = "false"
+RAILPACK_NO_SPA = "1"

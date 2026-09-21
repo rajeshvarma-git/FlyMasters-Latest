@@ -1,0 +1,190 @@
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+CREATE TABLE IF NOT EXISTS counselor_users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  first_name TEXT,
+  last_name TEXT,
+  phone TEXT,
+  bio TEXT,
+  specializations TEXT[] NOT NULL DEFAULT '{}',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS student_leads (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID,
+  email TEXT NOT NULL,
+  phone TEXT,
+  first_name TEXT,
+  last_name TEXT,
+  preferred_countries TEXT[],
+  field_of_interest TEXT,
+  academic_score TEXT,
+  lead_status TEXT DEFAULT 'warm',
+  lead_stage TEXT,
+  lead_source TEXT,
+  priority TEXT,
+  entity_type TEXT DEFAULT 'lead',
+  status TEXT NOT NULL DEFAULT 'assigned',
+  assigned_counselor_id UUID,
+  assigned_telecaller_id UUID,
+  assigned_counselor_at TIMESTAMPTZ,
+  assigned_telecaller_at TIMESTAMPTZ,
+  notes TEXT,
+  next_follow_up_date TIMESTAMPTZ,
+  last_contact_date TIMESTAMPTZ,
+  conversion_date TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS private_conversations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  counselor_id UUID NOT NULL,
+  student_id UUID NOT NULL,
+  last_message_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS private_messages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  conversation_id UUID NOT NULL,
+  sender_id UUID NOT NULL,
+  receiver_id UUID NOT NULL,
+  message TEXT NOT NULL,
+  is_read BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL,
+  title TEXT,
+  message TEXT,
+  is_read BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS documents (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID,
+  document_type TEXT,
+  file_name TEXT,
+  status TEXT DEFAULT 'uploaded',
+  archived BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS university_shortlists (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  student_id UUID,
+  counselor_id UUID,
+  university_name TEXT,
+  course_name TEXT,
+  location TEXT,
+  counselor_notes TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS counselor_leave_requests (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  counselor_id UUID NOT NULL,
+  leave_type TEXT,
+  start_date DATE,
+  end_date DATE,
+  reason TEXT,
+  total_days INTEGER,
+  status TEXT DEFAULT 'pending',
+  applied_on TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS counselor_attendance (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  counselor_id UUID NOT NULL,
+  date DATE NOT NULL,
+  clock_in TIME,
+  clock_out TIME,
+  total_hours NUMERIC,
+  status TEXT DEFAULT 'present'
+);
+
+CREATE TABLE IF NOT EXISTS counselor_salary_records (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  counselor_id UUID NOT NULL,
+  month TEXT,
+  year INTEGER,
+  net_salary NUMERIC,
+  notes TEXT
+);
+
+CREATE TABLE IF NOT EXISTS auth_users (
+  id TEXT PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  password TEXT NOT NULL,
+  user_metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+  token TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS app_records (
+  id TEXT PRIMARY KEY,
+  table_name TEXT NOT NULL,
+  data JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_app_records_table ON app_records(table_name);
+
+-- WhatsApp chat uses app_records with table_name keys:
+-- whatsapp_verifications, whatsapp_conversations, whatsapp_messages
+-- student_leads JSON also carries whatsapp_number, whatsapp_verified, whatsapp_verified_at
+
+CREATE TABLE IF NOT EXISTS app_storage (
+  path TEXT PRIMARY KEY,
+  data_url TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS app_meta (
+  key TEXT PRIMARY KEY,
+  value JSONB NOT NULL
+);
+
+-- ---------------------------------------------------------------------------
+-- Folded in from the counselor portal's separate schema.sql
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS email_verifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email TEXT NOT NULL,
+  code_hash TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  used_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS email_verifications_email_idx
+  ON email_verifications (lower(email), created_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- Folded in from the student portal's postgres.ts bootstrap
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS auth_signup_verifications (
+  email TEXT PRIMARY KEY,
+  code_hash TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Indexes the old code relied on sequential scans for.
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_student_leads_counselor ON student_leads(assigned_counselor_id);
+CREATE INDEX IF NOT EXISTS idx_student_leads_telecaller ON student_leads(assigned_telecaller_id);
+CREATE INDEX IF NOT EXISTS idx_documents_user ON documents(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_read);
+CREATE INDEX IF NOT EXISTS idx_app_records_table_id ON app_records(table_name, id);
