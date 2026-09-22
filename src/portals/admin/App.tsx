@@ -21,6 +21,8 @@ import AiChat from "@admin/admin/AiChat";
 import WhatsAppChat from "@admin/admin/WhatsAppChat";
 import UsersPage from "@admin/admin/Users";
 import Branches from "@admin/admin/Branches";
+import Partners from "@admin/admin/Partners";
+import Finance from "@admin/admin/Finance";
 import HR from "@admin/admin/HR";
 import Universities from "@admin/admin/Universities";
 import Checklists from "@admin/admin/Checklists";
@@ -86,6 +88,8 @@ export default function App() {
               <Route path="ai-chat" element={<AiChat />} />
               <Route path="users" element={<UsersPage />} />
               <Route path="branches" element={<Branches />} />
+              <Route path="partners" element={<Partners />} />
+              <Route path="finance" element={<Finance />} />
               <Route path="counselors" element={<CounselorsHub />} />
               <Route path="counselors/:id" element={<CounselorDetail />} />
               <Route path="hr" element={<HR />} />

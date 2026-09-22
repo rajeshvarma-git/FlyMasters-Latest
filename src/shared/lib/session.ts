@@ -107,5 +107,6 @@ export const HOME_FOR_ROLE: Partial<Record<PortalRole, string>> = {
   counselor: "/counselor",
   telecaller: "/telecaller/queue",
   accountant: "/admin/hr",
+  partner: "/partner",
   student: "/",
 };

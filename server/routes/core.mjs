@@ -27,6 +27,13 @@ import {
 } from "../lib/env.mjs";
 import { branchExists, setUserBranches, listBranches, allocateBranchCode, suggestBranchCode } from "../lib/branches.mjs";
 import {
+  allocateReferralCode,
+  attachReferral,
+  listPartners,
+  partnerByCode,
+  raiseCommissionForLead,
+} from "../lib/partners.mjs";
+import {
   ROLES,
   ADMIN_ROLES,
   BRANCH_SCOPED_ROLES,
@@ -61,6 +68,9 @@ const ASSIGNABLE_ROLES = [
   "accountant",
   "student",
 ];
+// "partner" is absent here on purpose. An agent account is not created from
+// the Users screen; it is created from the Partners screen and only a Super
+// Admin can attach the login — "upon activation from super admin only".
 
 const WHATSAPP_VERIFY_TOKEN = WHATSAPP.verifyToken;
 const WHATSAPP_ACCESS_TOKEN = WHATSAPP.accessToken;
@@ -1910,6 +1920,7 @@ router.post("/api/telecaller/leads/:id/contact", telecallerAuth, async (req, res
 });
 
 router.post("/api/telecaller/leads/:id/convert", telecallerAuth, async (req, res) => {
+  void commissionOnConvert(req, req.params.id);
   try {
     const owned = await ownedLead(req.user.id, req.params.id);
     if (owned.error) return res.status(403).json({ error: owned.error });
@@ -2211,7 +2222,23 @@ router.post("/api/leads/:id/convert", auth, (_req, res) => {
   });
 });
 
+/**
+ * Raise a commission when a referred lead converts. Called from every
+ * conversion path so it cannot be forgotten on one of them. Never throws into
+ * the request: a commission that failed to raise is a finance problem to fix,
+ * not a reason to fail the conversion the counsellor just did.
+ */
+async function commissionOnConvert(req, leadId) {
+  try {
+    const commission = await raiseCommissionForLead(leadId, { branchId: req.scope?.branchId });
+    if (commission) await audit(req, "commission.raised", "partner_commissions", commission.id, { leadId });
+  } catch (error) {
+    console.error("commission raise failed for lead", leadId, error.message || error);
+  }
+}
+
 router.post("/api/counselor/leads/:id/convert", counselorAuth, async (req, res) => {
+  void commissionOnConvert(req, req.params.id);
   try {
     const owned = await ownedCounselorLead(req.user.id, req.params.id);
     if (owned.error) return res.status(403).json({ error: owned.error });
@@ -3454,7 +3481,7 @@ router.post("/api/leads/:id/branch", [session, requireRole(ADMIN_ROLES, "Admin")
  * Same response shape as /api/state so the screens need no special casing;
  * everything outside finance and HR comes back empty.
  */
-router.get("/api/hr/state", [session, requireRole([ROLES.ACCOUNTANT], "Accountant"), branchScope], async (req, res) => {
+router.get("/api/hr/state", [session, requireRole([ROLES.ACCOUNTANT, ...ADMIN_ROLES], "Finance"), branchScope], async (req, res) => {
   try {
     const [leave, attendance, salary, counselors, users] = await Promise.all([
       scopedRows("counselor_leave_requests", "applied_on DESC", req.scope),
@@ -3486,6 +3513,168 @@ router.get("/api/hr/state", [session, requireRole([ROLES.ACCOUNTANT], "Accountan
     });
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not load finance data" });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Partners — Agents and Freelancers
+//
+// One entity, two types. Created by an admin; the LOGIN is attached only by a
+// Super Admin, matching the client's rule: "agents/freelancers will be very
+// limited, that too upon activation from super admin only."
+// ---------------------------------------------------------------------------
+
+router.get("/api/partners", auth, async (req, res) => {
+  try {
+    res.json({ partners: await listPartners(req.scope) });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not load partners" });
+  }
+});
+
+router.post("/api/partners", auth, async (req, res) => {
+  try {
+    const fullName = String(req.body.fullName || "").trim();
+    if (!fullName) return res.status(400).json({ error: "A partner needs a name." });
+
+    const type = String(req.body.type || "agent");
+    if (!["agent", "freelancer"].includes(type)) return res.status(400).json({ error: "Type must be agent or freelancer." });
+
+    const branchId = req.body.branchId || (req.scope.allBranches ? null : req.scope.branchId);
+    if (branchId && !(await branchExists(branchId))) return res.status(400).json({ error: "Unknown branch." });
+    if (!req.scope.allBranches && !req.scope.branchIds.includes(String(branchId || ""))) {
+      return res.status(403).json({ error: "You can only add partners to your own branches." });
+    }
+
+    const code = await allocateReferralCode(fullName);
+    const { rows } = await pool.query(
+      `INSERT INTO partners
+         (type, referral_code, full_name, business_name, email, phone, branch_id,
+          commission_rate, commission_basis, onboarded_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,
+      [
+        type, code, fullName,
+        String(req.body.businessName || "").trim() || null,
+        String(req.body.email || "").trim().toLowerCase() || null,
+        String(req.body.phone || "").trim() || null,
+        branchId,
+        Number(req.body.commissionRate) || 0,
+        String(req.body.commissionBasis || "per_enrollment"),
+        req.user.id,
+      ],
+    );
+    await audit(req, "partner.create", "partners", rows[0].id, { fullName, type, code });
+    res.json({ partner: rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not create partner" });
+  }
+});
+
+router.patch("/api/partners/:id", auth, async (req, res) => {
+  try {
+    const fields = [];
+    const params = [req.params.id];
+    const map = {
+      fullName: "full_name", businessName: "business_name", email: "email", phone: "phone",
+      commissionRate: "commission_rate", commissionBasis: "commission_basis",
+      isActive: "is_active", verificationStatus: "verification_status",
+    };
+    for (const [key, column] of Object.entries(map)) {
+      if (req.body[key] === undefined) continue;
+      params.push(req.body[key]);
+      fields.push(`${column} = $${params.length}`);
+    }
+    if (!fields.length) return res.status(400).json({ error: "Nothing to update." });
+
+    const { rows } = await pool.query(`UPDATE partners SET ${fields.join(", ")} WHERE id = $1 RETURNING *`, params);
+    if (!rows[0]) return res.status(404).json({ error: "Partner not found." });
+    await audit(req, "partner.update", "partners", req.params.id, req.body);
+    res.json({ partner: rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not update partner" });
+  }
+});
+
+/**
+ * Attach or revoke a partner's login. SUPER ADMIN ONLY.
+ *
+ * This is the gate the client asked for. It is also the moment an external
+ * person gains access to data, so it is audited and nothing else in the system
+ * can do it.
+ */
+router.put("/api/partners/:id/login", superAdminAuth, async (req, res) => {
+  try {
+    const { rows: found } = await pool.query("SELECT * FROM partners WHERE id = $1", [req.params.id]);
+    const partner = found[0];
+    if (!partner) return res.status(404).json({ error: "Partner not found." });
+
+    if (req.body.enabled === false) {
+      await pool.query("UPDATE partners SET login_enabled = FALSE WHERE id = $1", [partner.id]);
+      await audit(req, "partner.login.revoke", "partners", partner.id, {});
+      return res.json({ ok: true, loginEnabled: false });
+    }
+
+    const email = String(req.body.email || partner.email || "").trim().toLowerCase();
+    const password = String(req.body.password || "");
+    if (!email) return res.status(400).json({ error: "An email is required to create the login." });
+    if (!partner.user_id && password.length < 6) {
+      return res.status(400).json({ error: "Set a password of at least 6 characters." });
+    }
+
+    let userId = partner.user_id;
+    if (!userId) {
+      const existing = await pool.query("SELECT id FROM auth_users WHERE lower(email) = $1", [email]);
+      if (existing.rows[0]) return res.status(400).json({ error: "An account with this email already exists." });
+      userId = `partner-${crypto.randomUUID()}`;
+      await pool.query(
+        "INSERT INTO auth_users (id, email, password, user_metadata) VALUES ($1,$2,$3,$4::jsonb)",
+        [userId, email, hashPassword(password), JSON.stringify({ first_name: partner.full_name, last_name: "" })],
+      );
+      await jsonUpsert("user_roles", { id: `role-${userId}`, user_id: userId, role: "partner", branch_id: partner.branch_id });
+    } else if (password.length >= 6) {
+      await pool.query("UPDATE auth_users SET password = $2 WHERE id = $1", [userId, hashPassword(password)]);
+    }
+
+    await pool.query(
+      `UPDATE partners
+          SET user_id = $2, email = $3, login_enabled = TRUE,
+              activated_by = $4, activated_at = now(),
+              verification_status = CASE WHEN verification_status = 'pending' THEN 'verified' ELSE verification_status END,
+              can_view_student_status = COALESCE($5, can_view_student_status)
+        WHERE id = $1`,
+      [partner.id, userId, email, req.user.id,
+       req.body.canViewStudentStatus === undefined ? null : Boolean(req.body.canViewStudentStatus)],
+    );
+    await audit(req, "partner.login.activate", "partners", partner.id, { email });
+    res.json({ ok: true, loginEnabled: true, userId });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not activate partner login" });
+  }
+});
+
+/**
+ * Resolve a referral code without signing in.
+ *
+ * Used by the /r/<CODE> link and by the code box in the student chat, so the
+ * student can be shown "Referred by Rajesh Kumar — is that right?" before the
+ * code is committed. Confirming the name at entry is the cheapest moment to
+ * catch a typo, and a mistyped code is a commission dispute later.
+ */
+router.get("/api/referral/:code", async (req, res) => {
+  const partner = await partnerByCode(req.params.code);
+  if (!partner) return res.status(404).json({ error: "That referral code was not recognised." });
+  res.json({ valid: true, partner: { name: partner.business_name || partner.full_name, type: partner.type } });
+});
+
+/** Attach a referral code to an existing lead. Admin-side correction path. */
+router.post("/api/leads/:id/referral", auth, async (req, res) => {
+  try {
+    const result = await attachReferral(req.params.id, req.body.code, { source: "manual" });
+    await audit(req, "lead.referral", "student_leads", req.params.id, result);
+    if (!result.ok) return res.status(400).json({ error: result.reason || "Referral not accepted.", outcome: result.outcome });
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not attach referral" });
   }
 });
 

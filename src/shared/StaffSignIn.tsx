@@ -14,12 +14,10 @@ import { HOME_FOR_ROLE, setToken, setStoredUser, type PortalRole } from "./lib/s
  */
 
 /** Roles that have a portal to land in today. */
-const STAFF_ROLES = ["super_admin", "admin", "branch_head", "counselor", "telecaller", "accountant"];
+const STAFF_ROLES = ["super_admin", "admin", "branch_head", "counselor", "telecaller", "accountant", "partner"];
 
 /** Roles that exist in the database but have no screens built yet. */
-const NOT_BUILT_YET: Record<string, string> = {
-  partner: "Partners do not sign in — you receive a status link instead.",
-};
+const NOT_BUILT_YET: Record<string, string> = {};
 
 export default function StaffSignIn() {
   const [email, setEmail] = useState("");
@@ -73,7 +71,7 @@ export default function StaffSignIn() {
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
           <h1 className="text-2xl font-bold text-white">Fly Masters</h1>
-          <p className="mt-1 text-sm text-slate-400">Staff sign in</p>
+          <p className="mt-1 text-sm text-slate-400">Sign in</p>
         </div>
 
         <form

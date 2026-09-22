@@ -2,6 +2,8 @@ import { NavLink, Outlet } from "react-router-dom";
 import {
   Bell,
   Building2,
+  Handshake,
+  Receipt,
   ClipboardList,
   GraduationCap,
   AlarmClock,
@@ -61,12 +63,16 @@ const groups = [
     items: [
       { to: "/users", label: "Users", icon: Users, end: false },
       { to: "/branches", label: "Branches", icon: Building2, end: false, roles: ADMIN_ONLY },
+      { to: "/partners", label: "Agents & Freelancers", icon: Handshake, end: false, roles: OPERATIONS },
     ],
   },
   {
     title: "Finance & HR",
     roles: ALL,
-    items: [{ to: "/hr", label: "HR & Payroll", icon: Wallet, end: false }],
+    items: [
+      { to: "/finance", label: "Commissions", icon: Receipt, end: false },
+      { to: "/hr", label: "HR & Payroll", icon: Wallet, end: false },
+    ],
   },
   {
     title: "Catalog",

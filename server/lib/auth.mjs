@@ -21,12 +21,11 @@ export const ROLES = Object.freeze({
   COUNSELOR: "counselor",
   TELECALLER: "telecaller",
   ACCOUNTANT: "accountant",
+  // Agents and freelancers. One role, one table, two types. They sign in only
+  // after a Super Admin activates the account, and they see nothing but the
+  // students they themselves referred.
+  PARTNER: "partner",
   STUDENT: "student",
-  // NOTE: there is deliberately no "partner" login role. Agents and
-  // freelancers never sign in — they get a referral code, a read-only status
-  // link and WhatsApp updates. They live in the `partners` table, which needs
-  // no account. The database CHECK constraint still permits the value so the
-  // migration stays reversible, but nothing can assign it.
 });
 
 export const ALL_ROLES = Object.values(ROLES);
@@ -121,6 +120,36 @@ export function requireRole(roles, label = "Authorized") {
 }
 
 /**
+ * Resolves the signed-in partner and their own-records-only scope.
+ *
+ * This is the narrowest scope in the system and the only one held by someone
+ * outside the company. It is keyed to the partner's own id, never to a branch:
+ * two agents in the same branch compete with each other, so branch-level
+ * visibility would leak one's pipeline to the other.
+ */
+export async function partnerScope(req, res, next) {
+  try {
+    const { rows } = await pool.query(
+      "SELECT * FROM partners WHERE user_id = $1",
+      [String(req.user.id)],
+    );
+    const partner = rows[0];
+    if (!partner) return res.status(403).json({ error: "No partner record for this account." });
+    if (!partner.is_active || !partner.login_enabled) {
+      return res.status(403).json({ error: "This partner account is not active. Ask the Fly Masters team." });
+    }
+    if (partner.verification_status === "suspended" || partner.verification_status === "terminated") {
+      return res.status(403).json({ error: "This partner account is suspended." });
+    }
+    req.partner = partner;
+    req.scope = { allBranches: false, branchIds: [], branchId: partner.branch_id || null, partnerId: partner.id };
+    next();
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not verify partner account" });
+  }
+}
+
+/**
  * Attaches req.scope — the branch filter every data route must apply.
  *   { allBranches: true }                -> super_admin / admin: no filter
  *   { allBranches: false, branchId: id } -> everyone else: WHERE branch_id = id
@@ -201,4 +230,5 @@ export const telecallerAuth = [session, requireRole([ROLES.TELECALLER], "Telecal
 export const branchHeadAuth = [session, requireRole([ROLES.BRANCH_HEAD, ...ADMIN_ROLES], "Branch head"), branchScope];
 export const accountantAuth = [session, requireRole([ROLES.ACCOUNTANT, ...ADMIN_ROLES], "Accountant"), branchScope];
 export const studentAuth = [session, requireRole([ROLES.STUDENT], "Student")];
+export const partnerAuth = [session, requireRole([ROLES.PARTNER], "Partner"), partnerScope];
 export const staffAuth = [session, requireRole(STAFF_ROLES, "Staff"), branchScope];

@@ -10,6 +10,8 @@
  *   routes/core.mjs       /api/auth/*, /api/admin-side, /api/telecaller/*, /api/whatsapp/*
  *   routes/counselor.mjs  /api/counselor/*
  *   routes/student.mjs    /__auth, /__session, /__local_db, /__storage
+ *   routes/partner.mjs    /api/partner/*   (agents and freelancers)
+ *   routes/finance.mjs    /api/finance/*   (accountants)
  */
 import express from "express";
 import cors from "cors";
@@ -23,6 +25,8 @@ import { pool } from "./lib/db.mjs";
 import coreRoutes, { startUnassignedWatcher } from "./routes/core.mjs";
 import counselorRoutes from "./routes/counselor.mjs";
 import studentRoutes from "./routes/student.mjs";
+import partnerRoutes from "./routes/partner.mjs";
+import financeRoutes from "./routes/finance.mjs";
 
 assertBootConfig();
 
@@ -50,6 +54,8 @@ app.get("/api/health", async (_req, res) => {
 
 // The student handler claims only its own /__ paths, so it can run first.
 app.use(studentRoutes);
+app.use(partnerRoutes);
+app.use(financeRoutes);
 app.use(coreRoutes);
 app.use(counselorRoutes);
 
@@ -62,6 +68,8 @@ app.use("/api", (_req, res) => {
 const distDir = path.join(ROOT, "dist");
 if (existsSync(distDir)) {
   app.use(express.static(distDir, { maxAge: IS_PRODUCTION ? "1y" : 0, index: false }));
+  // /r/<CODE> referral links are client-side routes, so they fall through
+  // to the SPA like any other page.
   app.get(/^(?!\/(api|__)).*/, (_req, res) => {
     res.sendFile(path.join(distDir, "index.html"));
   });

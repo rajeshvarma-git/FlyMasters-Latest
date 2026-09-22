@@ -39,6 +39,7 @@ export default defineConfig(({ mode }) => {
         "@counselor": path.resolve(__dirname, "./src/portals/counselor"),
         "@telecaller": path.resolve(__dirname, "./src/portals/telecaller"),
         "@student": path.resolve(__dirname, "./src/portals/student"),
+        "@partner": path.resolve(__dirname, "./src/portals/partner"),
       },
     },
     build: {

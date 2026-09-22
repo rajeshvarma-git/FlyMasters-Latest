@@ -1,6 +1,7 @@
 import { Suspense, lazy, useMemo } from "react";
 import { BrowserRouter } from "react-router-dom";
 import StaffSignIn from "./shared/StaffSignIn";
+import ReferralLanding from "./shared/ReferralLanding";
 
 /**
  * Platform shell.
@@ -18,20 +19,24 @@ const AdminApp = lazy(() => import("@admin/App"));
 const CounselorApp = lazy(() => import("@counselor/App"));
 const TelecallerApp = lazy(() => import("@telecaller/App"));
 const StudentApp = lazy(() => import("@student/App"));
+const PartnerApp = lazy(() => import("@partner/App"));
 
-type PortalKey = "staff" | "admin" | "counselor" | "telecaller" | "student";
+type PortalKey = "referral" | "staff" | "admin" | "counselor" | "telecaller" | "partner" | "student";
 
-const PORTALS: Record<"admin" | "counselor" | "telecaller", { basename: string }> = {
+const PORTALS: Record<"admin" | "counselor" | "telecaller" | "partner", { basename: string }> = {
   admin: { basename: "/admin" },
   counselor: { basename: "/counselor" },
   telecaller: { basename: "/telecaller" },
+  partner: { basename: "/partner" },
 };
 
 function resolvePortal(pathname: string): PortalKey {
+  if (pathname.startsWith("/r/")) return "referral";
   if (pathname === "/staff" || pathname.startsWith("/staff/")) return "staff";
   if (pathname === "/admin" || pathname.startsWith("/admin/")) return "admin";
   if (pathname === "/counselor" || pathname.startsWith("/counselor/")) return "counselor";
   if (pathname === "/telecaller" || pathname.startsWith("/telecaller/")) return "telecaller";
+  if (pathname === "/partner" || pathname.startsWith("/partner/")) return "partner";
   return "student";
 }
 
@@ -47,6 +52,10 @@ export default function App() {
   // Read once per load. Crossing portals is a full navigation, which is correct:
   // the portals do not share React state and each mounts under its own basename.
   const portal = useMemo(() => resolvePortal(window.location.pathname), []);
+
+  if (portal === "referral") {
+    return <ReferralLanding />;
+  }
 
   if (portal === "staff") {
     return (
@@ -68,10 +77,13 @@ export default function App() {
 
   const { basename } = PORTALS[portal];
   const Portal =
-    portal === "admin" ? AdminApp : portal === "counselor" ? CounselorApp : TelecallerApp;
+    portal === "admin" ? AdminApp
+      : portal === "counselor" ? CounselorApp
+      : portal === "partner" ? PartnerApp
+      : TelecallerApp;
 
   return (
-    <div className="staff-shell">
+    <div className={portal === "partner" ? "" : "staff-shell"}>
       <BrowserRouter basename={basename}>
         <Suspense fallback={<Loading />}>
           <Portal />

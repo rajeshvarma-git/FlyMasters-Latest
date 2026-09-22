@@ -22,7 +22,8 @@
       "@admin/*": ["./src/portals/admin/*"],
       "@counselor/*": ["./src/portals/counselor/*"],
       "@telecaller/*": ["./src/portals/telecaller/*"],
-      "@student/*": ["./src/portals/student/*"]
+      "@student/*": ["./src/portals/student/*"],
+      "@partner/*": ["./src/portals/partner/*"]
     }
   },
   "include": ["src", "vite.config.ts"]
