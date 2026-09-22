@@ -15,6 +15,8 @@ import { readFileSync, existsSync } from "fs";
 import path from "path";
 import { buildCatalogRecords, parseCatalogCsv } from "../lib/csvImport.mjs";
 import { createWhatsAppService } from "../lib/whatsappService.mjs";
+import { runEvent as runCommsEvent } from "../lib/automation.mjs";
+import { raiseAlert } from "../lib/alerts.mjs";
 import { pool, jsonTable, jsonUpsert } from "../lib/db.mjs";
 import {
   ROOT as root,
@@ -858,6 +860,97 @@ async function syncOwnershipOnAssignment(before, after) {
     await transferTelecallerOwnership(after, after.assigned_telecaller_id);
   }
   await whatsapp.syncConversationForLead(after);
+
+  // CRM 2.6.1 and 2.7: the person who just became responsible for this lead
+  // gets an alert, and any automation rule bound to the event fires. Both are
+  // best-effort — an alert or a template failure must never fail the
+  // assignment the user asked for.
+  if (counselorChanged && after.assigned_counselor_id) {
+    await onLeadOwnerChanged(after, "counselor", after.assigned_counselor_id, Boolean(before.assigned_counselor_id));
+  }
+  if (telecallerChanged && after.assigned_telecaller_id) {
+    await onLeadOwnerChanged(after, "telecaller", after.assigned_telecaller_id, Boolean(before.assigned_telecaller_id));
+  }
+}
+
+/**
+ * Fires a communications event for a lead, with the placeholders every
+ * template can rely on. Never throws.
+ */
+async function fireLeadEvent(event, lead, extra = {}) {
+  try {
+    const name = lead.full_name || [lead.first_name, lead.last_name].filter(Boolean).join(" ") || lead.name || lead.phone || "there";
+    await runCommsEvent(
+      event,
+      {
+        studentId: String(lead.id),
+        branchId: lead.branch_id || null,
+        country: (lead.preferred_countries || [])[0] || lead.preferred_country || null,
+        context: {
+          first_name: lead.first_name || String(name).split(" ")[0],
+          full_name: name,
+          phone: lead.phone || "",
+          email: lead.email || "",
+          country: (lead.preferred_countries || [])[0] || lead.preferred_country || "",
+          status: lead.lead_status || "",
+          ...(extra.context || {}),
+        },
+        recipients: {
+          student: { id: String(lead.id), address: lead.whatsapp_number || lead.phone || "" },
+          counselor: extra.counselorId ? { id: String(extra.counselorId), address: "" } : undefined,
+          telecaller: extra.telecallerId ? { id: String(extra.telecallerId), address: "" } : undefined,
+        },
+      },
+      { whatsapp, notify },
+    );
+  } catch (error) {
+    console.error(`lead event ${event} failed:`, error.message || error);
+  }
+}
+
+/**
+ * One place where a change of owner turns into an alert and an automation
+ * event. Wrapped so nothing here can throw into the request path.
+ */
+async function onLeadOwnerChanged(lead, role, ownerId, hadOwnerBefore) {
+  try {
+    const transferred = hadOwnerBefore;
+    const name = lead.full_name || lead.name || lead.phone || "a lead";
+    await raiseAlert({
+      userId: String(ownerId),
+      role,
+      branchId: lead.branch_id || null,
+      alertType: transferred ? "lead_transferred" : "lead_assigned",
+      title: transferred ? `Transferred to you: ${name}` : `New lead assigned: ${name}`,
+      body: lead.lead_status === "hot" ? "Marked hot — call today." : "",
+      link: `/leads/${lead.id}`,
+      entityType: "student_leads",
+      entityId: lead.id,
+    });
+
+    await runCommsEvent(
+      transferred ? "lead_transferred" : "lead_assigned",
+      {
+        studentId: String(lead.id),
+        branchId: lead.branch_id || null,
+        country: lead.preferred_country || lead.country || null,
+        context: {
+          first_name: String(name).split(" ")[0],
+          full_name: name,
+          phone: lead.phone || "",
+          country: lead.preferred_country || lead.country || "",
+          counsellor: lead.assigned_counselor_name || "",
+        },
+        recipients: {
+          student: { id: String(lead.id), address: lead.whatsapp_number || lead.phone || "" },
+          [role]: { id: String(ownerId), address: "" },
+        },
+      },
+      { whatsapp, notify },
+    );
+  } catch (error) {
+    console.error("lead owner change side-effects failed:", error.message || error);
+  }
 }
 
 function counselorKeyIds(counselor) {
@@ -1086,6 +1179,28 @@ async function applyLeadPatch(id, patch) {
   const storeId = String(shared.id || id);
   const merged = { ...shared, ...patch, id: storeId, updated_at: now };
   await jsonUpsert("student_leads", merged);
+
+  // CRM 2.6.1 / 2.7 events that depend on what the status changed TO.
+  const becameHot = patch.lead_status === "hot" && shared.lead_status !== "hot";
+  const becameStudent = merged.lead_status === "converted" && shared.lead_status !== "converted";
+  if (becameHot) {
+    const owner = merged.assigned_telecaller_id || merged.assigned_counselor_id;
+    if (owner) {
+      await raiseAlert({
+        userId: String(owner),
+        role: merged.assigned_telecaller_id ? "telecaller" : "counselor",
+        branchId: merged.branch_id || null,
+        alertType: "hot_lead_update",
+        title: `Hot lead: ${merged.first_name || merged.full_name || merged.phone || "lead"}`,
+        body: "Marked hot — this one needs a call today.",
+        link: `/leads/${storeId}`,
+        entityType: "student_leads",
+        entityId: storeId,
+      }).catch(() => undefined);
+    }
+  }
+  if (becameStudent) await fireLeadEvent("student_converted", merged);
+
   return merged;
 }
 
@@ -2140,6 +2255,12 @@ router.post("/api/leads", auth, async (req, res) => {
   if (telecallerId || counselorId) {
     await whatsapp.syncConversationForLead(payload);
   }
+
+  // CRM 2.7: a new lead is an automation event like any other. Rules bound to
+  // lead_created fire here; if none are switched on, nothing happens.
+  await fireLeadEvent("lead_created", payload, { telecallerId, counselorId });
+  if (telecallerId) await onLeadOwnerChanged(payload, "telecaller", telecallerId, false);
+  if (counselorId) await onLeadOwnerChanged(payload, "counselor", counselorId, false);
   if (telecallerId) {
     const waNote = payload.phone || payload.whatsapp_number ? " WhatsApp chat is in your telecaller inbox." : "";
     await notify(
@@ -3677,5 +3798,12 @@ router.post("/api/leads/:id/referral", auth, async (req, res) => {
     res.status(500).json({ error: error.message || "Could not attach referral" });
   }
 });
+
+/**
+ * Exposed so the communications module (CRM 2.7) sends through the same
+ * WhatsApp credentials and the same in-app notifier as the rest of the
+ * platform, rather than standing up a second client with its own config.
+ */
+export { whatsapp, notify };
 
 export default router;

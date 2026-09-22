@@ -34,6 +34,11 @@ export interface Referral {
   country: string;
   referredOn: string;
   stage?: string;
+  /** CRM 2.6.2 — only present when the Super Admin has enabled that field for this agent. */
+  applicationStatus?: { code: string; label: string; color: string } | null;
+  visaStatus?: { code: string; label: string; color: string } | null;
+  nextStep?: { code: string; label: string; color: string } | null;
+  nextStepNote?: string;
 }
 
 export interface CommissionNote {

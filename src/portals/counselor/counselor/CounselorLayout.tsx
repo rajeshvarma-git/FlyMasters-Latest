@@ -16,6 +16,7 @@ import {
   User,
   Users,
   X,
+  ClipboardCheck,
 } from "lucide-react";
 import { useState } from "react";
 import { useAuth } from "@counselor/context/AuthContext";
@@ -23,6 +24,8 @@ import { displayName, initials } from "@counselor/lib/utils";
 import { Button } from "@counselor/components/ui/Button";
 import { useLocalStore } from "@counselor/lib/store";
 import NotificationBell from "@counselor/counselor/NotificationBell";
+import AlertCenter from "@shared/components/AlertCenter";
+import { api } from "@counselor/lib/api";
 
 const work = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, end: true },
@@ -32,6 +35,7 @@ const work = [
   { to: "/chat", label: "Student Chat", icon: MessageCircle },
   { to: "/whatsapp/leads", label: "WhatsApp Leads", icon: Phone },
   { to: "/whatsapp/students", label: "WhatsApp Students", icon: MessageCircle },
+  { to: "/checklists", label: "Checklists & status", icon: ClipboardCheck },
   { to: "/documents", label: "Documents", icon: FileText },
   { to: "/applications", label: "Applications", icon: BookOpen },
   { to: "/notifications", label: "Notifications", icon: Bell },
@@ -157,6 +161,7 @@ export default function CounselorLayout() {
       <main className="flex-1 overflow-y-auto p-4 pt-14 md:p-8 md:pt-8">
         <div className="mb-4 flex justify-end md:mb-6">
           <NotificationBell />
+            <AlertCenter fetchJson={api} />
         </div>
         <Outlet />
       </main>

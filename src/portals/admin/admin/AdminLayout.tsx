@@ -1,7 +1,16 @@
 import { NavLink, Outlet } from "react-router-dom";
 import {
   Bell,
+  BellRing,
   Building2,
+  FileText,
+  Flag,
+  Eye,
+  History,
+  ListChecks,
+  MessageSquareText,
+  ScrollText,
+  Workflow,
   Handshake,
   Receipt,
   ClipboardList,
@@ -19,12 +28,14 @@ import {
   Wallet,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { api } from "@admin/lib/api";
 import { useAuth } from "@admin/context/AuthContext";
 import { displayName, initials, isConvertedStudent, openLeadNeedsOwner } from "@admin/lib/utils";
 import { Button } from "@admin/components/ui/Button";
 import { useAdminStore } from "@admin/lib/store";
 import NotificationBell from "@admin/components/NotificationBell";
+import AlertCenter from "@shared/components/AlertCenter";
 
 /**
  * Menu visibility by role.
@@ -75,11 +86,27 @@ const groups = [
     ],
   },
   {
-    title: "Catalog",
+    // CRM 2.6 — what the Super Admin configures once and every branch then uses.
+    title: "Catalog & setup",
     roles: OPERATIONS,
     items: [
       { to: "/universities", label: "Universities", icon: Plane, end: false },
-      { to: "/checklists", label: "Document lists", icon: ClipboardList, end: false },
+      { to: "/documents-master", label: "Document master", icon: FileText, end: false, roles: ADMIN_ONLY },
+      { to: "/checklist-builder", label: "Country checklists", icon: ClipboardList, end: false, roles: ADMIN_ONLY },
+      { to: "/statuses", label: "Status words", icon: ListChecks, end: false, roles: ADMIN_ONLY },
+      { to: "/checklists", label: "Document lists (legacy)", icon: ClipboardList, end: false, roles: ADMIN_ONLY },
+    ],
+  },
+  {
+    // CRM 2.7 — everything that leaves the platform as a message.
+    title: "Communication",
+    roles: OPERATIONS,
+    items: [
+      { to: "/templates", label: "Message templates", icon: MessageSquareText, end: false, roles: ADMIN_ONLY },
+      { to: "/automation", label: "Automation", icon: Workflow, end: false, roles: ADMIN_ONLY },
+      { to: "/comms-log", label: "Delivery log", icon: ScrollText, end: false },
+      { to: "/supervision", label: "Chat supervision", icon: Eye, end: false, roles: ADMIN_ONLY },
+      { to: "/escalations", label: "Reported chats", icon: Flag, end: false, roles: ADMIN_ONLY },
     ],
   },
   {
@@ -87,6 +114,8 @@ const groups = [
     roles: OPERATIONS,
     items: [
       { to: "/notifications", label: "Notifications", icon: Bell, end: false },
+      { to: "/alert-settings", label: "Alerts", icon: BellRing, end: false },
+      { to: "/change-history", label: "Change history", icon: History, end: false, developerOnly: true },
       { to: "/help", label: "Help", icon: HelpCircle, end: false },
     ],
   },
@@ -95,6 +124,14 @@ const groups = [
 export default function AdminLayout() {
   const { user, signOut } = useAuth();
   const [open, setOpen] = useState(false);
+  // The configuration history is the developer's, not the whole office's.
+  // The server decides; this only hides the menu entry so nobody meets a 403.
+  const [isDeveloper, setIsDeveloper] = useState(false);
+  useEffect(() => {
+    void api<{ developer: boolean }>("/me/capabilities")
+      .then((data) => setIsDeveloper(Boolean(data.developer)))
+      .catch(() => setIsDeveloper(false));
+  }, []);
   const store = useAdminStore();
   const pendingDocs = store.documents.filter((item) => item.status === "uploaded" || item.status === "pending").length;
   const pendingLeave = store.leave.filter((item) => item.status === "pending").length;
@@ -118,7 +155,9 @@ export default function AdminLayout() {
           .map((group) => ({
             ...group,
             items: group.items.filter(
-              (item: any) => !item.roles || item.roles.includes(String(user?.role)),
+              (item: any) =>
+                (!item.roles || item.roles.includes(String(user?.role))) &&
+                (!item.developerOnly || isDeveloper),
             ),
           }))
           .filter((group) => group.items.length > 0)
@@ -199,6 +238,7 @@ export default function AdminLayout() {
       <main className="flex-1 overflow-y-auto">
         <div className="sticky top-0 z-30 flex items-center justify-end border-b border-slate-200 bg-slate-50 px-4 py-2 md:px-8">
           <NotificationBell />
+            <AlertCenter fetchJson={api} />
         </div>
         <div className="p-4 pt-14 md:p-8 md:pt-8">
         {store.error && (

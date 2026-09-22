@@ -4,6 +4,8 @@ import { useAuth } from "@telecaller/context/AuthContext";
 import { displayName, initials, isConvertedStudent, isSystemWhatsAppMessage } from "@telecaller/lib/utils";
 import { useStore } from "@telecaller/lib/store";
 import NotificationBell from "@telecaller/components/NotificationBell";
+import AlertCenter from "@shared/components/AlertCenter";
+import { api } from "@telecaller/lib/api";
 
 const items = [
   { to: "/queue", label: "My queue", icon: PhoneCall },
@@ -64,6 +66,7 @@ export default function Layout() {
           </nav>
 
           <NotificationBell />
+          <AlertCenter fetchJson={api} />
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-sky-500/20 text-xs font-bold text-sky-300">
             {initials(user?.firstName, user?.lastName, user?.email)}
           </div>

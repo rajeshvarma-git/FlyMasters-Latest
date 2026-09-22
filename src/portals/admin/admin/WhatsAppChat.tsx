@@ -9,6 +9,7 @@ import { counselorLabel, displayName, telecallerLabel } from "@admin/lib/utils";
 import { Card } from "@admin/components/ui/Card";
 import { Button } from "@admin/components/ui/Button";
 import type { Lead } from "@admin/lib/types";
+import TemplatePicker from "@shared/components/TemplatePicker";
 
 function leadLabel(lead: Lead | null | undefined, phone?: string) {
   if (!lead) return phone ? `+${phone.slice(-10)}` : "Unknown contact";
@@ -227,6 +228,12 @@ export default function WhatsAppChat() {
                           void sendReply();
                         }
                       }}
+                    />
+                    <TemplatePicker
+                      fetchJson={api}
+                      channel="whatsapp"
+                      context={{ first_name: String(lead?.first_name || "") }}
+                      onPick={(text) => setDraft(text)}
                     />
                     <Button disabled={sending || !draft.trim()} onClick={() => void sendReply()}>
                       Send

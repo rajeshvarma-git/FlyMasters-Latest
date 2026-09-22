@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { api, type Referral } from "@partner/lib/api";
+import { StatusChip } from "@shared/components/StatusBar";
 
 const STAGE_TONE: Record<string, string> = {
   New: "bg-slate-100 text-slate-700",
@@ -13,11 +14,19 @@ const STAGE_TONE: Record<string, string> = {
 export default function Referrals() {
   const [rows, setRows] = useState<Referral[]>([]);
   const [statusVisible, setStatusVisible] = useState(false);
+  // CRM 2.6.2 — the Super Admin decides, per agent account, which of these
+  // the agent sees. The server sends only what is allowed; this just knows
+  // which columns to draw.
+  const [visibility, setVisibility] = useState({ application: false, visa: false, nextStep: false, documents: false });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    void api<{ referrals: Referral[]; statusVisible: boolean }>("/referrals")
-      .then((d) => { setRows(d.referrals); setStatusVisible(d.statusVisible); })
+    void api<{ referrals: Referral[]; statusVisible: boolean; visibility?: typeof visibility }>("/referrals")
+      .then((d) => {
+        setRows(d.referrals);
+        setStatusVisible(d.statusVisible);
+        if (d.visibility) setVisibility(d.visibility);
+      })
       .finally(() => setLoading(false));
   }, []);
 
@@ -47,6 +56,9 @@ export default function Referrals() {
               <th className="px-5 py-2">Interest</th>
               <th className="px-5 py-2">Referred</th>
               {statusVisible ? <th className="px-5 py-2">Progress</th> : null}
+              {statusVisible && visibility.application ? <th className="px-5 py-2">Application</th> : null}
+              {statusVisible && visibility.visa ? <th className="px-5 py-2">Visa</th> : null}
+              {statusVisible && visibility.nextStep ? <th className="px-5 py-2">Next step</th> : null}
             </tr>
           </thead>
           <tbody>
@@ -62,6 +74,27 @@ export default function Referrals() {
                     <span className={`rounded-full px-2 py-1 text-xs ${STAGE_TONE[row.stage || "New"] || STAGE_TONE.New}`}>
                       {row.stage}
                     </span>
+                  </td>
+                ) : null}
+                {statusVisible && visibility.application ? (
+                  <td className="px-5 py-3">
+                    {row.applicationStatus
+                      ? <StatusChip label={row.applicationStatus.label} color={row.applicationStatus.color} />
+                      : <span className="text-xs text-slate-400">—</span>}
+                  </td>
+                ) : null}
+                {statusVisible && visibility.visa ? (
+                  <td className="px-5 py-3">
+                    {row.visaStatus
+                      ? <StatusChip label={row.visaStatus.label} color={row.visaStatus.color} />
+                      : <span className="text-xs text-slate-400">—</span>}
+                  </td>
+                ) : null}
+                {statusVisible && visibility.nextStep ? (
+                  <td className="px-5 py-3">
+                    {row.nextStep && <StatusChip label={row.nextStep.label} color={row.nextStep.color} />}
+                    {row.nextStepNote && <p className="mt-1 text-xs text-slate-600">{row.nextStepNote}</p>}
+                    {!row.nextStep && !row.nextStepNote && <span className="text-xs text-slate-400">—</span>}
                   </td>
                 ) : null}
               </tr>

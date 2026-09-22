@@ -22,6 +22,7 @@ import {
   NotificationsPage,
   SalaryPage,
 } from "@counselor/counselor/AccountPages";
+import StudentChecklist from "@counselor/counselor/StudentChecklist";
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: string }> {
   state = { error: "" };
@@ -77,6 +78,7 @@ export default function App() {
             <Route path="whatsapp" element={<Navigate to="/whatsapp/students" replace />} />
             <Route path="whatsapp/leads" element={<WhatsAppLeadsChat />} />
             <Route path="whatsapp/students" element={<WhatsAppStudentsChat />} />
+            <Route path="checklists" element={<StudentChecklist />} />
             <Route path="documents" element={<Documents />} />
             <Route path="documents/setup" element={<DocumentsSetup />} />
             <Route path="applications" element={<Applications />} />

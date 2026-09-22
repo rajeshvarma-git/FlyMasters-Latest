@@ -12,6 +12,8 @@
  *   routes/student.mjs    /__auth, /__session, /__local_db, /__storage
  *   routes/partner.mjs    /api/partner/*   (agents and freelancers)
  *   routes/finance.mjs    /api/finance/*   (accountants)
+ *   routes/config.mjs     /api/config/*, /api/alerts/*   (CRM 2.6 and 2.6.1)
+ *   routes/comms.mjs      /api/comms/*                   (CRM 2.7)
  */
 import express from "express";
 import cors from "cors";
@@ -27,6 +29,8 @@ import counselorRoutes from "./routes/counselor.mjs";
 import studentRoutes from "./routes/student.mjs";
 import partnerRoutes from "./routes/partner.mjs";
 import financeRoutes from "./routes/finance.mjs";
+import configRoutes from "./routes/config.mjs";
+import commsRoutes, { startCommsScheduler } from "./routes/comms.mjs";
 
 assertBootConfig();
 
@@ -56,6 +60,10 @@ app.get("/api/health", async (_req, res) => {
 app.use(studentRoutes);
 app.use(partnerRoutes);
 app.use(financeRoutes);
+// config and comms mount before core so their namespaced paths are not caught
+// by core's older catch-all handlers.
+app.use(configRoutes);
+app.use(commsRoutes);
 app.use(coreRoutes);
 app.use(counselorRoutes);
 
@@ -108,6 +116,12 @@ async function start() {
     startUnassignedWatcher();
   } catch (error) {
     console.error("Alert watcher failed to start:", error.message || error);
+  }
+
+  try {
+    startCommsScheduler();
+  } catch (error) {
+    console.error("Communications scheduler failed to start:", error.message || error);
   }
 }
 

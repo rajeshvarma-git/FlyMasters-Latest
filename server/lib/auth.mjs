@@ -109,6 +109,67 @@ export async function session(req, res, next) {
   }
 }
 
+/**
+ * Accepts EITHER realm's token.
+ *
+ * Staff carry a signed JWT; the student portal still carries an opaque token
+ * in `auth_sessions` (see routes/student.mjs — unifying the two is Phase 1
+ * work and deliberately not done during the merge). A handful of endpoints
+ * are legitimately used by both: a student reading their own status bar, and
+ * a student reporting a conversation. Rather than duplicate those routes per
+ * realm, this middleware resolves whichever token arrived.
+ *
+ * It never widens anyone's access: a student resolved this way gets
+ * role "student", and every route using it still checks ownership.
+ */
+export async function anySession(req, res, next) {
+  const header = req.headers.authorization || "";
+  const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+  if (!token) return res.status(401).json({ error: "Sign in required" });
+
+  try {
+    const claims = jwt.verify(token, JWT_SECRET);
+    const identity = await identityFor(claims.id);
+    if (identity && identity.is_active !== false) {
+      req.user = {
+        id: identity.id,
+        email: identity.email,
+        role: identity.role,
+        branch_id: identity.branch_id || null,
+        branch_ids: (identity.branch_ids || []).map(String).filter(Boolean),
+      };
+      return next();
+    }
+  } catch {
+    // not a staff JWT — fall through to the student realm
+  }
+
+  try {
+    const { rows } = await pool.query(
+      `SELECT s.user_id, s.expires_at, u.email
+         FROM auth_sessions s JOIN auth_users u ON u.id = s.user_id
+        WHERE s.token = $1 LIMIT 1`,
+      [token],
+    );
+    const row = rows[0];
+    if (!row) return res.status(401).json({ error: "Session expired. Sign in again." });
+    if (new Date(row.expires_at).getTime() <= Date.now()) {
+      return res.status(401).json({ error: "Session expired. Sign in again." });
+    }
+    req.user = {
+      id: String(row.user_id),
+      email: row.email,
+      role: ROLES.STUDENT,
+      branch_id: null,
+      branch_ids: [],
+    };
+    req.studentRealm = true;
+    return next();
+  } catch (error) {
+    return res.status(500).json({ error: error.message || "Could not verify session" });
+  }
+}
+
 export function requireRole(roles, label = "Authorized") {
   const allowed = Array.isArray(roles) ? roles : [roles];
   return (req, res, next) => {

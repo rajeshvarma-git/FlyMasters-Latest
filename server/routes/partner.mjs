@@ -68,6 +68,23 @@ router.get("/api/partner/referrals", partnerAuth, async (req, res) => {
       [req.partner.id],
     );
 
+    // CRM 2.6.2: application, visa and next-step status "can be reflected to
+    // the relevant Agent or Freelancer only for their linked students, and this
+    // visibility should be configurable separately by Super Admin for each
+    // Agent or Freelancer account." The four flags below are that switch.
+    const show = {
+      application: req.partner.show_application_status !== false,
+      visa: req.partner.show_visa_status !== false,
+      nextStep: req.partner.show_next_step !== false,
+      documents: req.partner.show_document_status === true,
+    };
+
+    const vocabulary = (await pool.query(
+      "SELECT kind, code, label, color FROM status_vocabulary WHERE is_active AND 'partner' = ANY(visible_to)",
+    ).catch(() => ({ rows: [] }))).rows;
+    const wordFor = (kind, code) =>
+      vocabulary.find((row) => row.kind === kind && row.code === code) || null;
+
     const referrals = rows.map((row) => {
       const lead = row.data || {};
       const base = {
@@ -79,10 +96,22 @@ router.get("/api/partner/referrals", partnerAuth, async (req, res) => {
       // Doc 6.0: status is shown "only when Super Admin has enabled this
       // visibility for that Agent or Freelancer account".
       if (!req.partner.can_view_student_status) return base;
-      return { ...base, stage: publicStage(lead) };
+
+      const detail = { ...base, stage: publicStage(lead) };
+      if (show.application && lead.application_status) {
+        detail.applicationStatus = wordFor("application", lead.application_status);
+      }
+      if (show.visa && lead.visa_status) {
+        detail.visaStatus = wordFor("visa", lead.visa_status);
+      }
+      if (show.nextStep) {
+        if (lead.next_step_status) detail.nextStep = wordFor("next_step", lead.next_step_status);
+        if (lead.next_step_note) detail.nextStepNote = lead.next_step_note;
+      }
+      return detail;
     });
 
-    res.json({ referrals, statusVisible: req.partner.can_view_student_status });
+    res.json({ referrals, statusVisible: req.partner.can_view_student_status, visibility: show });
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not load referrals" });
   }

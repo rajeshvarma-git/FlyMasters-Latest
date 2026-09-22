@@ -26,6 +26,16 @@ import Finance from "@admin/admin/Finance";
 import HR from "@admin/admin/HR";
 import Universities from "@admin/admin/Universities";
 import Checklists from "@admin/admin/Checklists";
+import DocumentMaster from "@admin/admin/DocumentMaster";
+import ChecklistBuilder from "@admin/admin/ChecklistBuilder";
+import StatusVocabulary from "@admin/admin/StatusVocabulary";
+import AlertSettings from "@admin/admin/AlertSettings";
+import MessageTemplates from "@admin/admin/MessageTemplates";
+import Automation from "@admin/admin/Automation";
+import CommsLog from "@admin/admin/CommsLog";
+import ChatSupervision from "@admin/admin/ChatSupervision";
+import Escalations from "@admin/admin/Escalations";
+import ChangeHistory from "@admin/admin/ChangeHistory";
 import Notifications from "@admin/admin/Notifications";
 import Telecallers from "@admin/admin/Telecallers";
 import TelecallerDetail from "@admin/admin/TelecallerDetail";
@@ -95,6 +105,18 @@ export default function App() {
               <Route path="hr" element={<HR />} />
               <Route path="universities" element={<Universities />} />
               <Route path="checklists" element={<Checklists />} />
+              {/* CRM 2.6 — document master, versioned checklists, status words */}
+              <Route path="documents-master" element={<DocumentMaster />} />
+              <Route path="checklist-builder" element={<ChecklistBuilder />} />
+              <Route path="statuses" element={<StatusVocabulary />} />
+              <Route path="alert-settings" element={<AlertSettings />} />
+              {/* CRM 2.7 — templates, automation, supervision */}
+              <Route path="templates" element={<MessageTemplates />} />
+              <Route path="automation" element={<Automation />} />
+              <Route path="comms-log" element={<CommsLog />} />
+              <Route path="supervision" element={<ChatSupervision />} />
+              <Route path="escalations" element={<Escalations />} />
+              <Route path="change-history" element={<ChangeHistory />} />
               <Route path="notifications" element={<Notifications />} />
               <Route path="telecallers" element={<Telecallers />} />
               <Route path="telecallers/:id" element={<TelecallerDetail />} />

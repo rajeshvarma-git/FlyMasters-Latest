@@ -1944,7 +1944,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
 import { format } from "date-fns";
-import { ArrowLeft, BookOpen, FileText, MessageCircle, MessagesSquare, PhoneCall, University, User } from "lucide-react";
+import { ArrowLeft, BookOpen, ClipboardCheck, FileText, MessageCircle, MessagesSquare, PhoneCall, University, User } from "lucide-react";
 import { api } from "@admin/lib/api";
 import { refreshStore, useAdminStore } from "@admin/lib/store";
 import { counselorLabel, counselorOwns, displayName, initials, isConvertedStudent, studentOwns, telecallerLabel } from "@admin/lib/utils";
@@ -1952,6 +1952,7 @@ import { Badge } from "@admin/components/ui/Badge";
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
 import type { DocumentRow } from "@admin/lib/types";
+import StudentChecklistPanel from "@shared/components/StudentChecklistPanel";
 
 interface ChecklistItem {
   document_type: string;
@@ -1974,7 +1975,7 @@ interface ChecklistResponse {
 }
 
 const SILENT_DAYS = 7;
-type Tab = "overview" | "documents" | "applications" | "shortlists" | "chat" | "telecaller" | "ai";
+type Tab = "overview" | "checklist" | "documents" | "applications" | "shortlists" | "chat" | "telecaller" | "ai";
 const TAB_KEYS: Tab[] = ["overview", "documents", "applications", "shortlists", "chat", "telecaller", "ai"];
 
 function parseTab(value: string | null): Tab {
@@ -2181,6 +2182,9 @@ export default function StudentDetail() {
 
   const tabs: Array<{ key: Tab; label: string; count: number | null; icon: typeof User }> = [
     { key: "overview", label: "Overview", count: null, icon: User },
+    // CRM 2.6.2 — the versioned country checklist, the status bar and the
+    // counsellor's next-step note all live here.
+    { key: "checklist", label: "Checklist & status", count: null, icon: ClipboardCheck },
     { key: "documents", label: "Documents", count: docs.length, icon: FileText },
     { key: "applications", label: "Applications", count: apps.length, icon: BookOpen },
     { key: "shortlists", label: "Shortlists", count: shortlists.length, icon: University },
@@ -2399,6 +2403,10 @@ export default function StudentDetail() {
               )}
             </Card>
           </div>
+        )}
+
+        {tab === "checklist" && (
+          <StudentChecklistPanel studentId={String(student.id)} fetchJson={api} />
         )}
 
         {tab === "documents" && checklist && (

@@ -13,6 +13,8 @@ import {
 import { displayName } from "@counselor/lib/utils";
 import { Button } from "@counselor/components/ui/Button";
 import { Input } from "@counselor/components/ui/Field";
+import { api } from "@counselor/lib/api";
+import TemplatePicker from "@shared/components/TemplatePicker";
 
 function messageTime(value?: string) {
   if (!value) return "";
@@ -232,6 +234,13 @@ export default function CounselorChat() {
           {active && (
             <form className="flex gap-2 border-t p-3" onSubmit={send}>
               <Input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={`Message ${active.student_name}`} />
+              {/* CRM 2.7 — counsellors send Super Admin-approved wording. */}
+              <TemplatePicker
+                fetchJson={api}
+                channel="chat"
+                context={{ first_name: String(active.student_name || "").split(" ")[0] || "" }}
+                onPick={(text) => setDraft(text)}
+              />
               <Button type="submit">Send</Button>
             </form>
           )}

@@ -1,5 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
-import { Handshake, KeyRound } from "lucide-react";
+import { Handshake, KeyRound, Eye } from "lucide-react";
 import { api } from "@admin/lib/api";
 import { useAuth } from "@admin/context/AuthContext";
 import type { Branch } from "@admin/lib/types";
@@ -22,6 +22,10 @@ interface Partner {
   is_active: boolean;
   login_enabled: boolean;
   can_view_student_status: boolean;
+  show_application_status: boolean;
+  show_visa_status: boolean;
+  show_next_step: boolean;
+  show_document_status: boolean;
   verification_status: string;
   referred_count: number;
   pending_commissions: number;
@@ -43,6 +47,10 @@ const BASIS_LABEL: Record<string, string> = {
 export default function Partners() {
   const { user } = useAuth();
   const isSuperAdmin = user?.role === "super_admin";
+  // CRM 2.6.2 — status visibility is configurable per agent account, not
+  // globally. Defaults are "show", so nothing changes for existing agents
+  // until a Super Admin deliberately turns something off.
+  const [visibilityFor, setVisibilityFor] = useState<Partner | null>(null);
 
   const [rows, setRows] = useState<Partner[]>([]);
   const [branches, setBranches] = useState<Branch[]>([]);
@@ -200,6 +208,15 @@ export default function Partners() {
                   ) : null}
                 </td>
                 <td className="py-3 text-right">
+                  {p.login_enabled && isSuperAdmin ? (
+                    <button
+                      onClick={() => setVisibilityFor(p)}
+                      className="mr-2 inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-1 text-xs text-navy-900"
+                      title="Choose what this agent sees about their students"
+                    >
+                      <Eye className="h-3 w-3" /> Visibility
+                    </button>
+                  ) : null}
                   {p.login_enabled ? (
                     <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs text-emerald-700">Active</span>
                   ) : isSuperAdmin ? (
@@ -221,6 +238,57 @@ export default function Partners() {
           </tbody>
         </table>
       </Card>
+
+      {visibilityFor ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-navy-950/50 p-4">
+          <Card className="w-full max-w-md p-5">
+            <h2 className="mb-1 font-semibold text-navy-900">
+              What {visibilityFor.business_name || visibilityFor.full_name} can see
+            </h2>
+            <p className="mb-4 text-xs text-slate-600">
+              Applies only to the students this agent referred. Turning something off hides it immediately;
+              it does not affect their commissions.
+            </p>
+            <div className="space-y-3 text-sm text-slate-700">
+              {([
+                ["show_application_status", "Application status"],
+                ["show_visa_status", "Visa status"],
+                ["show_next_step", "Next step and the counsellor's note"],
+                ["show_document_status", "Document checklist progress"],
+              ] as const).map(([key, label]) => (
+                <label key={key} className="flex items-center gap-3">
+                  <input
+                    type="checkbox"
+                    checked={Boolean(visibilityFor[key])}
+                    onChange={(e) => setVisibilityFor({ ...visibilityFor, [key]: e.target.checked })}
+                  />
+                  {label}
+                </label>
+              ))}
+            </div>
+            <div className="mt-5 flex justify-end gap-2">
+              <Button variant="ghost" onClick={() => setVisibilityFor(null)}>Cancel</Button>
+              <Button
+                onClick={async () => {
+                  await api(`/partners/${visibilityFor.id}/visibility`, {
+                    method: "PUT",
+                    body: {
+                      show_application_status: visibilityFor.show_application_status,
+                      show_visa_status: visibilityFor.show_visa_status,
+                      show_next_step: visibilityFor.show_next_step,
+                      show_document_status: visibilityFor.show_document_status,
+                    },
+                  });
+                  setVisibilityFor(null);
+                  await load();
+                }}
+              >
+                Save
+              </Button>
+            </div>
+          </Card>
+        </div>
+      ) : null}
 
       {activating ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-navy-950/50 p-4">
