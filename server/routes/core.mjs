@@ -743,12 +743,22 @@ async function loadCounselors() {
 }
 
 async function loadUsers() {
-  const [authUsers, roles, profiles, sqlCounselors] = await Promise.all([
+  const [authUsers, roles, profiles, sqlCounselors, memberships] = await Promise.all([
     pool.query("SELECT id, email, user_metadata, created_at FROM auth_users ORDER BY created_at DESC"),
     jsonTable("user_roles"),
     jsonTable("profiles"),
     pool.query("SELECT id, email, first_name, last_name, phone, created_at FROM counselor_users").catch(() => ({ rows: [] })),
+    // Which branches each person belongs to. Carried on the user object so
+    // callers that are branch-scoped can filter the directory — without it an
+    // accountant in one branch sees the names and emails of staff in the others.
+    pool.query("SELECT user_id, branch_id FROM user_branches").catch(() => ({ rows: [] })),
   ]);
+  const branchesByUser = new Map();
+  for (const row of memberships.rows) {
+    const key = String(row.user_id);
+    if (!branchesByUser.has(key)) branchesByUser.set(key, []);
+    branchesByUser.get(key).push(String(row.branch_id));
+  }
   const portalByEmail = new Map(
     sqlCounselors.rows.map((row) => [String(row.email || "").trim().toLowerCase(), row]),
   );
@@ -759,6 +769,9 @@ async function loadUsers() {
     if (portal && role !== "admin" && role !== "super_admin") role = "counselor";
     const profile = profiles.find((row) => String(row.user_id) === String(user.id));
     const meta = user.user_metadata || {};
+    const roleRow = roles.find((row) => String(row.user_id) === String(user.id));
+    const homeBranch = roleRow?.branch_id ? String(roleRow.branch_id) : null;
+    const branchIds = branchesByUser.get(String(user.id)) || (homeBranch ? [homeBranch] : []);
     return {
       id: String(user.id),
       email: user.email,
@@ -767,6 +780,8 @@ async function loadUsers() {
       phone: portal?.phone || profile?.phone || "",
       country: profile?.country || "",
       role,
+      branch_id: homeBranch,
+      branch_ids: branchIds,
       is_active: profile?.is_active !== false,
       created_at: user.created_at,
     };
@@ -3614,9 +3629,20 @@ router.get("/api/hr/state", [session, requireRole([ROLES.ACCOUNTANT, ...ADMIN_RO
 
     const allowed = new Set((req.scope.branchIds || []).map(String));
     const inScope = (row) => req.scope.allBranches || allowed.has(String(row.branch_id || ""));
+    // A user belongs to the caller's world if any of their branches overlaps.
+    // An accountant restricted to one branch must not see the staff directory
+    // of the others, not even names and emails.
+    const userInScope = (row) => {
+      if (req.scope.allBranches) return true;
+      const theirs = (row.branch_ids || []).map(String);
+      if (!theirs.length) return false;
+      return theirs.some((id) => allowed.has(id));
+    };
 
     res.json({
-      users: users.filter((row) => ["counselor", "telecaller", "branch_head"].includes(row.role)),
+      users: users
+        .filter((row) => ["counselor", "telecaller", "branch_head"].includes(row.role))
+        .filter(userInScope),
       counselors: counselors.filter(inScope),
       telecallers: [],
       leads: [],
