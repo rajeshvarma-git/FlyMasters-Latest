@@ -79,6 +79,43 @@ check_role "admin"      "$ADMIN_EMAIL"      "$ADMIN_PASS"      "/api/state"     
 check_role "counselor"  "$COUNSELOR_EMAIL"  "$COUNSELOR_PASS"  "/api/counselor/state"  "COUNSELOR"
 check_role "telecaller" "$TELECALLER_EMAIL" "$TELECALLER_PASS" "/api/telecaller/state" "TELECALLER"
 
+# ---- the student door ------------------------------------------------------
+# The student portal is a second auth realm on /__auth, and it is a POST. It
+# was missing from this script, which is how a hang on every student POST
+# reached production unnoticed: staff sign-ins all passed because they go
+# through a different handler.
+#
+# Read-only apart from one throwaway signup, which lands as an ordinary
+# student account. Delete it afterwards if you run this against production.
+STUDENT_PROBE="smoke-$(date +%s)@smoketest.invalid"
+
+SIGNUP=$(curl -s --max-time 25 -X POST "$BASE/__auth" \
+  -H 'Content-Type: application/json' \
+  -d "{\"action\":\"signup\",\"email\":\"$STUDENT_PROBE\",\"password\":\"smoke-test-pass\",\"user_metadata\":{\"first_name\":\"Smoke\",\"last_name\":\"Test\"}}")
+
+if printf '%s' "$SIGNUP" | grep -q '"access_token"'; then
+  ok "student signup responds"
+else
+  bad "student signup responds" "$(printf '%s' "$SIGNUP" | head -c 120)"
+fi
+
+SIGNIN=$(curl -s --max-time 25 -X POST "$BASE/__auth" \
+  -H 'Content-Type: application/json' \
+  -d "{\"action\":\"signin\",\"email\":\"$STUDENT_PROBE\",\"password\":\"smoke-test-pass\"}")
+
+if printf '%s' "$SIGNIN" | grep -q '"access_token"'; then
+  ok "student sign-in returns a session"
+else
+  bad "student sign-in returns a session" "$(printf '%s' "$SIGNIN" | head -c 120)"
+fi
+
+# A wrong password must be refused quickly, not hang.
+WRONG=$(code "$BASE/__auth" -X POST -H 'Content-Type: application/json' \
+  -d "{\"action\":\"signin\",\"email\":\"$STUDENT_PROBE\",\"password\":\"definitely-wrong\"}")
+[ "$WRONG" = "401" ] \
+  && ok "student wrong password refused" \
+  || bad "student wrong password refused" "expected 401, got $WRONG"
+
 echo
 echo "passed: $PASS   failed: $FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

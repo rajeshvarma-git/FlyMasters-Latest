@@ -45,6 +45,35 @@ function applyCors(req: IncomingMessage, res: ServerResponse) {
 }
 
 function readBody(req: IncomingMessage): Promise<string> {
+  /**
+   * The student API was written as a standalone Node handler that read the
+   * request stream itself. Since the merge it runs inside Express, and
+   * express.json() drains that stream before this handler ever sees it — so
+   * every POST sat here waiting for a "data" event that would never arrive,
+   * and the browser gave up after three 15-second attempts with
+   * "PostgreSQL request timed out". Nothing was ever wrong with Postgres.
+   *
+   * When Express has already parsed the body, use it. Raw uploads
+   * (/__storage) arrive with a non-JSON content type, are left untouched by
+   * express.json(), and still stream through the path below.
+   */
+  const parsed = (req as IncomingMessage & { body?: unknown }).body;
+  if (parsed !== undefined && parsed !== null) {
+    if (typeof parsed === "string") return Promise.resolve(parsed);
+    if (Buffer.isBuffer(parsed)) return Promise.resolve(parsed.toString("utf8"));
+    if (typeof parsed === "object") {
+      // express.json() gives {} for an empty body; keep that distinguishable
+      // from a body it actually parsed.
+      const keys = Object.keys(parsed as Record<string, unknown>);
+      if (keys.length > 0) return Promise.resolve(JSON.stringify(parsed));
+      if (!req.readable) return Promise.resolve("");
+    }
+  }
+
+  // The stream was consumed by upstream middleware and there is nothing
+  // parsed to fall back on — resolve empty rather than hang forever.
+  if (!req.readable) return Promise.resolve("");
+
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let total = 0;
