@@ -17,6 +17,7 @@ import { DocumentAuditLog } from './DocumentAuditLog';
 import { DocumentProgressTracker } from './DocumentProgressTracker';
 import { DocumentNotifications } from './DocumentNotifications';
 import { Tables } from '@student/integrations/supabase/types';
+import { fetchAssignedChecklists, type AssignedChecklist } from '@student/lib/crmApi';
 
 type Document = Tables<'documents'>;
 type DocumentChecklist = Tables<'document_checklists'>;
@@ -44,17 +45,49 @@ export function EnhancedDocumentsSection() {
   const [selectedDegree, setSelectedDegree] = useState('');
   const [selectedUniversity, setSelectedUniversity] = useState('');
   const [notifications, setNotifications] = useState<DocumentNotification[]>([]);
+  /**
+   * CRM 2.6.2: when a counsellor has activated a country checklist for this
+   * student, that is the list they see — pinned to the version that was live
+   * when it was activated, with the counsellor's status and next-step note on
+   * each item. The country/degree pickers below are the older self-service
+   * path and stay only as the fallback for students with nothing activated.
+   */
+  const [assigned, setAssigned] = useState<AssignedChecklist[]>([]);
+  const [assignedLoaded, setAssignedLoaded] = useState(false);
 
   useEffect(() => {
-    if (user) {
-      fetchDocuments();
-      fetchNotifications();
-      if (selectedCountry && selectedDegree) {
-        fetchChecklist();
-        fetchProgress();
-      }
+    if (!user) return;
+    fetchDocuments();
+    fetchNotifications();
+    fetchAssignedChecklist();
+  }, [user]);
+
+  useEffect(() => {
+    // Only fall back to the self-service list when nothing was activated.
+    if (!user || assigned.length > 0) return;
+    if (selectedCountry && selectedDegree) {
+      fetchChecklist();
+      fetchProgress();
     }
-  }, [user, selectedCountry, selectedDegree, selectedUniversity]);
+  }, [user, assigned.length, selectedCountry, selectedDegree, selectedUniversity]);
+
+  const fetchAssignedChecklist = async () => {
+    try {
+      const data = await fetchAssignedChecklists();
+      setAssigned(data.activated ? data.checklists : []);
+      if (data.activated) {
+        // Feed the existing uploader the same shape it already expects.
+        setChecklist(
+          data.checklists.flatMap((list) => list.items) as unknown as DocumentChecklist[],
+        );
+      }
+    } catch (error: any) {
+      // A student with no CRM record yet is normal, not an error to shout about.
+      console.error('Could not load the assigned checklist:', error?.message || error);
+    } finally {
+      setAssignedLoaded(true);
+    }
+  };
 
   const fetchDocuments = async () => {
     try {
@@ -478,7 +511,10 @@ export function EnhancedDocumentsSection() {
             documents={documents}
           />
 
-          {/* Country and Degree Selection */}
+          {/* Country and Degree Selection — only when nothing has been activated
+              for this student. Once a counsellor activates a checklist, the
+              student is told what to upload rather than choosing for themselves. */}
+          {assignedLoaded && assigned.length === 0 && (
           <Card className="glass-card">
             <CardHeader>
               <CardTitle>Document Requirements</CardTitle>
@@ -532,13 +568,22 @@ export function EnhancedDocumentsSection() {
               </div>
             </CardContent>
           </Card>
+          )}
 
           {/* Document Checklist */}
           {checklist.length > 0 && (
             <Card className="glass-card">
               <CardHeader>
-                <CardTitle>Required Documents for {selectedCountry} - {selectedDegree}</CardTitle>
-                <CardDescription>Upload the following documents for your application</CardDescription>
+                <CardTitle>
+                  {assigned.length > 0
+                    ? `Documents for ${assigned.map((list) => list.country).join(' and ')}`
+                    : `Required Documents for ${selectedCountry} - ${selectedDegree}`}
+                </CardTitle>
+                <CardDescription>
+                  {assigned.length > 0
+                    ? 'Your counsellor set this list up for you. Upload each document and they will review it.'
+                    : 'Upload the following documents for your application'}
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
@@ -565,6 +610,30 @@ export function EnhancedDocumentsSection() {
                             <span>Max size: {item.max_file_size_mb}MB</span>
                             <span>Types: {item.allowed_file_types.join(', ')}</span>
                           </div>
+
+                          {/* What the counsellor said about this document (CRM 2.6.2).
+                              Present only on an activated checklist. */}
+                          {(item as any).already_available && (
+                            <div className="mb-2 flex items-start gap-2 rounded-md bg-violet-50 p-2 text-xs text-violet-800">
+                              <Check className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                              <span>Already uploaded for another country — you do not need to send this again.</span>
+                            </div>
+                          )}
+                          {(item as any).rejection_reason && (
+                            <div className="mb-2 flex items-start gap-2 rounded-md bg-destructive/10 p-2 text-xs text-destructive">
+                              <AlertCircle className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+                              <span>{(item as any).rejection_reason}</span>
+                            </div>
+                          )}
+                          {(item as any).next_step_note && (
+                            <div className="mb-2 flex items-start gap-2 rounded-md bg-muted/40 p-2 text-xs">
+                              <Clock className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-warning" />
+                              <span><span className="font-medium">Next: </span>{(item as any).next_step_note}</span>
+                            </div>
+                          )}
+                          {(item as any).sample_instructions && (
+                            <p className="mb-2 text-xs text-muted-foreground">{(item as any).sample_instructions}</p>
+                          )}
                           
                           {currentDoc && (
                             <div className="flex flex-col gap-2 mt-3">

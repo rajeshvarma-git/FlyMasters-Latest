@@ -1021,6 +1021,115 @@ router.get("/api/students/:id/progress", anySession, async (req, res) => {
 });
 
 // ===========================================================================
+// The student's own view of their checklist  (2.6.2, "Student visibility")
+//
+// The student portal used to ask the student to pick a country and a degree,
+// then show them a global document list. That is the old model. Under 2.6 the
+// counsellor activates a checklist for them, pinned to the version that was
+// live at the time, and the student simply sees it — with the counsellor's
+// status, the rejection reason and the next-step note attached to each item.
+//
+// This endpoint takes either realm's token (staff previewing, or the student
+// themselves on their own opaque token) and never reveals another student's
+// checklist.
+// ===========================================================================
+
+router.get("/api/student/checklists", anySession, async (req, res) => {
+  try {
+    if (req.user.role !== ROLES.STUDENT) {
+      throw Object.assign(new Error("This is the student view."), { status: 403 });
+    }
+
+    // Match on the signed-in account, or on the email it signed in with — the
+    // lead may pre-date the student ever creating a login.
+    const { rows: found } = await pool.query(
+      `SELECT id, data, branch_id FROM app_records
+        WHERE table_name = 'student_leads'
+          AND (id = $1 OR data->>'user_id' = $1
+               OR ($2 <> '' AND lower(data->>'email') = lower($2)))
+        ORDER BY created_at DESC LIMIT 1`,
+      [String(req.user.id), String(req.user.email || "")],
+    );
+    const lead = found[0] ? { id: found[0].id, ...found[0].data } : null;
+
+    if (!lead) {
+      // Not yet a CRM record — a brand new signup. Say so plainly rather than
+      // returning an empty list the portal would read as "nothing required".
+      return res.json({ activated: false, reason: "no_crm_record", checklists: [] });
+    }
+
+    const { rows: lists } = await pool.query(
+      `SELECT c.id, c.country, c.family_id, c.activated_at,
+              t.name, t.version, t.course_level, t.intake
+         FROM student_checklists c
+         JOIN checklist_templates t ON t.id = c.template_id
+        WHERE c.student_id = $1 AND c.is_active
+        ORDER BY c.activated_at`,
+      [String(lead.id)],
+    );
+
+    if (!lists.length) {
+      return res.json({ activated: false, reason: "not_activated", checklists: [], student_id: lead.id });
+    }
+
+    const { rows: vocabulary } = await pool.query(
+      "SELECT kind, code, label, color FROM status_vocabulary WHERE is_active AND 'student' = ANY(visible_to)",
+    );
+    const word = (kind, code) => vocabulary.find((row) => row.kind === kind && row.code === code) || null;
+
+    for (const list of lists) {
+      const { rows: items } = await pool.query(
+        `SELECT i.id, i.requirement, i.status_code, i.next_step_note, i.rejection_reason,
+                i.satisfied_by_item_id, i.expires_on, i.document_record_id,
+                d.name AS document_type, d.description, d.accepted_formats, d.max_size_mb,
+                d.sample_instructions, d.requires_expiry
+           FROM student_checklist_items i
+           JOIN document_master d ON d.id = i.document_master_id
+          WHERE i.student_checklist_id = $1
+          ORDER BY d.name`,
+        [list.id],
+      );
+
+      list.items = items.map((item) => {
+        const status = word("document", item.status_code);
+        return {
+          id: item.id,
+          document_type: item.document_type,
+          description: item.description,
+          // the portal's existing shape, so its uploader keeps working
+          is_required: item.requirement === "mandatory",
+          requirement: item.requirement,
+          max_file_size_mb: Number(item.max_size_mb),
+          allowed_file_types: item.accepted_formats,
+          sample_instructions: item.sample_instructions,
+          requires_expiry: item.requires_expiry,
+          expires_on: item.expires_on,
+          document_id: item.document_record_id,
+          status: item.status_code,
+          status_label: status?.label || item.status_code,
+          status_color: status?.color || "slate",
+          next_step_note: item.next_step_note || "",
+          rejection_reason: item.rejection_reason || "",
+          // already accepted on another country's checklist — do not ask twice
+          already_available: Boolean(item.satisfied_by_item_id),
+        };
+      });
+
+      const required = list.items.filter((item) => item.is_required);
+      const done = required.filter((item) => item.status === "accepted" || item.status === "not_required");
+      list.progress = required.length ? Math.round((done.length / required.length) * 100) : 0;
+    }
+
+    res.json({
+      activated: true,
+      student_id: lead.id,
+      checklists: lists,
+      next_step_note: lead.next_step_note || "",
+    });
+  } catch (error) { fail(res, error); }
+});
+
+// ===========================================================================
 // Per-agent status visibility (2.6.2, last bullet of the visibility rules)
 // ===========================================================================
 
