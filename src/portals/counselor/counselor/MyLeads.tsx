@@ -27,8 +27,16 @@ export default function MyLeads() {
       ),
     [store.leads, user?.id],
   );
+  // Only students already converted (by their telecaller, or by another
+  // counselor's own conversion) belong here. A pre-conversion lead with no
+  // counselor yet is still the assigned telecaller's to convert — showing it
+  // as "unassigned" let any counselor claim it straight out from under the
+  // telecaller with one click, before the telecaller had converted them.
   const unassigned = useMemo(
-    () => store.leads.filter((lead) => !lead.assigned_counselor_id),
+    () =>
+      store.leads.filter(
+        (lead) => !lead.assigned_counselor_id && (lead.entity_type === "student" || lead.lead_status === "converted"),
+      ),
     [store.leads],
   );
   const selected = leads.find((lead) => lead.id === selectedId) || null;

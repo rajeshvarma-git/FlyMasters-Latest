@@ -1142,14 +1142,37 @@ router.patch("/api/counselor/leads/:id", counselorAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
+// Self-service pickup for a student who has already been converted (by their
+// telecaller or another counselor's own /convert route) and has no counselor
+// yet. This must NEVER let a counselor take a lead a telecaller is still
+// working — that boundary is a lead's `entity_type`, the same check
+// /api/telecaller/leads/:id strips assigned_counselor_id to protect, and the
+// same check /api/counselor/leads/:id's `converting` branch relies on already
+// owning the lead. This endpoint used to have no check at all: any signed-in
+// counselor could claim ANY lead, including ones a telecaller had not yet
+// converted, taking ownership with one click and no admin involvement.
 router.post("/api/counselor/leads/:id/claim", counselorAuth, async (req, res) => {
-  await pool.query("UPDATE student_leads SET assigned_counselor_id = $2, status = 'assigned' WHERE id = $1", [req.params.id, req.user.id]);
   const jsonLeads = await jsonTable("student_leads").catch(() => []);
-  const lead = jsonLeads.find((row) => String(row.id) === String(req.params.id));
-  if (lead) {
-    await jsonUpsert("student_leads", { ...lead, assigned_counselor_id: req.user.id, status: "assigned" });
-    await syncConversationFromLead(pool, { ...lead, assigned_counselor_id: req.user.id, status: "assigned" }, { recordHandoff: true, previousLead: lead }).catch(() => {});
+  const claimKey = String(req.params.id);
+  const lead = jsonLeads.find((row) => String(row.id) === claimKey)
+    || jsonLeads.find((row) => String(row.user_id) === claimKey)
+    || null;
+  if (!lead) return res.status(404).json({ error: "Lead not found." });
+
+  if (!isLeadConverted(lead) && lead.entity_type !== "student") {
+    return res.status(403).json({
+      error: "This lead hasn't been converted to a student yet. Only the assigned telecaller (or an admin) can do that.",
+    });
   }
+  const counselorAliases = await resolveCounselorAliases(req.user.id);
+  const currentOwner = String(lead.assigned_counselor_id || "");
+  if (currentOwner && !counselorAliases.has(currentOwner)) {
+    return res.status(403).json({ error: "This student already has a counselor assigned." });
+  }
+
+  await pool.query("UPDATE student_leads SET assigned_counselor_id = $2, status = 'assigned' WHERE id = $1", [req.params.id, req.user.id]).catch(() => {});
+  await jsonUpsert("student_leads", { ...lead, assigned_counselor_id: req.user.id, status: "assigned" });
+  await syncConversationFromLead(pool, { ...lead, assigned_counselor_id: req.user.id, status: "assigned" }, { recordHandoff: true, previousLead: lead }).catch(() => {});
   res.json({ ok: true });
 });
 
