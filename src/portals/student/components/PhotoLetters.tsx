@@ -35,7 +35,7 @@ function loadPhotos() {
   return photosPromise;
 }
 
-export function PhotoLetters({ word, className = '' }: { word: string; className?: string }) {
+export function PhotoLetters({ word, className = '', offset = 0 }: { word: string; className?: string; offset?: number }) {
   const [photos, setPhotos] = useState<CampusPhoto[]>([]);
 
   useEffect(() => {
@@ -49,8 +49,10 @@ export function PhotoLetters({ word, className = '' }: { word: string; className
   return (
     <span className={`inline-flex ${className}`} aria-label={word} role="text">
       {word.split('').map((ch, i) => {
-        const photo = photos.length ? photos[i % photos.length] : null;
-        const gradient = GRADIENTS[i % GRADIENTS.length];
+        if (ch === ' ') return <span key={`sp-${i}`} aria-hidden="true" className="inline-block w-[0.32em]" />;
+        const n = i + offset;
+        const photo = photos.length ? photos[n % photos.length] : null;
+        const gradient = GRADIENTS[n % GRADIENTS.length];
         return (
           <span
             key={`${ch}-${i}`}
@@ -59,7 +61,7 @@ export function PhotoLetters({ word, className = '' }: { word: string; className
             className="photo-letter"
             style={{
               backgroundImage: photo?.image ? `url("${photo.image}"), ${gradient}` : gradient,
-              animationDelay: `${i * 0.6}s`,
+              animationDelay: `${n * 0.6}s`,
             }}
           >
             {ch}

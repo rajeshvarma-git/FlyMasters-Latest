@@ -96,21 +96,28 @@ export default function Enhanced3DHero() {
             animate={{ opacity: 1 }}
             transition={{ duration: 0.8, delay: 0.2 }}
           >
-            <h1 className="text-5xl md:text-7xl font-bold mb-6 leading-tight" aria-label="Your Dream University Awaits You">
+            <h1 className="mb-6 leading-none" aria-label="Your Dream University Awaits You">
               <motion.span
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.5, delay: 0.3 }}
-                className="block"
+                className="block text-[2.9rem] sm:text-6xl md:text-7xl lg:text-[6.5rem]"
               >
-                Your Dream{' '}
-                <PhotoLetters word="UNIVERSITY" className="text-[1.08em] align-baseline" />
+                <PhotoLetters word="YOUR DREAM" />
+              </motion.span>
+              <motion.span
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, delay: 0.4 }}
+                className="mt-1 block text-[3.3rem] sm:text-7xl md:text-8xl lg:text-[7.75rem]"
+              >
+                <PhotoLetters word="UNIVERSITY" offset={9} />
               </motion.span>
               <motion.span
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.5, delay: 0.5 }}
-                className="block gradient-text"
+                className="mt-3 block gradient-text text-5xl md:text-7xl font-bold leading-tight"
               >
                 Awaits You
               </motion.span>

@@ -123,11 +123,13 @@ router.get("/api/student/feed", anySession, async (req, res) => {
   }
 });
 
-// Famous campuses whose photos fill the letters of "UNIVERSITY" on the homepage.
+// Famous campuses whose photos fill the letters of "YOUR DREAM UNIVERSITY" on the homepage.
 const CAMPUSES = [
   "University of Oxford", "University of Toronto", "University of Melbourne", "Harvard University",
   "University of Cambridge", "McGill University", "University of Sydney", "Stanford University",
-  "Trinity College Dublin", "University of Auckland",
+  "Trinity College Dublin", "University of Auckland", "Imperial College London", "University of British Columbia",
+  "Technical University of Munich", "University of Edinburgh", "Princeton University", "Yale University",
+  "Australian National University", "University of Glasgow", "Columbia University", "University of Waterloo",
 ];
 
 router.get("/api/public/campus-photos", async (_req, res) => {
