@@ -78,7 +78,16 @@ if (existsSync(distDir)) {
   app.use(express.static(distDir, { maxAge: IS_PRODUCTION ? "1y" : 0, index: false }));
   // /r/<CODE> referral links are client-side routes, so they fall through
   // to the SPA like any other page.
+  //
+  // The JS/CSS chunks above are safe to cache for a year — Vite hashes their
+  // filenames, so a new build means new URLs. index.html is not: it is what
+  // *names* those hashed chunks, so if a browser or proxy caches it, a
+  // reopened tab can keep loading an old shell that still boots (old code,
+  // old routes) while every other tab shows the new deploy — exactly the
+  // "why is this tab still showing the old chat screens" confusion. Explicit
+  // no-store here means every navigation always gets the current shell.
   app.get(/^(?!\/(api|__)).*/, (_req, res) => {
+    res.set("Cache-Control", "no-store");
     res.sendFile(path.join(distDir, "index.html"));
   });
 } else if (IS_PRODUCTION) {

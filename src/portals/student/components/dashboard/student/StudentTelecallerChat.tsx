@@ -54,15 +54,21 @@ interface Conversation {
   last_message_at: string | null;
 }
 
-export function StudentTelecallerChat() {
+interface StudentTelecallerChatProps {
+  /** True when this renders inside the unified Messages tabs — skip the
+   * page-level header there so it doesn't duplicate the "Messages" title. */
+  embedded?: boolean;
+}
+
+export function StudentTelecallerChat({ embedded = false }: StudentTelecallerChatProps = {}) {
   return (
     <ErrorBoundary>
-      <StudentTelecallerChatInner />
+      <StudentTelecallerChatInner embedded={embedded} />
     </ErrorBoundary>
   );
 }
 
-function StudentTelecallerChatInner() {
+function StudentTelecallerChatInner({ embedded }: { embedded: boolean }) {
   const { user } = useAuth();
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<TelecallerMessage[]>([]);
@@ -302,15 +308,17 @@ function StudentTelecallerChatInner() {
   if (!conversation) {
     return (
       <div className="space-y-6">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-gradient-primary flex items-center justify-center">
-            <Phone className="w-5 h-5 text-white" />
+        {!embedded && (
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-gradient-primary flex items-center justify-center">
+              <Phone className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold">Telecaller Chat</h1>
+              <p className="text-muted-foreground">Message the telecaller working on your application</p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-2xl font-bold">Telecaller Chat</h1>
-            <p className="text-muted-foreground">Message the telecaller working on your application</p>
-          </div>
-        </div>
+        )}
 
         <Card className="glass-card">
           <CardContent className="text-center py-12 space-y-4">
@@ -333,15 +341,17 @@ function StudentTelecallerChatInner() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-full bg-gradient-primary flex items-center justify-center">
-          <Phone className="w-5 h-5 text-white" />
+      {!embedded && (
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full bg-gradient-primary flex items-center justify-center">
+            <Phone className="w-5 h-5 text-white" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold">Telecaller Chat</h1>
+            <p className="text-muted-foreground">Chatting with {telecallerName}</p>
+          </div>
         </div>
-        <div>
-          <h1 className="text-2xl font-bold">Telecaller Chat</h1>
-          <p className="text-muted-foreground">Chatting with {telecallerName}</p>
-        </div>
-      </div>
+      )}
 
       <Card className="glass-card h-[600px] flex flex-col">
         <CardHeader className="pb-4">

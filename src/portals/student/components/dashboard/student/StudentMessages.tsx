@@ -80,11 +80,11 @@ export function StudentMessages({ defaultTab = 'ai' }: StudentMessagesProps) {
         </TabsContent>
 
         <TabsContent value="counsellor" className="mt-4">
-          <StudentPrivateChat />
+          <StudentPrivateChat embedded />
         </TabsContent>
 
         <TabsContent value="telecaller" className="mt-4">
-          <StudentTelecallerChat />
+          <StudentTelecallerChat embedded />
         </TabsContent>
       </Tabs>
     </div>

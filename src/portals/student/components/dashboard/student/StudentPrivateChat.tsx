@@ -61,15 +61,21 @@ interface Conversation {
   last_message_at: string | null;
 }
 
-export function StudentPrivateChat() {
+interface StudentPrivateChatProps {
+  /** True when this renders inside the unified Messages tabs — skip the
+   * page-level header there so it doesn't duplicate the "Messages" title. */
+  embedded?: boolean;
+}
+
+export function StudentPrivateChat({ embedded = false }: StudentPrivateChatProps = {}) {
   return (
     <ErrorBoundary>
-      <StudentPrivateChatInner />
+      <StudentPrivateChatInner embedded={embedded} />
     </ErrorBoundary>
   );
 }
 
-function StudentPrivateChatInner() {
+function StudentPrivateChatInner({ embedded }: { embedded: boolean }) {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [conversation, setConversation] = useState<Conversation | null>(null);
@@ -408,16 +414,18 @@ function StudentPrivateChatInner() {
   if (!conversation) {
     return (
       <div className="space-y-6">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-gradient-primary flex items-center justify-center">
-            <MessageCircle className="w-5 h-5 text-white" />
+        {!embedded && (
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-gradient-primary flex items-center justify-center">
+              <MessageCircle className="w-5 h-5 text-white" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold">Counselor Chat</h1>
+              <p className="text-muted-foreground">Chat with a Fly Masters counselor</p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-2xl font-bold">Counselor Chat</h1>
-            <p className="text-muted-foreground">Chat with a Fly Masters counselor</p>
-          </div>
-        </div>
-        
+        )}
+
         <Card className="glass-card">
           <CardContent className="text-center py-12 space-y-4">
             <MessageCircle className="w-16 h-16 mx-auto opacity-50" />
@@ -443,15 +451,17 @@ function StudentPrivateChatInner() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <div className="w-10 h-10 rounded-full bg-gradient-primary flex items-center justify-center">
-          <MessageCircle className="w-5 h-5 text-white" />
+      {!embedded && (
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full bg-gradient-primary flex items-center justify-center">
+            <MessageCircle className="w-5 h-5 text-white" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold">Counselor Chat</h1>
+            <p className="text-muted-foreground">Chatting with {counselorName}</p>
+          </div>
         </div>
-        <div>
-          <h1 className="text-2xl font-bold">Counselor Chat</h1>
-          <p className="text-muted-foreground">Chatting with {counselorName}</p>
-        </div>
-      </div>
+      )}
 
       <Card className="glass-card h-[600px] flex flex-col">
         <CardHeader className="pb-4">
