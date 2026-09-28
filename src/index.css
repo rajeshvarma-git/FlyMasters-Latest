@@ -495,3 +495,25 @@ All colors MUST be HSL.
 .staff-shell *::-webkit-scrollbar-thumb {
   @apply rounded-full bg-slate-300;
 }
+
+/* Homepage headline: each letter filled with a different campus photo (PhotoLetters.tsx). */
+.photo-letter {
+  display: inline-block;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  background-size: cover, cover;
+  background-position: center, center;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+  animation: photo-letter-pan 14s ease-in-out infinite alternate;
+  filter: drop-shadow(0 2px 1px rgba(15, 23, 42, 0.12));
+}
+@keyframes photo-letter-pan {
+  from { background-position: 30% 40%, center; }
+  to { background-position: 70% 60%, center; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .photo-letter { animation: none; }
+}

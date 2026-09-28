@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { WHATSAPP_DISPLAY, whatsappLink } from '@student/lib/contact';
 import { Card, CardContent } from '@student/components/ui/card';
 import { Button } from '@student/components/ui/button';
 import { ArrowRight, Sparkles, MessageCircle, Phone } from 'lucide-react';
@@ -135,7 +136,7 @@ const CTASection: React.FC<CTASectionProps> = ({
                     asChild
                   >
                     <a 
-                      href="https://wa.me/919502127788?text=Hi, I'm interested in studying abroad. Can you help me?" 
+                      href={whatsappLink("Hi, I'm interested in studying abroad. Can you help me?")} 
                       target="_blank" 
                       rel="noopener noreferrer"
                       className="flex items-center gap-2"

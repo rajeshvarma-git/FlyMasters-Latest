@@ -1,14 +1,13 @@
 import { NavLink } from 'react-router-dom';
-import { GraduationCap, BookOpen, Heart, FileText, List, LogOut, ChevronRight } from 'lucide-react';
-import { useAuth } from '@student/hooks/useAuth';
-import { studentDisplayName, studentInitials } from './studentIdentity';
+import { GraduationCap, BookOpen, Heart, FileText, List, MessageCircle, Phone } from 'lucide-react';
+import { whatsappLink } from '@student/lib/contact';
 
 /**
- * Desktop sidebar: the logo (top-left) goes to the Dashboard, the menu holds
- * the student's work areas, and the bottom block is the student's name
- * (→ My Profile) with Sign out under it. Messages, Notifications and the
- * profile menu live in the top bar (StudentTopBar); chat also opens from the
- * floating button (StudentChatWidget).
+ * Desktop sidebar: the logo (top-left) goes to the Dashboard and the menu holds
+ * the student's work areas.
+ * Messages, Notifications and the profile menu (My Profile, Sign out) live
+ * only in the top bar (StudentTopBar); chat also opens from the floating
+ * button (StudentChatWidget). The bottom card is quick contact.
  */
 
 const studentNavItems = [
@@ -20,9 +19,6 @@ const studentNavItems = [
 ];
 
 export function StudentSidebar() {
-  const { user, userProfile, signOut } = useAuth();
-  const name = studentDisplayName(user, userProfile);
-
   return (
     <aside className="hidden md:flex w-64 flex-none flex-col bg-background/95 backdrop-blur-sm border-r border-border/20 h-screen sticky top-0">
       <NavLink to="/student" end className="flex h-16 flex-none items-center gap-3 px-4 border-b border-border/20 hover:bg-muted/30">
@@ -57,30 +53,26 @@ export function StudentSidebar() {
         </div>
       </nav>
 
-      <div className="p-3 border-t border-border/20 space-y-1">
-        <NavLink
-          to="/student/profile"
-          className={({ isActive }) =>
-            `flex items-center gap-3 rounded-lg p-2 transition-colors ${isActive ? 'bg-primary/10' : 'bg-muted/40 hover:bg-muted/70'}`
-          }
-        >
-          <span className="flex h-9 w-9 flex-none items-center justify-center rounded-full bg-primary/10 text-xs font-bold text-primary">
-            {studentInitials(name)}
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-semibold">{name}</span>
-            <span className="block text-xs text-primary">View my profile</span>
-          </span>
-          <ChevronRight className="h-4 w-4 text-muted-foreground" />
-        </NavLink>
-        <button
-          type="button"
-          onClick={() => void signOut()}
-          className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted-foreground hover:bg-muted/50 hover:text-foreground"
-        >
-          <LogOut className="h-4 w-4" />
-          Sign out
-        </button>
+      {/* Profile and Sign out live only in the top-right profile menu. */}
+      <div className="m-3 rounded-xl border border-border/40 bg-muted/30 p-3">
+        <p className="text-sm font-semibold">Need help?</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">Talk to a Fly Masters advisor.</p>
+        <div className="mt-2 grid grid-cols-2 gap-2">
+          <a
+            href={whatsappLink('Hi, I need help with my study abroad application.')}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center justify-center gap-1.5 rounded-lg bg-emerald-600 px-2 py-1.5 text-xs font-medium text-white hover:bg-emerald-700"
+          >
+            <MessageCircle className="h-3.5 w-3.5" /> WhatsApp
+          </a>
+          <a
+            href="tel:+919259597979"
+            className="flex items-center justify-center gap-1.5 rounded-lg border border-border/60 bg-background px-2 py-1.5 text-xs font-medium hover:bg-muted/60"
+          >
+            <Phone className="h-3.5 w-3.5" /> Call
+          </a>
+        </div>
       </div>
     </aside>
   );

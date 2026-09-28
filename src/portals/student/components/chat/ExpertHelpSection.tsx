@@ -1,4 +1,5 @@
 import React from 'react';
+import { WHATSAPP_DISPLAY, whatsappLink } from '@student/lib/contact';
 import { Button } from '@student/components/ui/button';
 import { Phone, MessageCircle, Users } from 'lucide-react';
 
@@ -37,14 +38,14 @@ const ExpertHelpSection: React.FC = () => {
           asChild
         >
           <a 
-            href="https://wa.me/919502127788" 
+            href={whatsappLink()} 
             target="_blank" 
             rel="noopener noreferrer" 
             className="flex items-center justify-center space-x-2"
-            aria-label="Chat with us on WhatsApp at +91 95021 27788"
+            aria-label={`Chat with us on WhatsApp at ${WHATSAPP_DISPLAY}`}
           >
             <MessageCircle size={18} className="group-hover:animate-pulse" />
-            <span>💬 WhatsApp: +91 95021 27788</span>
+            <span>💬 WhatsApp: {WHATSAPP_DISPLAY}</span>
           </a>
         </Button>
       </div>

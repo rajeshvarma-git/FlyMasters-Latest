@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { whatsappLink } from '@student/lib/contact';
 import { useAuth } from '@student/hooks/useAuth';
 import { supabase } from '@student/integrations/supabase/client';
 import { Card, CardContent, CardHeader, CardTitle } from '@student/components/ui/card';
@@ -335,7 +336,7 @@ const TestPrep = () => {
 
         <div className="pt-4 flex flex-col sm:flex-row gap-3">
           <a
-            href={`https://wa.me/${whatsappConfig?.phone_number?.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(`Hi! I'm interested in the ${schedule.test_type} course: ${schedule.title}`)}`}
+            href={whatsappLink(`Hi! I'm interested in the ${schedule.test_type} course: ${schedule.title}`)}
             target="_blank"
             rel="noopener noreferrer"
             className="flex-1"

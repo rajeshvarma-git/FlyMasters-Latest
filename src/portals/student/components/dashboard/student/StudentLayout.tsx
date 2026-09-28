@@ -93,7 +93,7 @@ export function StudentLayout() {
         onNotificationsClick={() => navigate('/student/notifications')}
       />
       <div className="flex min-w-0 flex-1 flex-col md:h-screen">
-      <StudentTopBar notificationCount={unreadCount} messageCount={chatUnread} />
+      <StudentTopBar messageCount={chatUnread} />
       <main className="mobile-scroll-area flex-1 overflow-y-auto overflow-x-hidden md:pt-0 pt-[60px] pb-6 md:pb-0">
         <Routes>
           <Route index element={<StudentContent />} />

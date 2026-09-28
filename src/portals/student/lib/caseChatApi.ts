@@ -71,3 +71,38 @@ export function sendCaseMessage(message: string) {
 export function getMyCaseUnread() {
   return call<{ unread: number }>('/case/me/unread');
 }
+
+export interface FeedNews {
+  title: string;
+  link: string;
+  source: string;
+  published_at: string | null;
+  topic?: string;
+}
+
+export interface FeedUniversity {
+  id: string;
+  name: string;
+  city: string;
+  country: string;
+  ranking: number | string | null;
+  website: string | null;
+  is_favorite: boolean;
+  image: string | null;
+  image_credit: string | null;
+  summary: string;
+  news: FeedNews[];
+}
+
+export interface StudentFeed {
+  countries: string[];
+  field: string;
+  universities: FeedUniversity[];
+  stories: FeedNews[];
+  generated_at: string;
+}
+
+/** Dashboard feed: recommended universities with photos + latest news. */
+export function getStudentFeed() {
+  return call<StudentFeed>('/student/feed');
+}

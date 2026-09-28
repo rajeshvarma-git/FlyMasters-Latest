@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { whatsappLink } from '@student/lib/contact';
 import { Button } from "@student/components/ui/button";
 import { Menu, X, GraduationCap, LogOut, User, MessageCircle } from "lucide-react";
 import { useAuth } from "@student/hooks/useAuth";
@@ -36,9 +37,9 @@ const Header = () => {
     if (data?.metadata) setWhatsappConfig(data.metadata as WhatsAppConfig);
   };
 
-  const whatsappUrl = whatsappConfig?.phone_number 
-    ? `https://wa.me/${whatsappConfig.phone_number.replace(/[^0-9]/g, '')}?text=${encodeURIComponent(whatsappConfig.message || 'Hi, I am interested in studying abroad.')}`
-    : null;
+  // WhatsApp always goes to the dedicated WhatsApp line; the saved setting
+  // only decides whether the button shows and what message it pre-fills.
+  const whatsappUrl = whatsappLink(whatsappConfig?.message || 'Hi, I am interested in studying abroad.');
   
   const navigation = [
     { name: "How it Works", href: "#how-it-works" },

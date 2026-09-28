@@ -29,7 +29,7 @@ const SUGGESTIONS = [
     title: "How can I contact Fly Masters?",
     category: "faq",
     content:
-      "Phone: +91 95021 27788 or +91 98499 08829. WhatsApp: +91 95021 27788. Email: rajesh@flymasters.in or krishna@flymasters.in. You can also message us in this chat any time.",
+      "Phone: +91 95021 27788 or +91 98499 08829. WhatsApp: +91 90104 25365. Email: rajesh@flymasters.in or krishna@flymasters.in. You can also message us in this chat any time.",
   },
   {
     title: "What are your office hours?",

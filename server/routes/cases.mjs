@@ -577,7 +577,7 @@ async function routeToStaff(conversation, owner, messages) {
   });
   if (messages.slice(lastStaff + 1).some((m) => m.routed)) return null;
   const body = owner.role === "ai"
-    ? "Thanks! I've noted your question. A Fly Masters advisor will be assigned to you soon and will reply here."
+    ? "Thanks! I've noted this. A Fly Masters advisor will be assigned to you soon and will reply here."
     : `I've shared this with ${owner.name}, your ${owner.role}. They'll reply here soon.`;
   return aiSay(conversation, body, { extra: { routed: true } });
 }
@@ -761,6 +761,8 @@ async function handleStudentMessage(conversation, studentUserId, lead, owner, te
     await aiSay(conversation, answer.reply, { extra: { source: "faq", sources: answer.sources, review_status: "pending" } });
     return;
   }
+  // "ok", "thanks", "hi" — nothing to hand over, so no reply.
+  if (!looksLikeQuestion(text) && text.split(/\s+/).length < 4) return;
   await routeToStaff(conversation, owner, messages);
 }
 

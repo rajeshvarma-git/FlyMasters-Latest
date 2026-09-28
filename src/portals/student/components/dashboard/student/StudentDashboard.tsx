@@ -1,455 +1,421 @@
-import { useState, useEffect } from 'react';
-import { useAuth } from '@student/hooks/useAuth';
-import { useNavigate } from 'react-router-dom';
-import { supabase } from '@student/integrations/supabase/client';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@student/components/ui/card';
-import { Button } from '@student/components/ui/button';
-import { Progress } from '@student/components/ui/progress';
-import { Badge } from '@student/components/ui/badge';
-import { 
-  GraduationCap, 
-  FileText, 
-  Heart, 
-  MessageCircle,
-  TrendingUp,
-  Calendar,
-  CheckCircle,
-  AlertCircle,
-  Target,
-  BookOpen,
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { formatDistanceToNow } from 'date-fns';
+import {
+  ArrowRight,
+  ChevronLeft,
+  ChevronRight,
+  ExternalLink,
+  FileText,
+  GraduationCap,
+  Heart,
   List,
+  MapPin,
+  MessageCircle,
+  Newspaper,
+  Sparkles,
   User,
-  ArrowRight
 } from 'lucide-react';
-import { format } from 'date-fns';
+import { useAuth } from '@student/hooks/useAuth';
+import { supabase } from '@student/integrations/supabase/client';
+import { useToast } from '@student/hooks/use-toast';
+import { getStudentFeed, type FeedNews, type FeedUniversity, type StudentFeed } from '@student/lib/caseChatApi';
+import { studentDisplayName } from './studentIdentity';
 
-interface Application {
-  id: string;
-  university_name?: string;
-  course_name?: string;
-  status: string;
-  application_deadline: string;
-  priority_level: string;
+/**
+ * Student home, laid out like a news start page: a big photo carousel of the
+ * student's recommended universities with each one's latest headline, a
+ * "Top stories" column (university news + destination student-visa news),
+ * a "Your journey" progress card, and photo cards for the rest. Photos and
+ * news come from GET /api/student/feed (server/routes/studentFeed.mjs).
+ */
+
+type Journey = {
+  profilePct: number;
+  missing: string[];
+  saved: number;
+  documents: number;
+  applications: number;
+};
+
+const PROFILE_FIELDS: [string, string][] = [
+  ['first_name', 'first name'],
+  ['last_name', 'last name'],
+  ['phone', 'phone'],
+  ['country', 'country'],
+  ['date_of_birth', 'date of birth'],
+  ['passport_number', 'passport number'],
+];
+
+function ago(value: string | null) {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  try {
+    return formatDistanceToNow(d, { addSuffix: true });
+  } catch {
+    return '';
+  }
 }
 
-interface DocumentProgress {
-  total_required_documents: number;
-  uploaded_documents: number;
-  approved_documents: number;
-  completion_percentage: number;
+function greeting() {
+  const h = new Date().getHours();
+  if (h < 12) return 'Good morning';
+  if (h < 17) return 'Good afternoon';
+  return 'Good evening';
 }
 
-interface StudentStats {
-  totalApplications: number;
-  documentsUploaded: number;
-  favoritesCount: number;
-  chatSessions: number;
+function initials(name: string) {
+  return name
+    .split(/\s+/)
+    .filter((w) => /^[A-Z]/.test(w))
+    .slice(0, 3)
+    .map((w) => w[0])
+    .join('');
+}
+
+const FALLBACK_BG = [
+  'from-sky-600 to-indigo-700',
+  'from-emerald-600 to-teal-700',
+  'from-violet-600 to-fuchsia-700',
+  'from-amber-500 to-orange-600',
+  'from-rose-500 to-pink-600',
+];
+
+function Photo({ uni, index, className = '' }: { uni: FeedUniversity; index: number; className?: string }) {
+  const [broken, setBroken] = useState(false);
+  if (uni.image && !broken) {
+    return (
+      <img
+        src={uni.image}
+        alt={`${uni.name} campus`}
+        loading="lazy"
+        referrerPolicy="no-referrer"
+        onError={() => setBroken(true)}
+        className={`h-full w-full object-cover ${className}`}
+      />
+    );
+  }
+  return (
+    <div className={`flex h-full w-full items-center justify-center bg-gradient-to-br ${FALLBACK_BG[index % FALLBACK_BG.length]} ${className}`}>
+      <span className="text-4xl font-black tracking-tight text-white/80">{initials(uni.name) || 'U'}</span>
+    </div>
+  );
+}
+
+function StoryRow({ story }: { story: FeedNews }) {
+  return (
+    <a href={story.link} target="_blank" rel="noopener noreferrer" className="group block py-3">
+      {story.topic && <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-primary">{story.topic}</p>}
+      <p className="line-clamp-2 text-sm font-medium leading-snug group-hover:text-primary group-hover:underline">{story.title}</p>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {story.source}
+        {story.published_at ? ` · ${ago(story.published_at)}` : ''}
+      </p>
+    </a>
+  );
 }
 
 export function StudentDashboard() {
-  const { user } = useAuth();
+  const { user, userProfile } = useAuth();
   const navigate = useNavigate();
-  const [applications, setApplications] = useState<Application[]>([]);
-  const [documentProgress, setDocumentProgress] = useState<DocumentProgress | null>(null);
-  const [profileComplete, setProfileComplete] = useState(false);
-  const [stats, setStats] = useState<StudentStats>({
-    totalApplications: 0,
-    documentsUploaded: 0,
-    favoritesCount: 0,
-    chatSessions: 0
-  });
-  const [loading, setLoading] = useState(true);
+  const { toast } = useToast();
+  const [feed, setFeed] = useState<StudentFeed | null>(null);
+  const [feedError, setFeedError] = useState('');
+  const [journey, setJourney] = useState<Journey | null>(null);
+  const [slide, setSlide] = useState(0);
+  const [paused, setPaused] = useState(false);
+  const name = studentDisplayName(user, userProfile).split(/\s+/)[0];
 
-  useEffect(() => {
-    if (user) {
-      fetchDashboardData();
-    }
+  const loadJourney = useCallback(async () => {
+    if (!user) return;
+    const [profileRes, favRes, docRes, appRes] = await Promise.all([
+      supabase.from('profiles').select('*').eq('user_id', user.id).maybeSingle(),
+      supabase.from('user_favorites').select('id', { count: 'exact' }).eq('user_id', user.id),
+      supabase.from('documents').select('id', { count: 'exact' }).eq('user_id', user.id),
+      supabase.from('applications').select('id', { count: 'exact' }).eq('user_id', user.id),
+    ]);
+    const p = (profileRes.data || {}) as Record<string, unknown>;
+    const missing = PROFILE_FIELDS.filter(([k]) => !String(p[k] || '').trim()).map(([, label]) => label);
+    setJourney({
+      profilePct: Math.round(((PROFILE_FIELDS.length - missing.length) / PROFILE_FIELDS.length) * 100),
+      missing,
+      saved: favRes.count || 0,
+      documents: docRes.count || 0,
+      applications: appRes.count || 0,
+    });
   }, [user]);
 
-  const fetchDashboardData = async () => {
+  useEffect(() => {
     if (!user) return;
-    
+    getStudentFeed()
+      .then(setFeed)
+      .catch((e) => setFeedError(e instanceof Error ? e.message : 'Could not load your feed'));
+    loadJourney().catch(() => {});
+  }, [user, loadJourney]);
+
+  const heroList = useMemo(() => (feed?.universities || []).slice(0, 5), [feed]);
+  const cardList = useMemo(() => (feed?.universities || []).slice(0, 8), [feed]);
+
+  useEffect(() => {
+    if (paused || heroList.length < 2) return;
+    const t = window.setInterval(() => setSlide((s) => (s + 1) % heroList.length), 7000);
+    return () => window.clearInterval(t);
+  }, [paused, heroList.length]);
+
+  const toggleSave = async (uni: FeedUniversity) => {
+    if (!user) return;
+    const next = !uni.is_favorite;
+    setFeed((f) => f && { ...f, universities: f.universities.map((u) => (u.id === uni.id ? { ...u, is_favorite: next } : u)) });
     try {
-      setLoading(true);
-      await Promise.all([
-        fetchApplications(),
-        fetchDocumentProgress(),
-        fetchStats(),
-        checkProfileCompletion()
-      ]);
+      if (next) {
+        const { error } = await supabase.from('user_favorites').insert({ user_id: user.id, university_id: uni.id });
+        if (error) throw error;
+      } else {
+        const { error } = await supabase.from('user_favorites').delete().eq('user_id', user.id).eq('university_id', uni.id);
+        if (error) throw error;
+      }
+      setJourney((j) => j && { ...j, saved: Math.max(0, j.saved + (next ? 1 : -1)) });
+      toast({ title: next ? `Saved ${uni.name}` : `Removed ${uni.name}` });
     } catch (error) {
-      console.error('Error fetching dashboard data:', error);
-    } finally {
-      setLoading(false);
+      setFeed((f) => f && { ...f, universities: f.universities.map((u) => (u.id === uni.id ? { ...u, is_favorite: !next } : u)) });
+      toast({ title: 'Could not update saved universities', variant: 'destructive' });
     }
   };
 
-  const checkProfileCompletion = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('first_name, last_name, phone, country, date_of_birth, passport_number')
-        .eq('user_id', user?.id)
-        .maybeSingle();
-
-      if (error) {
-        console.error('Error fetching profile:', error);
-        setProfileComplete(false);
-        return;
-      }
-
-      if (!data) {
-        setProfileComplete(false);
-        return;
-      }
-
-      const isComplete = !!(
-        data.first_name &&
-        data.last_name &&
-        data.phone &&
-        data.country &&
-        data.date_of_birth &&
-        data.passport_number
-      );
-      setProfileComplete(isComplete);
-    } catch (error) {
-      console.error('Error checking profile completion:', error);
-      setProfileComplete(false);
-    }
-  };
-
-  const fetchApplications = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('applications')
-        .select('id, status, application_deadline, priority_level, university_name, course_name')
-        .eq('user_id', user?.id)
-        .order('created_at', { ascending: false })
-        .limit(5);
-
-      if (error) {
-        console.error('Error fetching applications:', error);
-        return;
-      }
-
-      if (data) {
-        setApplications(data);
-      }
-    } catch (error) {
-      console.error('Unexpected error fetching applications:', error);
-    }
-  };
-
-  const fetchDocumentProgress = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('student_document_progress')
-        .select('*')
-        .eq('user_id', user?.id)
-        .maybeSingle();
-
-      if (error) {
-        console.error('Error fetching document progress:', error);
-        return;
-      }
-
-      if (data) {
-        setDocumentProgress(data);
-      }
-    } catch (error) {
-      console.error('Unexpected error fetching document progress:', error);
-    }
-  };
-
-  const fetchStats = async () => {
-    try {
-      const [applicationsRes, documentsRes, favoritesRes, chatRes] = await Promise.all([
-        supabase.from('applications').select('id', { count: 'exact' }).eq('user_id', user?.id),
-        supabase.from('documents').select('id', { count: 'exact' }).eq('user_id', user?.id),
-        supabase.from('user_favorites').select('id', { count: 'exact' }).eq('user_id', user?.id),
-        supabase.from('chat_sessions').select('id', { count: 'exact' }).eq('user_id', user?.id)
-      ]);
-
-      setStats({
-        totalApplications: applicationsRes.count || 0,
-        documentsUploaded: documentsRes.count || 0,
-        favoritesCount: favoritesRes.count || 0,
-        chatSessions: chatRes.count || 0
-      });
-    } catch (error) {
-      console.error('Error fetching stats:', error);
-      // Keep default stats on error
-    }
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status.toLowerCase()) {
-      case 'submitted': return 'bg-blue-500';
-      case 'accepted': return 'bg-green-500';
-      case 'rejected': return 'bg-red-500';
-      case 'waitlisted': return 'bg-yellow-500';
-      default: return 'bg-gray-500';
-    }
-  };
-
-  const getPriorityColor = (priority: string) => {
-    switch (priority.toLowerCase()) {
-      case 'high': return 'destructive';
-      case 'medium': return 'default';
-      case 'low': return 'secondary';
-      default: return 'outline';
-    }
-  };
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
-      </div>
-    );
-  }
+  const hero = heroList[slide % Math.max(heroList.length, 1)];
+  const today = new Date().toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' });
+  const loading = !feed && !feedError;
 
   return (
-    <div className="space-y-4 md:space-y-6 min-w-0 max-w-full">
-      {/* Welcome — desktop only; mobile uses MobilePortalHeader */}
-      <div className="hidden md:flex items-center gap-4">
-        <div className="w-12 h-12 rounded-full bg-gradient-primary flex items-center justify-center shrink-0">
-          <GraduationCap className="w-6 h-6 text-white" />
+    <div className="mx-auto max-w-[1400px] space-y-5 min-w-0">
+      {/* Greeting */}
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{today}</p>
+          <h1 className="text-2xl md:text-3xl font-bold">
+            {greeting()}, {name} 👋
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            {feed?.countries?.length
+              ? `Your picks for ${feed.countries.join(', ')}${feed.field ? ` · ${feed.field}` : ''}`
+              : 'Tell us where you want to study to personalise this page'}
+          </p>
         </div>
-        <div className="min-w-0">
-          <h1 className="text-3xl font-bold">Student Dashboard</h1>
-          <p className="text-muted-foreground">Track your study abroad journey</p>
-        </div>
+        <button
+          type="button"
+          onClick={() => navigate('/student/messages')}
+          className="inline-flex items-center gap-2 rounded-xl bg-gradient-primary px-4 py-2 text-sm font-semibold text-white shadow-sm hover:opacity-95"
+        >
+          <Sparkles className="h-4 w-4" /> Ask your AI advisor
+        </button>
       </div>
-      <p className="text-sm text-muted-foreground md:hidden">Track your study abroad journey</p>
 
-      {/* Profile Completion Alert */}
-      {!profileComplete && (
-        <Card className="glass-card border-2 border-primary/50 bg-primary/5 shadow-lg overflow-hidden">
-          <CardHeader className="p-4 md:p-6">
-            <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-              <div className="flex items-start gap-3 min-w-0 flex-1">
-                <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center shrink-0">
-                  <AlertCircle className="w-5 h-5 text-primary" />
-                </div>
-                <div className="min-w-0">
-                  <CardTitle className="text-base md:text-xl text-primary">Complete Your Profile</CardTitle>
-                  <CardDescription className="mt-1 text-xs md:text-sm">
-                    Finish your profile to get personalized university recommendations and counselor support.
-                  </CardDescription>
-                </div>
-              </div>
-              <Button
-                size="lg"
-                onClick={() => navigate('/student/profile')}
-                className="w-full sm:w-auto shrink-0 flex items-center justify-center gap-2 shadow-lg"
-              >
-                <User className="w-4 h-4 shrink-0" />
-                <span>Complete Profile</span>
-                <ArrowRight className="w-4 h-4 shrink-0" />
-              </Button>
+      {/* Hero + top stories */}
+      <div className="grid gap-5 lg:grid-cols-3">
+        <div
+          className="relative h-64 overflow-hidden rounded-2xl bg-muted shadow-sm md:h-[380px] lg:col-span-2"
+          onMouseEnter={() => setPaused(true)}
+          onMouseLeave={() => setPaused(false)}
+        >
+          {loading && <div className="h-full w-full animate-pulse bg-muted" />}
+          {!loading && !hero && (
+            <div className="flex h-full flex-col items-center justify-center gap-3 bg-gradient-to-br from-sky-600 to-indigo-700 p-6 text-center text-white">
+              <GraduationCap className="h-10 w-10" />
+              <p className="text-xl font-semibold">Your university picks will appear here</p>
+              <p className="max-w-md text-sm text-white/80">Tell our AI advisor your destination and course, and we'll show matching universities with their latest news.</p>
+              <button type="button" onClick={() => navigate('/student/messages')} className="mt-1 rounded-lg bg-white px-4 py-2 text-sm font-semibold text-primary">
+                Start with the AI advisor
+              </button>
             </div>
-          </CardHeader>
-        </Card>
-      )}
-
-      {/* Stats Cards */}
-      <div className="grid gap-3 grid-cols-2 md:grid-cols-2 lg:grid-cols-4">
-        <Card className="glass-card">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 p-3 pb-2 md:p-6 md:pb-2">
-            <CardTitle className="text-xs md:text-sm font-medium">Applications</CardTitle>
-            <FileText className="h-4 w-4 text-muted-foreground shrink-0" />
-          </CardHeader>
-          <CardContent className="p-3 pt-0 md:p-6 md:pt-0">
-            <div className="text-xl md:text-2xl font-bold">{stats.totalApplications}</div>
-            <p className="text-xs text-muted-foreground">Total applications</p>
-          </CardContent>
-        </Card>
-
-        <Card className="glass-card">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 p-3 pb-2 md:p-6 md:pb-2">
-            <CardTitle className="text-xs md:text-sm font-medium">Documents</CardTitle>
-            <CheckCircle className="h-4 w-4 text-muted-foreground shrink-0" />
-          </CardHeader>
-          <CardContent className="p-3 pt-0 md:p-6 md:pt-0">
-            <div className="text-xl md:text-2xl font-bold">{stats.documentsUploaded}</div>
-            <p className="text-xs text-muted-foreground">Documents uploaded</p>
-          </CardContent>
-        </Card>
-
-        <Card className="glass-card">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 p-3 pb-2 md:p-6 md:pb-2">
-            <CardTitle className="text-xs md:text-sm font-medium">Favorites</CardTitle>
-            <Heart className="h-4 w-4 text-muted-foreground shrink-0" />
-          </CardHeader>
-          <CardContent className="p-3 pt-0 md:p-6 md:pt-0">
-            <div className="text-xl md:text-2xl font-bold">{stats.favoritesCount}</div>
-            <p className="text-xs text-muted-foreground">Saved universities</p>
-          </CardContent>
-        </Card>
-
-        <Card className="glass-card">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 p-3 pb-2 md:p-6 md:pb-2">
-            <CardTitle className="text-xs md:text-sm font-medium">Chat Sessions</CardTitle>
-            <MessageCircle className="h-4 w-4 text-muted-foreground shrink-0" />
-          </CardHeader>
-          <CardContent className="p-3 pt-0 md:p-6 md:pt-0">
-            <div className="text-xl md:text-2xl font-bold">{stats.chatSessions}</div>
-            <p className="text-xs text-muted-foreground">AI consultations</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid gap-4 md:gap-6 md:grid-cols-2">
-        {/* Document Progress */}
-        {documentProgress && (
-          <Card className="glass-card overflow-hidden">
-            <CardHeader className="p-4 md:p-6">
-              <CardTitle className="flex items-center gap-2 text-base md:text-lg">
-                <Target className="w-5 h-5 shrink-0" />
-                Document Progress
-              </CardTitle>
-              <CardDescription className="text-xs md:text-sm">Track your document completion status</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4 p-4 pt-0 md:p-6 md:pt-0">
-              <div className="space-y-2">
-                <div className="flex justify-between text-sm">
-                  <span>Overall Progress</span>
-                  <span>{Math.round(documentProgress.completion_percentage)}%</span>
+          )}
+          {hero && (
+            <>
+              <Photo uni={hero} index={slide} className="absolute inset-0 transition-transform duration-700" />
+              <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/35 to-transparent" />
+              <div className="absolute inset-x-0 bottom-0 p-5 md:p-7 text-white">
+                <div className="mb-2 flex flex-wrap items-center gap-2 text-xs">
+                  <span className="rounded-full bg-white/20 px-2.5 py-1 font-medium backdrop-blur-sm">
+                    {hero.is_favorite ? 'Saved' : 'Recommended for you'}
+                  </span>
+                  {hero.ranking ? <span className="rounded-full bg-white/20 px-2.5 py-1 backdrop-blur-sm">Ranked #{hero.ranking}</span> : null}
                 </div>
-                <Progress value={documentProgress.completion_percentage} className="h-2" />
-              </div>
-              
-              <div className="grid grid-cols-3 gap-2 sm:gap-4 text-center">
-                <div>
-                  <div className="text-2xl font-bold text-blue-600">{documentProgress.uploaded_documents}</div>
-                  <div className="text-xs text-muted-foreground">Uploaded</div>
-                </div>
-                <div>
-                  <div className="text-2xl font-bold text-green-600">{documentProgress.approved_documents}</div>
-                  <div className="text-xs text-muted-foreground">Approved</div>
-                </div>
-                <div>
-                  <div className="text-2xl font-bold text-gray-600">{documentProgress.total_required_documents}</div>
-                  <div className="text-xs text-muted-foreground">Required</div>
+                <h2 className="text-2xl md:text-4xl font-bold leading-tight drop-shadow">{hero.name}</h2>
+                <p className="mt-1 flex items-center gap-1 text-sm text-white/85">
+                  <MapPin className="h-4 w-4" /> {[hero.city, hero.country].filter(Boolean).join(', ')}
+                </p>
+                {hero.news[0] ? (
+                  <a href={hero.news[0].link} target="_blank" rel="noopener noreferrer" className="mt-3 block max-w-2xl hover:underline">
+                    <span className="mr-2 rounded bg-primary px-1.5 py-0.5 text-[10px] font-bold uppercase">Latest</span>
+                    <span className="text-sm md:text-base font-medium">{hero.news[0].title}</span>
+                    <span className="ml-2 text-xs text-white/70">{hero.news[0].source} · {ago(hero.news[0].published_at)}</span>
+                  </a>
+                ) : hero.summary ? (
+                  <p className="mt-3 line-clamp-2 max-w-2xl text-sm text-white/85">{hero.summary}</p>
+                ) : null}
+                <div className="mt-4 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => toggleSave(hero)}
+                    className="inline-flex items-center gap-1.5 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-slate-900 hover:bg-white/90"
+                  >
+                    <Heart className={`h-4 w-4 ${hero.is_favorite ? 'fill-rose-500 text-rose-500' : ''}`} />
+                    {hero.is_favorite ? 'Saved' : 'Save'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => navigate('/student/messages')}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-white/40 px-3 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                  >
+                    <MessageCircle className="h-4 w-4" /> Ask about it
+                  </button>
                 </div>
               </div>
-            </CardContent>
-          </Card>
-        )}
+              {hero.image_credit && hero.image && (
+                <a href={hero.image_credit} target="_blank" rel="noopener noreferrer" className="absolute right-3 top-3 rounded bg-black/40 px-1.5 py-0.5 text-[10px] text-white/80 hover:text-white">
+                  Photo: Wikipedia
+                </a>
+              )}
+              {heroList.length > 1 && (
+                <div className="absolute bottom-4 right-5 flex items-center gap-2">
+                  <button
+                    type="button"
+                    aria-label="Previous"
+                    onClick={() => setSlide((s) => (s - 1 + heroList.length) % heroList.length)}
+                    className="rounded-full bg-black/35 p-1.5 text-white hover:bg-black/55"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                  </button>
+                  {heroList.map((u, i) => (
+                    <button
+                      key={u.id}
+                      type="button"
+                      aria-label={`Show ${u.name}`}
+                      onClick={() => setSlide(i)}
+                      className={`h-1.5 rounded-full transition-all ${i === slide % heroList.length ? 'w-6 bg-white' : 'w-1.5 bg-white/50'}`}
+                    />
+                  ))}
+                  <button
+                    type="button"
+                    aria-label="Next"
+                    onClick={() => setSlide((s) => (s + 1) % heroList.length)}
+                    className="rounded-full bg-black/35 p-1.5 text-white hover:bg-black/55"
+                  >
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
 
-        {/* Recent Applications */}
-        <Card className="glass-card overflow-hidden">
-          <CardHeader className="p-4 md:p-6">
-            <CardTitle className="flex items-center gap-2 text-base md:text-lg">
-              <BookOpen className="w-5 h-5 shrink-0" />
-              Recent Applications
-            </CardTitle>
-            <CardDescription className="text-xs md:text-sm">Your latest application submissions</CardDescription>
-          </CardHeader>
-          <CardContent className="p-4 pt-0 md:p-6 md:pt-0">
-            {applications.length > 0 ? (
-              <div className="space-y-4">
-                {applications.map((application) => (
-                  <div key={application.id} className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between p-3 rounded-lg border">
-                    <div className="flex-1 min-w-0">
-                      <div className="font-medium">
-                        {application.university_name || 'University'}
-                      </div>
-                      <div className="text-sm text-muted-foreground">
-                        {application.course_name || 'Course'}
-                      </div>
-                      {application.application_deadline && (
-                        <div className="text-xs text-muted-foreground flex items-center gap-1 mt-1">
-                          <Calendar className="w-3 h-3" />
-                          Deadline: {format(new Date(application.application_deadline), 'MMM dd, yyyy')}
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2 sm:flex-col sm:items-end">
-                      <Badge 
-                        className={`${getStatusColor(application.status)} text-white`}
-                      >
-                        {application.status}
-                      </Badge>
-                      <Badge variant={getPriorityColor(application.priority_level)}>
-                        {application.priority_level} priority
-                      </Badge>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-center py-8 text-muted-foreground">
-                <FileText className="w-12 h-12 mx-auto mb-4 opacity-50" />
-                <p>No applications yet</p>
-                <p className="text-sm mb-4">Start your study abroad journey!</p>
-                <Button onClick={() => navigate('/student/applications')}>Start an application</Button>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Quick Actions */}
-      <Card className="glass-card overflow-hidden">
-        <CardHeader className="p-4 md:p-6">
-          <CardTitle className="text-base md:text-lg">Quick Actions</CardTitle>
-          <CardDescription className="text-xs md:text-sm">Get started with your application process</CardDescription>
-        </CardHeader>
-        <CardContent className="p-4 pt-0 md:p-6 md:pt-0">
-          <div className="grid gap-2 grid-cols-2 md:grid-cols-3 lg:grid-cols-6">
-            <Button 
-              variant="outline" 
-              className="h-auto py-3 px-2 flex-col gap-1.5 text-xs md:text-sm"
-              onClick={() => navigate('/student/profile')}
-            >
-              <User className="w-5 h-5 md:w-6 md:h-6" />
-              <span className="text-center leading-tight">My Profile</span>
-            </Button>
-            <Button 
-              variant="outline" 
-              className="h-auto py-3 px-2 flex-col gap-1.5 text-xs md:text-sm"
-              onClick={() => navigate('/chat')}
-            >
-              <MessageCircle className="w-5 h-5 md:w-6 md:h-6" />
-              <span className="text-center leading-tight">AI Chat</span>
-            </Button>
-            <Button 
-              variant="outline" 
-              className="h-auto py-3 px-2 flex-col gap-1.5 text-xs md:text-sm"
-              onClick={() => navigate('/student/applications')}
-            >
-              <BookOpen className="w-5 h-5 md:w-6 md:h-6" />
-              <span className="text-center leading-tight">Applications</span>
-            </Button>
-            <Button 
-              variant="outline" 
-              className="h-auto py-3 px-2 flex-col gap-1.5 text-xs md:text-sm"
-              onClick={() => navigate('/student/universities')}
-            >
-              <GraduationCap className="w-5 h-5 md:w-6 md:h-6" />
-              <span className="text-center leading-tight">Universities</span>
-            </Button>
-            <Button 
-              variant="outline" 
-              className="h-auto py-3 px-2 flex-col gap-1.5 text-xs md:text-sm"
-              onClick={() => navigate('/student/documents')}
-            >
-              <FileText className="w-5 h-5 md:w-6 md:h-6" />
-              <span className="text-center leading-tight">Documents</span>
-            </Button>
-            <Button 
-              variant="outline" 
-              className="h-auto py-3 px-2 flex-col gap-1.5 text-xs md:text-sm"
-              onClick={() => navigate('/student/shortlists')}
-            >
-              <List className="w-5 h-5 md:w-6 md:h-6" />
-              <span className="text-center leading-tight">Shortlists</span>
-            </Button>
+        <div className="rounded-2xl border border-border/60 bg-card p-5 shadow-sm lg:h-[380px] lg:overflow-hidden flex flex-col">
+          <div>
+            <h3 className="flex items-center gap-2 font-semibold">
+              <Newspaper className="h-4 w-4 text-primary" /> Top stories for you
+            </h3>
+            <p className="mt-0.5 text-[11px] text-muted-foreground">
+              News about your universities and destination{feed?.generated_at ? ` · updated ${ago(feed.generated_at)}` : ''}
+            </p>
           </div>
-        </CardContent>
-      </Card>
+          <div className="mt-1 flex-1 divide-y overflow-y-auto pr-1">
+            {loading && [0, 1, 2, 3].map((i) => <div key={i} className="my-3 h-12 animate-pulse rounded bg-muted" />)}
+            {!loading && (feed?.stories || []).length === 0 && (
+              <p className="py-6 text-sm text-muted-foreground">
+                {feedError || 'News about your universities and destination will show here.'}
+              </p>
+            )}
+            {(feed?.stories || []).slice(0, 6).map((s) => <StoryRow key={s.link} story={s} />)}
+          </div>
+        </div>
+      </div>
+
+      {/* Journey + university cards */}
+      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="rounded-2xl bg-gradient-to-br from-sky-600 to-indigo-700 p-5 text-white shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-wide text-white/80">Your journey</p>
+          <div className="mt-3">
+            <div className="flex items-end justify-between">
+              <span className="text-sm">Profile</span>
+              <span className="text-2xl font-bold">{journey ? `${journey.profilePct}%` : '—'}</span>
+            </div>
+            <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-white/25">
+              <div className="h-full rounded-full bg-white" style={{ width: `${journey?.profilePct ?? 0}%` }} />
+            </div>
+          </div>
+          <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+            {[
+              { icon: Heart, label: 'Saved', value: journey?.saved, to: '/student/shortlists' },
+              { icon: FileText, label: 'Documents', value: journey?.documents, to: '/student/documents' },
+              { icon: List, label: 'Applications', value: journey?.applications, to: '/student/applications' },
+            ].map((s) => (
+              <Link key={s.label} to={s.to} className="rounded-xl bg-white/15 px-1 py-2 hover:bg-white/25">
+                <s.icon className="mx-auto h-4 w-4" />
+                <p className="mt-1 text-lg font-bold leading-none">{s.value ?? '—'}</p>
+                <p className="mt-0.5 text-[10px] text-white/80">{s.label}</p>
+              </Link>
+            ))}
+          </div>
+          {journey && journey.missing.length > 0 ? (
+            <Link to="/student/profile" className="mt-4 flex items-center justify-between rounded-xl bg-white px-3 py-2.5 text-sm font-semibold text-primary hover:bg-white/90">
+              <span className="flex items-center gap-2"><User className="h-4 w-4" /> Add your {journey.missing[0]}</span>
+              <ArrowRight className="h-4 w-4" />
+            </Link>
+          ) : (
+            <Link to="/student/documents" className="mt-4 flex items-center justify-between rounded-xl bg-white px-3 py-2.5 text-sm font-semibold text-primary hover:bg-white/90">
+              <span className="flex items-center gap-2"><FileText className="h-4 w-4" /> Upload your documents</span>
+              <ArrowRight className="h-4 w-4" />
+            </Link>
+          )}
+        </div>
+
+        {loading &&
+          [0, 1, 2].map((i) => <div key={i} className="h-[300px] animate-pulse rounded-2xl bg-muted" />)}
+
+        {cardList.map((uni, i) => (
+          <div key={uni.id} className="group flex flex-col overflow-hidden rounded-2xl border border-border/60 bg-card shadow-sm transition-shadow hover:shadow-md">
+            <div className="relative h-40 overflow-hidden">
+              <Photo uni={uni} index={i + 1} className="transition-transform duration-500 group-hover:scale-105" />
+              <button
+                type="button"
+                onClick={() => toggleSave(uni)}
+                aria-label={uni.is_favorite ? 'Remove from saved' : 'Save'}
+                className="absolute right-2 top-2 rounded-full bg-white/90 p-2 shadow hover:bg-white"
+              >
+                <Heart className={`h-4 w-4 ${uni.is_favorite ? 'fill-rose-500 text-rose-500' : 'text-slate-700'}`} />
+              </button>
+              <span className="absolute bottom-2 left-2 rounded-full bg-black/50 px-2 py-0.5 text-[11px] text-white backdrop-blur-sm">
+                {uni.country}
+              </span>
+            </div>
+            <div className="flex flex-1 flex-col p-4">
+              <p className="font-semibold leading-snug">{uni.name}</p>
+              <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
+                <MapPin className="h-3 w-3" /> {[uni.city, uni.country].filter(Boolean).join(', ')}
+              </p>
+              {uni.news[0] ? (
+                <a href={uni.news[0].link} target="_blank" rel="noopener noreferrer" className="mt-3 block rounded-lg bg-muted/50 p-2.5 hover:bg-muted">
+                  <p className="text-[10px] font-semibold uppercase tracking-wide text-primary">Latest update</p>
+                  <p className="mt-0.5 line-clamp-2 text-xs font-medium leading-snug">{uni.news[0].title}</p>
+                  <p className="mt-1 text-[11px] text-muted-foreground">{uni.news[0].source} · {ago(uni.news[0].published_at)}</p>
+                </a>
+              ) : uni.summary ? (
+                <p className="mt-3 line-clamp-3 text-xs text-muted-foreground">{uni.summary}</p>
+              ) : null}
+              <div className="mt-auto flex items-center justify-between pt-3">
+                <Link to="/student/universities" className="text-xs font-semibold text-primary hover:underline">
+                  View details
+                </Link>
+                {uni.website && (
+                  <a href={uni.website} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+                    Website <ExternalLink className="h-3 w-3" />
+                  </a>
+                )}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

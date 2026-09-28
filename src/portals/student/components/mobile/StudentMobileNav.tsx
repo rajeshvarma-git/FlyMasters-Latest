@@ -70,7 +70,7 @@ export function getStudentHeaderTitle(pathname: string): {
   backTo?: string;
 } {
   if (pathname === '/student' || pathname === '/dashboard') {
-    return { title: 'Student Portal', subtitle: 'Your study abroad journey' };
+    return { title: 'Dashboard', subtitle: 'Your study abroad journey' };
   }
   if (pathname.startsWith('/student/profile') || pathname.startsWith('/dashboard/profile')) {
     return { title: 'My Profile', showBack: true, backTo: '/student' };

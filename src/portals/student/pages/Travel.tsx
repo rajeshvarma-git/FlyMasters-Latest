@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import { WHATSAPP_DISPLAY, whatsappLink } from '@student/lib/contact';
 import { useQuery } from '@tanstack/react-query';
 import { supabase } from '@student/integrations/supabase/client';
 import { Button } from '@student/components/ui/button';
@@ -330,7 +331,7 @@ export default function Travel() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-4xl mx-auto">
             {[
               { icon: Phone, title: 'Call Us', link: 'tel:9259597979', text: '92595 97979', color: 'text-primary' },
-              { icon: MessageCircle, title: 'WhatsApp', link: 'https://wa.me/919502127788', text: '95021 27788', color: 'text-success' },
+              { icon: MessageCircle, title: 'WhatsApp', link: whatsappLink(), text: WHATSAPP_DISPLAY, color: 'text-success' },
               { icon: MapPin, title: 'Visit Us', text: 'Fly Masters Travels\nHyderabad, India', color: 'text-primary' }
             ].map((contact, idx) => (
               <motion.div key={contact.title} initial={{ opacity: 0, y: 20 }} whileInView={{ opacity: 1, y: 0 }}

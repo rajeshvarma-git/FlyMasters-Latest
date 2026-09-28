@@ -33,6 +33,7 @@ import configRoutes from "./routes/config.mjs";
 import commsRoutes, { startCommsScheduler } from "./routes/comms.mjs";
 import caseRoutes from "./routes/cases.mjs";
 import knowledgeRoutes from "./routes/knowledge.mjs";
+import studentFeedRoutes from "./routes/studentFeed.mjs";
 
 assertBootConfig();
 
@@ -69,6 +70,7 @@ app.use(commsRoutes);
 // One student conversation: AI advisor -> telecaller -> counselor.
 app.use(caseRoutes);
 app.use(knowledgeRoutes);
+app.use(studentFeedRoutes);
 app.use(coreRoutes);
 app.use(counselorRoutes);
 

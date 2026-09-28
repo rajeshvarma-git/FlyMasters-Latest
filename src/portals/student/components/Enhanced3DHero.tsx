@@ -1,4 +1,5 @@
 import { motion, useScroll, useTransform } from 'framer-motion';
+import { PhotoLetters } from '@student/components/PhotoLetters';
 import { Button } from '@student/components/ui/button';
 import { ArrowRight, Sparkles } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -95,14 +96,15 @@ export default function Enhanced3DHero() {
             animate={{ opacity: 1 }}
             transition={{ duration: 0.8, delay: 0.2 }}
           >
-            <h1 className="text-5xl md:text-7xl font-bold mb-6 leading-tight">
+            <h1 className="text-5xl md:text-7xl font-bold mb-6 leading-tight" aria-label="Your Dream University Awaits You">
               <motion.span
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.5, delay: 0.3 }}
                 className="block"
               >
-                Your Dream University
+                Your Dream{' '}
+                <PhotoLetters word="UNIVERSITY" className="text-[1.08em] align-baseline" />
               </motion.span>
               <motion.span
                 initial={{ opacity: 0, y: 20 }}

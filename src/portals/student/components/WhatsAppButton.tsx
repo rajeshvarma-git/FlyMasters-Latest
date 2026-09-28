@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { whatsappLink } from '@student/lib/contact';
 import { MessageCircle } from 'lucide-react';
 import { supabase } from '@student/integrations/supabase/client';
 
@@ -31,12 +32,10 @@ const WhatsAppButton: React.FC<WhatsAppButtonProps> = ({ variant = 'sticky', cla
     if (data?.metadata) setConfig(data.metadata as WhatsAppConfig);
   };
 
-  if (!config?.phone_number) return null;
+  if (!config) return null;
   if (variant === 'sticky' && !config.show_sticky) return null;
 
-  const phoneNumber = config.phone_number.replace(/[^0-9]/g, '');
-  const message = encodeURIComponent(config.message || 'Hi, I am interested in studying abroad. Can you help me?');
-  const whatsappUrl = `https://wa.me/${phoneNumber}?text=${message}`;
+  const whatsappUrl = whatsappLink(config.message || 'Hi, I am interested in studying abroad. Can you help me?');
 
   const positionClasses = {
     'bottom-right': 'bottom-6 right-6',

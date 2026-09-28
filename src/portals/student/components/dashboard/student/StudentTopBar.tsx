@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
-import { Bell, ChevronDown, LogOut, MessageCircle, Search, User } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, LogOut, MessageCircle, Search, User } from 'lucide-react';
 import { useAuth } from '@student/hooks/useAuth';
 import { GlobalSearch } from '@student/components/GlobalSearch';
 import { getStudentHeaderTitle } from '@student/components/mobile/StudentMobileNav';
@@ -13,6 +13,7 @@ import {
   DropdownMenuTrigger,
 } from '@student/components/ui/dropdown-menu';
 import { studentDisplayName, studentInitials } from './studentIdentity';
+import { StudentNotificationsMenu } from './StudentNotificationsMenu';
 
 /**
  * Desktop top bar for the student portal: page title on the left, search in
@@ -34,11 +35,10 @@ function CountBadge({ count, tone = 'red' }: { count: number; tone?: 'red' | 'bl
 }
 
 interface StudentTopBarProps {
-  notificationCount: number;
   messageCount: number;
 }
 
-export function StudentTopBar({ notificationCount, messageCount }: StudentTopBarProps) {
+export function StudentTopBar({ messageCount }: StudentTopBarProps) {
   const { user, userProfile, signOut } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
@@ -46,7 +46,15 @@ export function StudentTopBar({ notificationCount, messageCount }: StudentTopBar
   const header = getStudentHeaderTitle(location.pathname);
   const name = studentDisplayName(user, userProfile);
   const firstName = name.split(/\s+/)[0];
-  const title = location.pathname === '/student' ? 'Dashboard' : header.title;
+  const isHome = location.pathname === '/student' || location.pathname === '/student/' || location.pathname === '/dashboard';
+  const title = isHome ? 'Dashboard' : header.title;
+
+  // Back: previous page inside the app if there is one, else the Dashboard.
+  const goBack = () => {
+    const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0;
+    if (idx > 0) navigate(-1);
+    else navigate('/student');
+  };
 
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
@@ -66,9 +74,35 @@ export function StudentTopBar({ notificationCount, messageCount }: StudentTopBar
     <>
       <GlobalSearch open={searchOpen} onOpenChange={setSearchOpen} userRole="student" userId={user?.id} />
       <header className="hidden md:flex h-16 flex-none items-center gap-6 border-b border-border/40 bg-background/90 px-6 backdrop-blur-sm">
-        <div className="min-w-0">
-          <h1 className="truncate text-lg font-bold leading-tight">{title}</h1>
-          <p className="truncate text-xs text-muted-foreground">Welcome back, {firstName}</p>
+        <div className="flex min-w-0 items-center gap-3">
+          {!isHome && (
+            <button
+              type="button"
+              onClick={goBack}
+              className="flex h-9 w-9 flex-none items-center justify-center rounded-lg border border-border/60 bg-background hover:bg-muted/60"
+              aria-label="Go back"
+              title="Back"
+            >
+              <ArrowLeft className="h-4 w-4" />
+            </button>
+          )}
+          <div className="min-w-0">
+            {isHome ? (
+              <>
+                <h1 className="truncate text-lg font-bold leading-tight">Dashboard</h1>
+                <p className="truncate text-xs text-muted-foreground">Welcome back, {firstName}</p>
+              </>
+            ) : (
+              <>
+                <nav className="flex items-center gap-1 text-xs text-muted-foreground" aria-label="Breadcrumb">
+                  <Link to="/student" className="hover:text-primary hover:underline">Dashboard</Link>
+                  <ChevronRight className="h-3 w-3" />
+                  <span className="truncate">{title}</span>
+                </nav>
+                <h1 className="truncate text-lg font-bold leading-tight">{title}</h1>
+              </>
+            )}
+          </div>
         </div>
 
         <button
@@ -86,10 +120,7 @@ export function StudentTopBar({ notificationCount, messageCount }: StudentTopBar
             <MessageCircle className="h-5 w-5" />
             <CountBadge count={messageCount} tone="blue" />
           </Link>
-          <Link to="/student/notifications" className={iconBtn} aria-label="Notifications" title="Notifications">
-            <Bell className="h-5 w-5" />
-            <CountBadge count={notificationCount} />
-          </Link>
+          <StudentNotificationsMenu userId={user?.id} className={iconBtn} />
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
