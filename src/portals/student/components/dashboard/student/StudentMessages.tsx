@@ -24,7 +24,7 @@ export function StudentMessages(_props: StudentMessagesProps = {}) {
         </div>
         <div>
           <h1 className="text-2xl font-bold">Messages</h1>
-          <p className="text-muted-foreground">One chat with your AI advisor, telecaller and counselor</p>
+          <p className="text-muted-foreground">Your AI advisor, telecaller and counselor — all in one chat</p>
         </div>
       </div>
 

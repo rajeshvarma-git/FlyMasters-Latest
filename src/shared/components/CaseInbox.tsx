@@ -10,7 +10,7 @@ import { Bot, GraduationCap, Headphones, MessageCircle, RefreshCw, Search, Send,
  * lands in the same thread the student sees.
  */
 
-type Role = "student" | "ai" | "telecaller" | "counselor" | "admin";
+type Role = "student" | "ai" | "telecaller" | "counselor" | "admin" | "system";
 
 type Owner = { role: "ai" | "telecaller" | "counselor"; id: string | null; name: string };
 
@@ -22,14 +22,22 @@ type InboxItem = {
   last_message: { body: string; sender_role: Role; created_at: string } | null;
   last_message_at: string | null;
   unread: number;
+  needs_review: number;
 };
 
 type Message = {
   id: string;
+  kind: "text" | "system" | "recommendations";
   sender_role: Role;
   sender_name: string | null;
   body: string;
+  data: { universities?: { name: string; location: string }[] } | null;
   channel: "app" | "whatsapp";
+  source: string | null;
+  sources: string[];
+  review_status: "pending" | "approved" | "corrected" | null;
+  reviewed_by_name: string | null;
+  original_body: string | null;
   created_at: string;
 };
 
@@ -41,6 +49,7 @@ type Thread = {
 };
 
 const LABEL: Record<string, string> = {
+  system: "Fly Masters",
   student: "Student",
   ai: "AI Advisor",
   telecaller: "Telecaller",
@@ -88,6 +97,7 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [query, setQuery] = useState("");
+  const [editing, setEditing] = useState<{ id: string; body: string } | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const lastCount = useRef(0);
   const [params] = useSearchParams();
@@ -171,6 +181,21 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
     }
   };
 
+  const review = async (messageId: string, action: "approve" | "correct", body?: string) => {
+    if (!selected) return;
+    try {
+      const { message } = await request<{ message: Message }>(
+        `/case/lead/${encodeURIComponent(selected)}/messages/${encodeURIComponent(messageId)}/review`,
+        { method: "POST", body: { action, body } },
+      );
+      setThread((t) => (t ? { ...t, messages: t.messages.map((m) => (m.id === message.id ? message : m)) } : t));
+      setEditing(null);
+      loadList().catch(() => {});
+    } catch (e) {
+      setThreadError(e instanceof Error ? e.message : "Could not save");
+    }
+  };
+
   const knownFacts = thread
     ? Object.entries(thread.known || {}).filter(([k, v]) => k !== "name" && String(v || "").trim())
     : [];
@@ -229,9 +254,16 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
                       ? `${item.last_message.sender_role === "student" ? "" : LABEL[item.last_message.sender_role] + ": "}${item.last_message.body}`
                       : "No messages yet"}
                   </span>
-                  {item.unread > 0 && (
-                    <span className="shrink-0 rounded-full bg-emerald-600 px-1.5 text-[11px] font-semibold text-white">{item.unread}</span>
-                  )}
+                  <span className="flex shrink-0 gap-1">
+                    {item.needs_review > 0 && (
+                      <span title="AI answers to check" className="rounded-full bg-amber-500 px-1.5 text-[11px] font-semibold text-white">
+                        {item.needs_review} to check
+                      </span>
+                    )}
+                    {item.unread > 0 && (
+                      <span className="rounded-full bg-emerald-600 px-1.5 text-[11px] font-semibold text-white">{item.unread}</span>
+                    )}
+                  </span>
                 </span>
                 <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
                   <RoleIcon role={item.owner.role} className="h-3 w-3" />
@@ -281,24 +313,83 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
               <div className="flex-1 space-y-2 overflow-y-auto bg-slate-50 p-4">
                 {threadError && <p className="text-sm text-red-600">{threadError}</p>}
                 {thread?.messages.map((m) => {
+                  if (m.kind === "system") {
+                    return (
+                      <div key={m.id} className="flex justify-center">
+                        <span className="max-w-[90%] rounded-full bg-slate-200 px-3 py-1 text-center text-[11px] text-slate-600">{m.body}</span>
+                      </div>
+                    );
+                  }
                   const student = m.sender_role === "student";
+                  const ai = m.sender_role === "ai";
+                  const faq = ai && m.source === "faq";
                   return (
                     <div key={m.id} className={`flex ${student ? "justify-start" : "justify-end"}`}>
                       <div
                         className={`max-w-[78%] rounded-2xl px-3 py-2 text-sm shadow-sm ${
                           student
                             ? "rounded-bl-sm border bg-white"
-                            : m.sender_role === "ai"
-                              ? "rounded-br-sm border border-sky-100 bg-sky-50"
+                            : ai
+                              ? `rounded-br-sm border ${faq && m.review_status === "pending" ? "border-amber-300 bg-amber-50" : "border-sky-100 bg-sky-50"}`
                               : "rounded-br-sm bg-emerald-600 text-white"
                         }`}
                       >
-                        <p className={`mb-0.5 flex items-center gap-1 text-[11px] font-medium ${student || m.sender_role === "ai" ? "text-slate-500" : "text-emerald-50"}`}>
+                        <p className={`mb-0.5 flex items-center gap-1 text-[11px] font-medium ${student || ai ? "text-slate-500" : "text-emerald-50"}`}>
                           <RoleIcon role={m.sender_role} className="h-3 w-3" />
-                          {student ? thread.student.name : m.sender_role === "ai" ? "AI Advisor" : `${m.sender_name || LABEL[m.sender_role]} · ${LABEL[m.sender_role]}`}
+                          {student ? thread.student.name : ai ? (faq ? "AI Advisor · from FAQs" : "AI Advisor") : `${m.sender_name || LABEL[m.sender_role]} · ${LABEL[m.sender_role]}`}
                         </p>
-                        <p className="whitespace-pre-wrap break-words">{m.body}</p>
-                        <p className={`mt-1 text-[10px] ${student || m.sender_role === "ai" ? "text-slate-400" : "text-emerald-100"}`}>
+                        {editing?.id === m.id ? (
+                          <div className="space-y-2">
+                            <textarea
+                              value={editing.body}
+                              onChange={(e) => setEditing({ id: m.id, body: e.target.value })}
+                              className="min-h-[80px] w-full rounded-md border bg-white p-2 text-sm outline-none"
+                            />
+                            <div className="flex justify-end gap-2">
+                              <button type="button" onClick={() => setEditing(null)} className="rounded-md px-2 py-1 text-xs text-slate-600 hover:bg-slate-100">
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                disabled={!editing.body.trim()}
+                                onClick={() => review(m.id, "correct", editing.body)}
+                                className="rounded-md bg-emerald-600 px-2 py-1 text-xs font-medium text-white disabled:opacity-50"
+                              >
+                                Save correction
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="whitespace-pre-wrap break-words">{m.body}</p>
+                        )}
+                        {m.kind === "recommendations" && (m.data?.universities?.length || 0) > 0 && (
+                          <ul className="mt-1 list-disc pl-4 text-xs text-slate-600">
+                            {m.data!.universities!.map((u) => (
+                              <li key={u.name}>{u.name} — {u.location}</li>
+                            ))}
+                          </ul>
+                        )}
+                        {faq && (
+                          <div className="mt-1 text-[11px] text-slate-500">
+                            {m.sources?.length > 0 && <p>Source: {m.sources.join(", ")}</p>}
+                            {m.review_status === "corrected" && (
+                              <p>Corrected by {m.reviewed_by_name}{m.original_body ? ` · AI had said: "${m.original_body}"` : ""}</p>
+                            )}
+                            {m.review_status === "approved" && <p>Checked by {m.reviewed_by_name}</p>}
+                            {m.review_status === "pending" && editing?.id !== m.id && (
+                              <div className="mt-1 flex items-center gap-2">
+                                <span className="font-medium text-amber-700">Please check this answer:</span>
+                                <button type="button" onClick={() => review(m.id, "approve")} className="rounded border border-emerald-300 bg-white px-2 py-0.5 text-emerald-700 hover:bg-emerald-50">
+                                  Correct ✓
+                                </button>
+                                <button type="button" onClick={() => setEditing({ id: m.id, body: m.body })} className="rounded border border-amber-300 bg-white px-2 py-0.5 text-amber-700 hover:bg-amber-50">
+                                  Fix it
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                        <p className={`mt-1 text-[10px] ${student || ai ? "text-slate-400" : "text-emerald-100"}`}>
                           {when(m.created_at)}
                           {m.channel === "whatsapp" ? " · WhatsApp" : ""}
                         </p>

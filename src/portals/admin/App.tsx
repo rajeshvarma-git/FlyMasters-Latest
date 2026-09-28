@@ -40,6 +40,7 @@ import Notifications from "@admin/admin/Notifications";
 import Telecallers from "@admin/admin/Telecallers";
 import TelecallerDetail from "@admin/admin/TelecallerDetail";
 import Help from "@admin/admin/Help";
+import KnowledgeBase from "@admin/admin/KnowledgeBase";
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: string }> {
   state = { error: "" };
@@ -112,6 +113,7 @@ export default function App() {
               <Route path="alert-settings" element={<AlertSettings />} />
               {/* CRM 2.7 — templates, automation, supervision */}
               <Route path="templates" element={<MessageTemplates />} />
+              <Route path="knowledge" element={<KnowledgeBase />} />
               <Route path="automation" element={<Automation />} />
               <Route path="comms-log" element={<CommsLog />} />
               <Route path="supervision" element={<ChatSupervision />} />

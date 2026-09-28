@@ -32,15 +32,22 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
   return payload as T;
 }
 
-export type CaseSenderRole = 'student' | 'ai' | 'telecaller' | 'counselor' | 'admin';
+export type CaseSenderRole = 'student' | 'ai' | 'telecaller' | 'counselor' | 'admin' | 'system';
 
 export interface CaseMessage {
   id: string;
+  kind: 'text' | 'system' | 'recommendations';
   sender_role: CaseSenderRole;
   sender_id: string | null;
   sender_name: string | null;
   body: string;
+  data: { universities?: unknown[]; country?: string } | null;
   channel: 'app' | 'whatsapp';
+  /** 'faq' when the AI answered from the FAQ/policy articles */
+  source: string | null;
+  sources: string[];
+  review_status: 'pending' | 'approved' | 'corrected' | null;
+  reviewed_by_name: string | null;
   created_at: string;
 }
 
@@ -51,11 +58,11 @@ export interface CaseOwner {
 }
 
 export function getMyCase() {
-  return call<{ conversation_id: string; owner: CaseOwner; ai_enabled: boolean; messages: CaseMessage[] }>('/case/me');
+  return call<{ conversation_id: string; owner: CaseOwner; intake_complete: boolean; messages: CaseMessage[] }>('/case/me');
 }
 
 export function sendCaseMessage(message: string) {
-  return call<{ owner: CaseOwner; messages: CaseMessage[] }>('/case/me/messages', {
+  return call<{ owner: CaseOwner; intake_complete: boolean; messages: CaseMessage[] }>('/case/me/messages', {
     method: 'POST',
     body: JSON.stringify({ message }),
   });

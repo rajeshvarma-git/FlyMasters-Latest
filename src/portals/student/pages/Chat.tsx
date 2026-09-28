@@ -32,18 +32,16 @@ const Chat: React.FC = () => {
       <div className="container mx-auto px-4">
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold mb-4 bg-gradient-to-r from-primary to-primary-foreground bg-clip-text text-transparent">
-            Chat with Fly Masters
+            University Advisor AI
           </h1>
           <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-            Our AI advisor answers first. Your telecaller and counselor join this same chat as you move ahead.
+            Get personalized university recommendations and expert guidance for your study abroad journey
           </p>
         </div>
         
-        <div className="max-w-3xl mx-auto">
-          <ErrorBoundary>
-            <StudentCaseChat />
-          </ErrorBoundary>
-        </div>
+        <ErrorBoundary>
+          <StudentCaseChat />
+        </ErrorBoundary>
       </div>
     </div>
   );

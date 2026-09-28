@@ -2,8 +2,10 @@
  * Minimal Gemini client for the student case chat — plain REST, no SDK.
  *
  * Set GEMINI_API_KEY in Railway (Google AI Studio key). GEMINI_MODEL is
- * optional (default gemini-3.5-flash-lite, falling back to 3.5-flash and 3.7-flash). With no key the chat still works: the AI step just answers with
- * a holding line and a human picks the conversation up.
+ * optional (default gemini-3.5-flash-lite, falling back to 3.5-flash and
+ * 3.7-flash). Used only to answer student questions from the admin-managed
+ * FAQ/policy articles; without a key those questions go to the assigned
+ * staff member instead.
  */
 // GEMINI_API_BASE only exists so tests can point at a local stub.
 function apiBase() {
@@ -29,30 +31,12 @@ export function geminiModelName() {
   return modelsToTry()[0];
 }
 
-const RESPONSE_SCHEMA = {
-  type: "OBJECT",
-  properties: {
-    reply: { type: "STRING" },
-    profile: {
-      type: "OBJECT",
-      properties: {
-        country: { type: "STRING" },
-        qualification: { type: "STRING" },
-        field: { type: "STRING" },
-        score: { type: "STRING" },
-        budget: { type: "STRING" },
-        intake: { type: "STRING" },
-      },
-    },
-  },
-  required: ["reply"],
-};
-
 /**
- * history: [{ role: "user" | "model", text }] oldest first.
- * Returns { reply, profile } — profile holds only fields the student stated.
+ * One JSON-mode call. history: [{ role: "user" | "model", text }], oldest
+ * first, ending with the user's turn. Returns the parsed JSON object that
+ * matches `schema` (Gemini OpenAPI-subset schema).
  */
-export async function geminiChat({ systemPrompt, history }) {
+export async function geminiJson({ systemPrompt, history, schema, temperature = 0.2 }) {
   const key = String(process.env.GEMINI_API_KEY || "").trim();
   if (!key) throw Object.assign(new Error("GEMINI_API_KEY is not set"), { code: "not_configured" });
 
@@ -73,12 +57,12 @@ export async function geminiChat({ systemPrompt, history }) {
     systemInstruction: { parts: [{ text: systemPrompt }] },
     contents,
     generationConfig: {
-      temperature: 0.4,
+      temperature,
       // Gemini 3 models think before answering and that counts here, so
       // leave headroom; the reply itself is ~90 words.
       maxOutputTokens: 2048,
       responseMimeType: "application/json",
-      responseSchema: RESPONSE_SCHEMA,
+      responseSchema: schema,
     },
   });
 
@@ -116,19 +100,10 @@ export async function geminiChat({ systemPrompt, history }) {
       .filter((p) => !p.thought)
       .map((p) => p.text || "")
       .join("");
-    let parsed;
     try {
-      parsed = JSON.parse(raw);
+      return JSON.parse(raw);
     } catch {
-      parsed = { reply: raw };
+      throw new Error("Gemini returned non-JSON output");
     }
-    const reply = String(parsed?.reply || "").trim();
-    if (!reply) throw new Error("Gemini returned an empty reply");
-    const profile = {};
-    for (const [k, v] of Object.entries(parsed?.profile || {})) {
-      const value = String(v || "").trim();
-      if (value && !/^(unknown|n\/a|none|null|not provided)$/i.test(value)) profile[k] = value;
-    }
-    return { reply, profile };
   }
 }

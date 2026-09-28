@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 import {
+  BookOpen,
   Bell,
   BellRing,
   Building2,
@@ -103,6 +104,7 @@ const groups = [
     roles: OPERATIONS,
     items: [
       { to: "/templates", label: "Message templates", icon: MessageSquareText, end: false, roles: ADMIN_ONLY },
+      { to: "/knowledge", label: "AI FAQs & policies", icon: BookOpen, end: false, roles: ADMIN_ONLY },
       { to: "/automation", label: "Automation", icon: Workflow, end: false, roles: ADMIN_ONLY },
       { to: "/comms-log", label: "Delivery log", icon: ScrollText, end: false },
       { to: "/supervision", label: "Chat supervision", icon: Eye, end: false, roles: ADMIN_ONLY },

@@ -32,6 +32,7 @@ import financeRoutes from "./routes/finance.mjs";
 import configRoutes from "./routes/config.mjs";
 import commsRoutes, { startCommsScheduler } from "./routes/comms.mjs";
 import caseRoutes from "./routes/cases.mjs";
+import knowledgeRoutes from "./routes/knowledge.mjs";
 
 assertBootConfig();
 
@@ -67,6 +68,7 @@ app.use(configRoutes);
 app.use(commsRoutes);
 // One student conversation: AI advisor -> telecaller -> counselor.
 app.use(caseRoutes);
+app.use(knowledgeRoutes);
 app.use(coreRoutes);
 app.use(counselorRoutes);
 

@@ -1,28 +1,32 @@
 /**
  * One conversation per student — the "case chat".
  *
- * AI advisor → telecaller → counselor all write into the same thread
- * (case_conversations + case_messages, JSONB in app_records, no migration).
- * The student never picks who to message: whoever currently owns the lead
- * answers.
+ * Flow the client asked for:
+ *   1. AI intake: on first open the AI greets with what the profile already
+ *      says ("I've loaded your profile …") and asks only what's missing,
+ *      one question at a time — same questions and wording as the old AI
+ *      wizard. When everything is known it posts university recommendation
+ *      cards and saves the answers to the student's profile and lead.
+ *   2. Admin assigns a telecaller → a notice appears in the chat ("X has been
+ *      assigned and will assist you further"). The telecaller mostly calls;
+ *      they can reply here too.
+ *   3. After conversion a counselor is assigned → same notice for them.
+ *   4. After intake, when the student asks something, the AI answers ONLY
+ *      from the admin-managed FAQ/policy articles (knowledge_articles). Those
+ *      answers are marked for the assigned person to approve or correct.
+ *      Anything the articles don't cover goes to the assigned person; the AI
+ *      just says so.
  *
- *   owner = assigned counselor  ?  counselor
- *         : assigned telecaller ?  telecaller
- *         : AI advisor (Gemini)
- *
- * The AI only replies while it owns the case. Once a telecaller or counselor
- * is assigned, they see the full history (AI included) and reply here.
- *
- * Older chat stores (private_messages, telecaller_messages, ai_chat_messages,
- * whatsapp_messages) are copied into the thread when it is opened, keyed by
- * source_id, so nothing said before this existed is lost and anything a
- * staff member still sends from an old screen still reaches the student.
+ * Storage: case_conversations + case_messages, JSONB in app_records, no
+ * migration. Older chat stores (private_messages, telecaller_messages,
+ * ai_chat_messages, whatsapp_messages) are copied in on open, keyed by
+ * source_id, so nothing earlier is lost.
  */
 import express from "express";
 import crypto from "crypto";
 import { pool, jsonTable, jsonFind, jsonUpsert } from "../lib/db.mjs";
 import { anySession, branchScope, ROLES } from "../lib/auth.mjs";
-import { geminiChat, geminiConfigured } from "../lib/gemini.mjs";
+import { geminiJson, geminiConfigured } from "../lib/gemini.mjs";
 
 const router = express.Router();
 
@@ -31,10 +35,78 @@ const STAFF_ROLES = new Set([
   ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.BRANCH_HEAD, ROLES.COUNSELOR, ROLES.TELECALLER,
 ]);
 const ADMIN_ROLES = new Set([ROLES.SUPER_ADMIN, ROLES.ADMIN]);
-const HISTORY_FOR_AI = 30;
 const MAX_MESSAGE = 2000;
-const AI_FALLBACK =
-  "Thanks, I've noted that. Someone from the Fly Masters team will reply here shortly.";
+const AI_NAME = "AI Advisor";
+
+// ------------------------------------------------------------ intake steps
+
+// Same questions (and order) as the old AI wizard in chatContext.ts.
+const STEPS = [
+  { key: "country", ask: "Which country would you love to study in? (For example: USA, UK, Canada, Australia, Germany, or Nepal)" },
+  { key: "qualification", ask: "What is your highest qualification? (for example 12th, Bachelor's, or Master's)" },
+  { key: "field", ask: "Which field or program are you most interested in? (for example Computer Science, Business, or Nursing)" },
+  { key: "score", ask: "What is your academic score — percentage or GPA?" },
+  { key: "budget", ask: "What is your estimated study budget? (for example 20 lakhs or $25,000)" },
+];
+
+const ACK = {
+  country: (v) => `Great choice — ${v}!`,
+  qualification: (v) => `Got it, ${v}.`,
+  field: (v) => `${v} is a strong path.`,
+  score: (v) => `Thanks, ${v} noted.`,
+  budget: (v) => `Budget noted: ${v}.`,
+};
+
+const SUPPORTED_COUNTRIES = ["USA", "UK", "Canada", "Australia", "Germany", "Ireland", "New Zealand", "India", "Nepal", "France", "Netherlands"];
+const COUNTRY_ALIASES = {
+  nepal: "Nepal", usa: "USA", us: "USA", america: "USA", "united states": "USA", "united states of america": "USA",
+  uk: "UK", britain: "UK", england: "UK", "united kingdom": "UK", canada: "Canada", australia: "Australia",
+  germany: "Germany", ireland: "Ireland", "new zealand": "New Zealand", india: "India", france: "France",
+  netherlands: "Netherlands", holland: "Netherlands",
+};
+const GIBBERISH = /^[bcdfghjklmnpqrstvwxyz\d]{5,}$/i;
+
+function normalizeCountry(input) {
+  const raw = String(input || "").trim();
+  if (!raw) return "";
+  return COUNTRY_ALIASES[raw.toLowerCase()] || raw.replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function isValidCountry(input) {
+  const trimmed = String(input || "").trim();
+  if (!trimmed) return false;
+  return SUPPORTED_COUNTRIES.includes(normalizeCountry(trimmed)) || trimmed.toLowerCase() in COUNTRY_ALIASES;
+}
+
+/** Same rules as the old wizard's validateChatStep. */
+function validateStep(key, value) {
+  const t = String(value || "").trim();
+  if (!t) return { error: "Please enter an answer before continuing." };
+  if (key === "country") {
+    return isValidCountry(t)
+      ? { value: normalizeCountry(t) }
+      : { error: "Please enter a supported study destination such as USA, UK, Canada, Australia, Germany, Ireland, New Zealand, India, or Nepal." };
+  }
+  if (key === "qualification" && (!/[a-zA-Z]/.test(t) || GIBBERISH.test(t.replace(/\s/g, "")))) {
+    return { error: "Please enter your qualification (for example 12th, Bachelor's, or Master's)." };
+  }
+  if (key === "field" && (t.length < 3 || !/[a-zA-Z]{3,}/.test(t) || GIBBERISH.test(t.replace(/\s/g, "")))) {
+    return { error: "Please enter a real field of study (for example Computer Science, Business, or Nursing)." };
+  }
+  if (key === "score" && !/\d/.test(t)) {
+    return { error: "Please enter your score with numbers (for example 85%, 3.5 GPA, or 8.2 CGPA)." };
+  }
+  if (key === "budget" && !/\d/.test(t)) {
+    return { error: "Please enter your budget with an amount (for example 20 lakhs, $25,000, or ₹15,00,000)." };
+  }
+  return { value: t };
+}
+
+function looksLikeQuestion(text) {
+  const t = String(text || "").trim().toLowerCase();
+  return t.endsWith("?") ||
+    /^(what|how|which|when|where|why|who|can|could|do|does|did|is|are|will|would|should|shall|may|tell me|explain|please tell)\b/.test(t);
+}
 
 // ---------------------------------------------------------------- data access
 
@@ -86,15 +158,17 @@ function studentNameFromLead(lead, fallback = "Student") {
 async function ownerOf(lead) {
   const counselorId = lead?.assigned_counselor_id ? String(lead.assigned_counselor_id) : "";
   if (counselorId) {
-    const name = counselorId === SHARED_COUNSELOR_ID ? "Your Counselor" : await personName(counselorId, "Your Counselor");
+    const name = counselorId === SHARED_COUNSELOR_ID ? "Your counselor" : await personName(counselorId, "Your counselor");
     return { role: "counselor", id: counselorId, name };
   }
   const telecallerId = lead?.assigned_telecaller_id ? String(lead.assigned_telecaller_id) : "";
   if (telecallerId) {
-    return { role: "telecaller", id: telecallerId, name: await personName(telecallerId, "Your Advisor") };
+    return { role: "telecaller", id: telecallerId, name: await personName(telecallerId, "Your advisor") };
   }
-  return { role: "ai", id: null, name: "AI Advisor" };
+  return { role: "ai", id: null, name: AI_NAME };
 }
+
+const ownerKey = (owner) => (owner.role === "ai" ? "ai" : `${owner.role}:${owner.id}`);
 
 async function conversationFor(studentUserId, leadId) {
   const existing = (await rowsWhere("case_conversations", "student_user_id", studentUserId))[0];
@@ -104,23 +178,18 @@ async function conversationFor(studentUserId, leadId) {
     }
     return existing;
   }
-  const now = new Date().toISOString();
   // Deterministic id: two requests racing to create it land on the same row.
   return jsonUpsert("case_conversations", {
     id: `case-${studentUserId}`,
     student_user_id: String(studentUserId),
     lead_id: leadId ? String(leadId) : null,
-    created_at: now,
-    last_message_at: now,
-    staff_last_read_at: null,
-    student_last_read_at: null,
+    last_message_at: new Date().toISOString(),
   });
 }
 
-async function loadMessages(conversationId) {
-  const rows = await rowsWhere("case_messages", "conversation_id", conversationId);
-  rows.sort((a, b) => sentAt(a).localeCompare(sentAt(b)));
-  return rows.map(publicMessage);
+async function patchConversation(conversation, patch) {
+  Object.assign(conversation, patch);
+  await jsonUpsert("case_conversations", { id: conversation.id, ...patch });
 }
 
 // jsonUpsert keeps created_at in its own column (insert time), so the time a
@@ -129,21 +198,41 @@ function sentAt(row) {
   return String(row.sent_at || row.created_at || (row._created_at ? new Date(row._created_at).toISOString() : ""));
 }
 
-function publicMessage(row) {
-  return {
+async function rawMessages(conversationId) {
+  const rows = await rowsWhere("case_messages", "conversation_id", conversationId);
+  rows.sort((a, b) => sentAt(a).localeCompare(sentAt(b)) || String(a.seq || 0).localeCompare(String(b.seq || 0)));
+  return rows;
+}
+
+function publicMessage(row, { staff = false } = {}) {
+  const msg = {
     id: row.id,
     conversation_id: row.conversation_id,
+    kind: row.kind || "text",
     sender_role: row.sender_role,
     sender_id: row.sender_id || null,
     sender_name: row.sender_name || null,
     body: row.body,
+    data: row.data || null,
     channel: row.channel || "app",
+    source: row.source || null,
+    sources: row.sources || [],
+    review_status: row.review_status || null,
+    reviewed_by_name: row.reviewed_by_name || null,
     created_at: sentAt(row),
   };
+  if (staff) msg.original_body = row.original_body || null;
+  return msg;
 }
 
-async function addMessage(conversation, { senderRole, senderId = null, senderName = null, body, channel = "app", sourceId = null, createdAt = null }) {
-  const created_at = createdAt || new Date().toISOString();
+let seqCounter = 0;
+
+async function addMessage(conversation, fields) {
+  const {
+    senderRole, senderId = null, senderName = null, body, kind = "text", data = null,
+    channel = "app", sourceId = null, createdAt = null, extra = {},
+  } = fields;
+  const sent_at = createdAt || new Date().toISOString();
   // Imported rows get an id derived from their source so a repeat or racing
   // import overwrites instead of duplicating.
   const id = sourceId
@@ -152,20 +241,27 @@ async function addMessage(conversation, { senderRole, senderId = null, senderNam
   const row = await jsonUpsert("case_messages", {
     id,
     conversation_id: String(conversation.id),
+    kind,
     sender_role: senderRole,
     sender_id: senderId ? String(senderId) : null,
     sender_name: senderName,
-    body: String(body).slice(0, MAX_MESSAGE * 2),
+    body: String(body || "").slice(0, MAX_MESSAGE * 4),
+    data,
     channel,
     source_id: sourceId,
-    sent_at: created_at,
+    sent_at,
+    // Several messages written in the same millisecond keep their order.
+    seq: String(Date.now()).padStart(15, "0") + String(++seqCounter % 1000).padStart(3, "0"),
+    ...extra,
   });
-  if (!conversation.last_message_at || created_at > String(conversation.last_message_at)) {
-    await jsonUpsert("case_conversations", { id: conversation.id, last_message_at: created_at });
-    conversation.last_message_at = created_at;
+  if (!conversation.last_message_at || sent_at > String(conversation.last_message_at)) {
+    await patchConversation(conversation, { last_message_at: sent_at });
   }
-  return publicMessage(row);
+  return row;
 }
+
+const aiSay = (conversation, body, opts = {}) =>
+  addMessage(conversation, { senderRole: "ai", senderName: AI_NAME, body, ...opts });
 
 // ------------------------------------------------------- import older stores
 
@@ -175,27 +271,23 @@ async function importLegacy(conversation, studentUserId) {
   const incoming = [];
 
   const privConvs = await rowsWhere("private_conversations", "student_id", studentUserId);
-  const privMsgs = await rowsWhere("private_messages", "conversation_id", privConvs.map((c) => c.id));
-  for (const m of privMsgs) {
+  for (const m of await rowsWhere("private_messages", "conversation_id", privConvs.map((c) => c.id))) {
     const mine = String(m.sender_id) === String(studentUserId);
     incoming.push({ sourceId: `private_messages:${m.id}`, senderRole: mine ? "student" : "counselor", senderId: m.sender_id, body: m.message, createdAt: m.created_at || m._created_at });
   }
 
   const teleConvs = await rowsWhere("telecaller_conversations", "student_id", studentUserId);
-  const teleMsgs = await rowsWhere("telecaller_messages", "conversation_id", teleConvs.map((c) => c.id));
-  for (const m of teleMsgs) {
+  for (const m of await rowsWhere("telecaller_messages", "conversation_id", teleConvs.map((c) => c.id))) {
     const mine = String(m.sender_id) === String(studentUserId);
     incoming.push({ sourceId: `telecaller_messages:${m.id}`, senderRole: mine ? "student" : "telecaller", senderId: m.sender_id, body: m.message, createdAt: m.created_at || m._created_at });
   }
 
-  const aiMsgs = await rowsWhere("ai_chat_messages", "user_id", studentUserId);
-  for (const m of aiMsgs) {
+  for (const m of await rowsWhere("ai_chat_messages", "user_id", studentUserId)) {
     incoming.push({ sourceId: `ai_chat_messages:${m.id}`, senderRole: m.role === "user" ? "student" : "ai", body: m.content, createdAt: m.created_at || m._created_at });
   }
 
   const waConvs = await rowsWhere("whatsapp_conversations", "user_id", studentUserId);
-  const waMsgs = await rowsWhere("whatsapp_messages", "conversation_id", waConvs.map((c) => c.id));
-  for (const m of waMsgs) {
+  for (const m of await rowsWhere("whatsapp_messages", "conversation_id", waConvs.map((c) => c.id))) {
     const conv = waConvs.find((c) => String(c.id) === String(m.conversation_id));
     const inbound = m.direction === "inbound";
     incoming.push({
@@ -209,9 +301,10 @@ async function importLegacy(conversation, studentUserId) {
   }
 
   const names = new Map();
+  let added = 0;
   for (const item of incoming) {
     if (seen.has(item.sourceId) || !String(item.body || "").trim()) continue;
-    let senderName = null;
+    let senderName = item.senderRole === "ai" ? AI_NAME : null;
     if (item.senderRole === "counselor" || item.senderRole === "telecaller") {
       const key = String(item.senderId || item.senderRole);
       if (!names.has(key)) names.set(key, await personName(item.senderId, item.senderRole === "counselor" ? "Counselor" : "Telecaller"));
@@ -222,10 +315,12 @@ async function importLegacy(conversation, studentUserId) {
       senderName,
       createdAt: item.createdAt ? new Date(item.createdAt).toISOString() : null,
     });
+    added += 1;
   }
+  return added;
 }
 
-// --------------------------------------------------------------- AI advisor
+// ------------------------------------------------------------ profile facts
 
 function firstOf(value) {
   if (Array.isArray(value)) return value.find(Boolean) || "";
@@ -237,62 +332,48 @@ function budgetFromNotes(notes) {
   return matches.length ? matches[matches.length - 1][1].trim() : "";
 }
 
+/** Profile first, lead as fallback — same precedence as the old wizard. */
 function knownProfile(profile, lead) {
   const prefs = lead?.preferences || {};
+  const country = [firstOf(profile?.interested_countries), profile?.country, firstOf(lead?.preferred_countries), firstOf(prefs.interested_countries)]
+    .find((c) => c && isValidCountry(c));
   return {
-    name: studentNameFromLead(lead, "") || profile?.full_name || profile?.first_name || "",
-    country: firstOf(lead?.preferred_countries) || firstOf(profile?.interested_countries) || firstOf(prefs.interested_countries),
-    qualification: lead?.current_qualification || lead?.qualification_level || profile?.degree_level || "",
-    field: lead?.field_of_interest || profile?.course_preferences || "",
-    score: lead?.academic_score || "",
+    country: country ? normalizeCountry(country) : "",
+    qualification:
+      profile?.degree_level?.trim() ||
+      (profile?.masters_degree?.trim() ? "Master's" : "") ||
+      (profile?.bachelors_degree?.trim() ? "Bachelor's" : "") ||
+      (profile?.twelfth_grade_score?.trim() ? "12th" : "") ||
+      lead?.current_qualification || lead?.qualification_level || "",
+    field:
+      profile?.course_preferences?.trim() || profile?.masters_degree?.trim() || profile?.bachelors_degree?.trim() ||
+      lead?.field_of_interest || lead?.stream_or_program || "",
+    score:
+      profile?.masters_score?.trim() || profile?.bachelors_score?.trim() || profile?.twelfth_grade_score?.trim() ||
+      profile?.tenth_grade_score?.trim() || lead?.academic_score || "",
     budget: profile?.study_budget || prefs.study_budget || budgetFromNotes(profile?.student_notes) || budgetFromNotes(lead?.notes),
-    intake: prefs.intake || "",
   };
 }
 
-async function partnerUniversities(country) {
-  if (!country) return [];
-  const wanted = String(country).toLowerCase();
-  const rows = await jsonTable("universities").catch(() => []);
-  return rows
-    .filter((u) => u.is_active !== false && String(u.country || "").toLowerCase().includes(wanted))
-    .slice(0, 12)
-    .map((u) => [u.name, u.city].filter(Boolean).join(" — "));
+const LABELS = { country: "destination", qualification: "qualification", field: "field", score: "score", budget: "budget" };
+
+function mapQualification(q) {
+  const lower = q.toLowerCase();
+  if (lower.includes("phd") || lower.includes("doctor")) return "PhD";
+  if (lower.includes("master")) return "Masters";
+  if (lower.includes("bachelor") || lower.includes("b.tech") || lower.includes("b.sc") || lower.includes("undergrad")) return "Bachelors";
+  if (lower.includes("diploma")) return "Diploma";
+  if (lower.includes("certificate")) return "Certificate";
+  if (lower.includes("12") || lower.includes("twelfth") || lower.includes("+2")) return "Bachelors";
+  return q;
 }
 
-function systemPrompt(known, universities) {
-  const facts = Object.entries(known)
-    .filter(([, v]) => String(v || "").trim())
-    .map(([k, v]) => `- ${k}: ${v}`)
-    .join("\n") || "- nothing yet";
-  const uniList = universities.length ? universities.map((u) => `- ${u}`).join("\n") : "- (none on file for this country)";
-  return `You are the Fly Masters AI study-abroad advisor, chatting with a student inside the Fly Masters app. Fly Masters is an Indian study-abroad consultancy with human telecallers and counselors who take over after you.
-
-Your job:
-1. Answer the student's questions helpfully and briefly.
-2. Collect, ONE question at a time, whatever is still missing from: destination country, highest qualification, field/course, academic score, study budget, intended intake. NEVER ask again for something listed under "Already known".
-3. Once country and field are known, you may suggest 3-5 universities, ONLY from the partner list below. If the list is empty, say a counselor will build a shortlist.
-
-Rules:
-- Max about 90 words. Plain text, no markdown tables, friendly and clear.
-- Do not invent fees, deadlines, scholarships, rankings or visa outcomes; say a counselor will confirm specifics.
-- You are an AI; never claim to be human. If the student wants a call or a person, say a Fly Masters advisor will reach out soon.
-- Reply in the same language the student writes in.
-- In "profile", return only values the student has stated in this conversation (latest value wins); leave the rest empty.
-
-Already known about this student:
-${facts}
-
-Partner universities for their country:
-${uniList}`;
-}
-
-function aiHistory(messages) {
-  return messages.slice(-HISTORY_FOR_AI).map((m) => {
-    if (m.sender_role === "student") return { role: "user", text: m.body };
-    if (m.sender_role === "ai") return { role: "model", text: m.body };
-    return { role: "model", text: `[${m.sender_name || m.sender_role}, Fly Masters ${m.sender_role}]: ${m.body}` };
-  });
+function scoreField(qualification) {
+  const lower = String(qualification || "").toLowerCase();
+  if (lower.includes("master")) return "masters_score";
+  if (lower.includes("bachelor") || lower.includes("b.") || lower.includes("undergrad")) return "bachelors_score";
+  if (lower.includes("10") || lower.includes("tenth")) return "tenth_grade_score";
+  return "twelfth_grade_score";
 }
 
 function mergeList(existing, value) {
@@ -301,67 +382,254 @@ function mergeList(existing, value) {
   return list;
 }
 
-/** Writes what the AI learned back to the profile + lead so staff see it and nobody re-asks. */
-async function saveLearned(studentUserId, lead, learned) {
-  if (!Object.keys(learned).length) return;
+/** Saves one intake answer to profile + lead so staff see it and nobody re-asks. */
+async function saveAnswer(studentUserId, lead, key, value, known) {
   const now = new Date().toISOString();
   const profile = await jsonFind("profiles", "user_id", studentUserId).catch(() => null);
-  if (profile) {
-    const patch = { id: profile.id, updated_at: now };
-    if (learned.budget) patch.study_budget = learned.budget;
-    if (learned.field) patch.course_preferences = learned.field;
-    if (learned.country) patch.interested_countries = mergeList(profile.interested_countries, learned.country);
-    await jsonUpsert("profiles", patch);
+  const p = { id: profile?.id || crypto.randomUUID(), user_id: String(studentUserId), updated_at: now };
+  if (key === "country") p.interested_countries = mergeList(profile?.interested_countries, value);
+  if (key === "qualification") p.degree_level = mapQualification(value);
+  if (key === "field") p.course_preferences = value;
+  if (key === "score") p[scoreField(known.qualification)] = value;
+  if (key === "budget") {
+    p.study_budget = value;
+    const notes = String(profile?.student_notes || "");
+    if (!notes.includes(value)) p.student_notes = [notes.trim(), `Study budget (AI chat): ${value}`].filter(Boolean).join("\n");
   }
+  await jsonUpsert("profiles", p);
+
   if (lead) {
-    const prefs = { ...(lead.preferences || {}) };
-    if (learned.budget) prefs.study_budget = learned.budget;
-    if (learned.intake) prefs.intake = learned.intake;
-    prefs.ai_chat_updated_at = now;
-    const patch = { id: lead.id, preferences: prefs, updated_at: now, last_activity_at: now };
-    if (learned.country) patch.preferred_countries = mergeList(lead.preferred_countries, learned.country);
-    if (learned.qualification) patch.current_qualification = learned.qualification;
-    if (learned.field) patch.field_of_interest = learned.field;
-    if (learned.score) patch.academic_score = learned.score;
-    if (learned.budget && !String(lead.notes || "").includes(learned.budget)) {
-      patch.notes = [String(lead.notes || "").trim(), `Study budget (AI chat): ${learned.budget}`].filter(Boolean).join("\n");
+    const prefs = { ...(lead.preferences || {}), ai_chat_updated_at: now };
+    const l = { id: lead.id, updated_at: now, last_activity_at: now };
+    if (key === "country") {
+      l.preferred_countries = mergeList(lead.preferred_countries, value);
+      prefs.interested_countries = mergeList(prefs.interested_countries, value);
     }
-    await jsonUpsert("student_leads", patch);
+    if (key === "qualification") {
+      l.current_qualification = value;
+      l.qualification_level = mapQualification(value);
+    }
+    if (key === "field") {
+      l.field_of_interest = value;
+      l.stream_or_program = value;
+    }
+    if (key === "score") l.academic_score = value;
+    if (key === "budget") {
+      prefs.study_budget = value;
+      if (!String(lead.notes || "").includes(value)) {
+        l.notes = [String(lead.notes || "").trim(), `Study budget (AI chat): ${value}`].filter(Boolean).join("\n");
+      }
+    }
+    l.preferences = prefs;
+    Object.assign(lead, l);
+    await jsonUpsert("student_leads", l);
   }
 }
 
-async function aiReply(conversation, studentUserId, lead, messages) {
-  const lastAi = [...messages].reverse().find((m) => m.sender_role === "ai");
-  if (!geminiConfigured()) {
-    if (lastAi?.body === AI_FALLBACK) return null;
-    return addMessage(conversation, { senderRole: "ai", senderName: "AI Advisor", body: AI_FALLBACK });
-  }
-  try {
-    const profile = await jsonFind("profiles", "user_id", studentUserId).catch(() => null);
-    const known = knownProfile(profile, lead);
-    const { reply, profile: learned } = await geminiChat({
-      systemPrompt: systemPrompt(known, await partnerUniversities(known.country)),
-      history: aiHistory(messages),
-    });
-    await saveLearned(studentUserId, lead, learned).catch((error) => console.warn("[case-ai] profile save skipped:", error.message));
-    return addMessage(conversation, { senderRole: "ai", senderName: "AI Advisor", body: reply });
-  } catch (error) {
-    console.error("[case-ai] Gemini failed:", error.message || error);
-    if (lastAi?.body === AI_FALLBACK) return null;
-    return addMessage(conversation, { senderRole: "ai", senderName: "AI Advisor", body: AI_FALLBACK });
-  }
+// ------------------------------------------------------- recommendations
+
+const VISA = {
+  Nepal: "Study in Nepal — no overseas student visa required for Nepali citizens",
+  USA: "12 months OPT + 24 months STEM extension",
+  UK: "2 years Graduate visa",
+  Canada: "3 years Post-graduation work permit",
+  Australia: "2-4 years Temporary Graduate visa",
+  Germany: "18 months job search visa",
+  India: "Domestic study — no student visa for Indian citizens",
+};
+
+function studyLevel(qualification) {
+  return /(12|twelfth|high school|\+2|plus two|intermediate|a[- ]?level|bachelor|b\.?tech|b\.?sc|undergraduate|ug\b)/i.test(qualification || "") ? "UG" : "PG";
 }
 
-async function greetIfEmpty(conversation, owner, name) {
-  const existing = await rowsWhere("case_messages", "conversation_id", conversation.id);
-  if (existing.length || owner.role !== "ai") return;
-  const first = String(name || "").split(/\s+/)[0];
+/** Same matching and card fields as the old wizard's getRecommendationsForProfile. */
+async function recommendations(known) {
+  const country = normalizeCountry(known.country);
+  if (!country) return [];
+  const level = studyLevel(known.qualification);
+  const field = (known.field || "your chosen field").trim();
+  const rows = await jsonTable("universities").catch(() => []);
+  const wanted = country.toLowerCase();
+  return rows
+    .filter((u) => u.is_active !== false)
+    .filter((u) => {
+      const c = String(u.country || "").toLowerCase();
+      return c && (c === wanted || c.includes(wanted) || wanted.includes(c));
+    })
+    .slice(0, 6)
+    .map((u) => ({
+      id: String(u.id),
+      name: u.name,
+      location: [u.city, u.country].filter(Boolean).join(", "),
+      programs: [level === "UG" ? `Bachelor in ${field}` : `Master in ${field}`],
+      tuitionFee: "Contact for fees",
+      duration: level === "UG" ? "3-4 years" : "1-2 years",
+      deadline: "Rolling admissions",
+      languageReq: country === "Nepal" || country === "India" ? "English or local language as required" : "IELTS 6.5+ or TOEFL 80+",
+      postStudyVisa: VISA[country] || "Check local student visa rules for this destination",
+      ranking: u.ranking ? `Ranked #${u.ranking}` : "Partner university",
+      website: u.website_url || undefined,
+    }));
+}
+
+function nextMissing(known) {
+  return STEPS.find((s) => !String(known[s.key] || "").trim()) || null;
+}
+
+// `once` gives the messages fixed ids, so a finish triggered from two
+// requests at the same moment writes each message once.
+async function finishIntake(conversation, known, once = null) {
+  const sid = (n) => (once ? `${once}:${n}` : null);
+  await aiSay(conversation, "Perfect — I have everything I need. Let me find universities that match your profile.", { sourceId: sid(1) });
+  const unis = await recommendations(known);
   await addMessage(conversation, {
     senderRole: "ai",
-    senderName: "AI Advisor",
-    sourceId: `greeting:${conversation.id}`,
-    body: `Hi${first ? ` ${first}` : ""}! I'm the Fly Masters AI advisor. Tell me which country and course you're thinking about, or ask me anything about studying abroad. Your Fly Masters team will join this same chat as you move ahead.`,
+    senderName: AI_NAME,
+    sourceId: sid(2),
+    kind: "recommendations",
+    data: { universities: unis, country: known.country },
+    body: unis.length
+      ? `🎓 Here are universities in ${known.country} that match your profile. A counselor can help you apply.`
+      : `I couldn't find matching universities for ${known.country}. Our counselors can still build a shortlist for you.`,
   });
+  await aiSay(conversation, "✅ Your chat answers have been saved to your student profile. A Fly Masters advisor will be assigned to you soon — you can keep asking questions here any time.", { sourceId: sid(3) });
+  await patchConversation(conversation, { intake_field: null, intake_complete: true });
+}
+
+/** First message the AI sends: greeting + what's known + first missing question. */
+async function startIntake(conversation, profile, lead) {
+  const known = knownProfile(profile, lead);
+  const first = String(profile?.first_name || lead?.first_name || "").trim().split(/\s+/)[0];
+  const greeting = `Hi ${first || "there"}! 👋 I'm your AI study abroad advisor from Fly Masters.`;
+  const facts = Object.keys(LABELS).filter((k) => known[k]).map((k) => `${LABELS[k]}: ${known[k]}`);
+  const note = facts.length ? ` I've loaded your profile (${facts.join(", ")}).` : "";
+  const step = nextMissing(known);
+  const once = `intake-start:${conversation.id}`;
+  if (!step) {
+    await aiSay(conversation, `${greeting}${note} Let me find universities that match you.`, { sourceId: once });
+    await finishIntake(conversation, known, `${once}:finish`);
+    return;
+  }
+  await aiSay(conversation, `${greeting}${note}\n\n${step.ask}`, { sourceId: once });
+  await patchConversation(conversation, { intake_field: step.key, intake_complete: false });
+}
+
+// ----------------------------------------------- FAQ / policy answers
+
+async function activeArticles() {
+  const rows = await jsonTable("knowledge_articles").catch(() => []);
+  return rows.filter((a) => a.is_active && !a.deleted && String(a.content || "").trim());
+}
+
+const ANSWER_SCHEMA = {
+  type: "OBJECT",
+  properties: {
+    answerable: { type: "BOOLEAN" },
+    reply: { type: "STRING" },
+    sources: { type: "ARRAY", items: { type: "STRING" } },
+  },
+  required: ["answerable", "reply"],
+};
+
+/**
+ * Answers a question strictly from the FAQ/policy articles. Returns
+ * { reply, sources } or null when the articles don't cover it (or no AI).
+ */
+async function answerFromKnowledge(question, recent) {
+  if (!geminiConfigured()) return null;
+  const articles = await activeArticles();
+  if (!articles.length) return null;
+  let corpus = "";
+  for (const a of articles) {
+    const block = `### ${a.title} [${a.category === "policy" ? "Policy" : "FAQ"}]\n${String(a.content).trim()}\n\n`;
+    if (corpus.length + block.length > 40000) break;
+    corpus += block;
+  }
+  const systemPrompt = `You answer students' questions for Fly Masters, an Indian study-abroad consultancy.
+
+Use ONLY the Fly Masters articles below. Do not use outside knowledge, do not guess, do not add facts, numbers, fees, dates or promises that are not written in the articles.
+- If the articles clearly answer the question: answerable=true, reply in at most about 80 words, plain text, friendly, in the student's language; list the titles of the articles you used in "sources".
+- If they don't, or only partly: answerable=false and reply="".
+- Greetings, thanks or small talk are not questions: answerable=false.
+
+ARTICLES:
+${corpus}`;
+  const history = [...recent.slice(-6).map((m) => ({ role: m.sender_role === "student" ? "user" : "model", text: m.body })), { role: "user", text: question }];
+  try {
+    const out = await geminiJson({ systemPrompt, history, schema: ANSWER_SCHEMA, temperature: 0.1 });
+    const reply = String(out?.reply || "").trim();
+    if (!out?.answerable || !reply) return null;
+    const titles = new Set(articles.map((a) => a.title));
+    const sources = (Array.isArray(out.sources) ? out.sources : []).map(String).filter((t) => titles.has(t));
+    return { reply, sources };
+  } catch (error) {
+    console.error("[case-ai] FAQ answer failed:", error.message || error);
+    return null;
+  }
+}
+
+/** One "passed to X" note per unanswered stretch — no repeats after every message. */
+async function routeToStaff(conversation, owner, messages) {
+  let lastStaff = -1;
+  messages.forEach((m, i) => {
+    // A staff reply or a new assignment notice starts a fresh stretch.
+    if (["telecaller", "counselor", "admin", "system"].includes(m.sender_role)) lastStaff = i;
+  });
+  if (messages.slice(lastStaff + 1).some((m) => m.routed)) return null;
+  const body = owner.role === "ai"
+    ? "Thanks! I've noted your question. A Fly Masters advisor will be assigned to you soon and will reply here."
+    : `I've shared this with ${owner.name}, your ${owner.role}. They'll reply here soon.`;
+  return aiSay(conversation, body, { extra: { routed: true } });
+}
+
+// ------------------------------------------------ assignment notices
+
+async function announceOwner(conversation, owner) {
+  const key = ownerKey(owner);
+  if (conversation.announced_owner === key) return;
+  if (owner.role !== "ai") {
+    const body = owner.role === "telecaller"
+      ? `📞 ${owner.name} from Fly Masters has been assigned to you and will assist you further. They may call you on your registered number.`
+      : `🎓 ${owner.name} is now your Fly Masters counselor and will assist you further with universities, applications and documents.`;
+    await addMessage(conversation, {
+      senderRole: "system",
+      kind: "system",
+      body,
+      sourceId: `announce:${conversation.id}:${key}`,
+      extra: { owner_role: owner.role, owner_id: owner.id },
+    });
+  }
+  const patch = { announced_owner: key };
+  // A person has taken over: the AI stops asking intake questions.
+  if (owner.role !== "ai" && !conversation.intake_complete) Object.assign(patch, { intake_complete: true, intake_field: null });
+  await patchConversation(conversation, patch);
+}
+
+/** Everything that should happen when a thread is opened, by anyone. */
+async function prepareThread(studentUserId, lead) {
+  const owner = await ownerOf(lead);
+  const conversation = await conversationFor(studentUserId, lead?.id);
+  await importLegacy(conversation, studentUserId);
+  // flow_version 2 = guided intake. Threads from before it (none, or the
+  // short-lived free-chat version) start the intake once, if the AI still
+  // owns the student; with a human already assigned there's no questionnaire.
+  if (conversation.flow_version !== 2) {
+    await patchConversation(conversation, { flow_version: 2 });
+    // The short-lived free-chat version opened with a generic greeting; the
+    // intake greeting below replaces it.
+    await pool.query(
+      "DELETE FROM app_records WHERE table_name = 'case_messages' AND data->>'conversation_id' = $1 AND data->>'source_id' = $2",
+      [String(conversation.id), `greeting:${conversation.id}`],
+    );
+    if (owner.role === "ai" && !conversation.intake_complete) {
+      const profile = await jsonFind("profiles", "user_id", studentUserId).catch(() => null);
+      await startIntake(conversation, profile, lead);
+    } else {
+      await patchConversation(conversation, { intake_complete: true, intake_field: null });
+    }
+  }
+  await announceOwner(conversation, owner);
+  return { owner, conversation };
 }
 
 // -------------------------------------------------------------- permissions
@@ -420,16 +688,13 @@ function cleanText(value) {
 router.get("/api/case/me", anySession, requireStudent, async (req, res) => {
   try {
     const lead = await leadForStudent(req.user.id);
-    const owner = await ownerOf(lead);
-    const conversation = await conversationFor(req.user.id, lead?.id);
-    await importLegacy(conversation, req.user.id);
-    await greetIfEmpty(conversation, owner, studentNameFromLead(lead, ""));
-    await jsonUpsert("case_conversations", { id: conversation.id, student_last_read_at: new Date().toISOString() });
+    const { owner, conversation } = await prepareThread(req.user.id, lead);
+    await patchConversation(conversation, { student_last_read_at: new Date().toISOString() });
     res.json({
       conversation_id: conversation.id,
       owner,
-      ai_enabled: geminiConfigured(),
-      messages: await loadMessages(conversation.id),
+      intake_complete: Boolean(conversation.intake_complete),
+      messages: (await rawMessages(conversation.id)).map((m) => publicMessage(m)),
     });
   } catch (error) {
     console.error("[case] load failed:", error);
@@ -437,22 +702,60 @@ router.get("/api/case/me", anySession, requireStudent, async (req, res) => {
   }
 });
 
+async function handleStudentMessage(conversation, studentUserId, lead, owner, text) {
+  // 1. Still in the guided questions.
+  if (!conversation.intake_complete && conversation.intake_field) {
+    const step = STEPS.find((s) => s.key === conversation.intake_field) || STEPS[0];
+    if (looksLikeQuestion(text)) {
+      const answer = await answerFromKnowledge(text, await rawMessages(conversation.id));
+      const lead_in = answer ? answer.reply : "Good question — your Fly Masters advisor will help you with that once you're assigned.";
+      await aiSay(conversation, `${lead_in}\n\n${step.ask}`, answer ? { extra: { source: "faq", sources: answer.sources, review_status: "pending" } } : {});
+      return;
+    }
+    const checked = validateStep(step.key, text);
+    if (checked.error) {
+      await aiSay(conversation, checked.error);
+      return;
+    }
+    const profile = await jsonFind("profiles", "user_id", studentUserId).catch(() => null);
+    const before = knownProfile(profile, lead);
+    await saveAnswer(studentUserId, lead, step.key, checked.value, before);
+    const known = { ...before, [step.key]: checked.value };
+    const next = nextMissing(known);
+    if (next) {
+      await aiSay(conversation, `${ACK[step.key](checked.value)} ${next.ask}`);
+      await patchConversation(conversation, { intake_field: next.key });
+    } else {
+      await aiSay(conversation, ACK[step.key](checked.value));
+      await finishIntake(conversation, known);
+    }
+    return;
+  }
+
+  // 2. After intake: FAQ/policy answer if the articles cover it, else the assigned person.
+  const messages = await rawMessages(conversation.id);
+  const answer = looksLikeQuestion(text) || text.split(/\s+/).length >= 4
+    ? await answerFromKnowledge(text, messages)
+    : null;
+  if (answer) {
+    await aiSay(conversation, answer.reply, { extra: { source: "faq", sources: answer.sources, review_status: "pending" } });
+    return;
+  }
+  await routeToStaff(conversation, owner, messages);
+}
+
 router.post("/api/case/me/messages", anySession, requireStudent, async (req, res) => {
   const text = cleanText(req.body?.message ?? req.body?.text);
   if (!text) return res.status(400).json({ error: "Message cannot be empty." });
   try {
     const lead = await leadForStudent(req.user.id);
-    const owner = await ownerOf(lead);
-    const conversation = await conversationFor(req.user.id, lead?.id);
-    const sent = await addMessage(conversation, { senderRole: "student", senderId: req.user.id, body: text });
-    const created = [sent];
-    if (owner.role === "ai") {
-      const history = await loadMessages(conversation.id);
-      const reply = await aiReply(conversation, req.user.id, lead, history);
-      if (reply) created.push(reply);
-    }
-    await jsonUpsert("case_conversations", { id: conversation.id, student_last_read_at: new Date().toISOString() });
-    res.json({ owner, messages: created });
+    const { owner, conversation } = await prepareThread(req.user.id, lead);
+    const before = new Set((await rawMessages(conversation.id)).map((m) => m.id));
+    await addMessage(conversation, { senderRole: "student", senderId: req.user.id, body: text });
+    await handleStudentMessage(conversation, req.user.id, lead, owner, text);
+    await patchConversation(conversation, { student_last_read_at: new Date().toISOString() });
+    const created = (await rawMessages(conversation.id)).filter((m) => !before.has(m.id)).map((m) => publicMessage(m));
+    res.json({ owner, intake_complete: Boolean(conversation.intake_complete), messages: created });
   } catch (error) {
     console.error("[case] send failed:", error);
     res.status(500).json({ error: "Could not send your message." });
@@ -495,15 +798,15 @@ router.get("/api/case/inbox", anySession, requireStaff, scopeBranchHead, async (
       list.sort((a, b) => sentAt(a).localeCompare(sentAt(b)));
       const last = list[list.length - 1];
       const readAt = String(conv?.staff_last_read_at || "");
-      const owner = await ownerOf(lead);
       return {
         lead_id: String(lead.id),
         student_user_id: String(lead.user_id),
         student_name: studentNameFromLead(lead),
-        owner,
+        owner: await ownerOf(lead),
         last_message: last ? { body: last.body, sender_role: last.sender_role, created_at: sentAt(last) } : null,
         last_message_at: last ? sentAt(last) : null,
         unread: list.filter((m) => m.sender_role === "student" && sentAt(m) > readAt).length,
+        needs_review: list.filter((m) => m.source === "faq" && m.review_status === "pending").length,
       };
     }));
     items.sort((a, b) => String(b.last_message_at || "").localeCompare(String(a.last_message_at || "")));
@@ -531,22 +834,25 @@ router.get("/api/case/lead/:leadId", anySession, requireStaff, scopeBranchHead, 
   try {
     const lead = await staffLead(req, res);
     if (!lead) return;
-    const conversation = await conversationFor(lead.user_id, lead.id);
-    await importLegacy(conversation, lead.user_id);
-    await jsonUpsert("case_conversations", { id: conversation.id, staff_last_read_at: new Date().toISOString() });
+    const { owner, conversation } = await prepareThread(lead.user_id, lead);
+    await patchConversation(conversation, { staff_last_read_at: new Date().toISOString() });
     const profile = await jsonFind("profiles", "user_id", lead.user_id).catch(() => null);
     res.json({
       conversation_id: conversation.id,
-      owner: await ownerOf(lead),
+      owner,
       student: { lead_id: String(lead.id), user_id: String(lead.user_id), name: studentNameFromLead(lead), email: lead.email || "", phone: lead.phone || "" },
       known: knownProfile(profile, lead),
-      messages: await loadMessages(conversation.id),
+      messages: (await rawMessages(conversation.id)).map((m) => publicMessage(m, { staff: true })),
     });
   } catch (error) {
     console.error("[case] staff load failed:", error);
     res.status(500).json({ error: "Could not load the conversation." });
   }
 });
+
+function staffSenderRole(role) {
+  return role === ROLES.COUNSELOR || role === ROLES.TELECALLER ? role : "admin";
+}
 
 router.post("/api/case/lead/:leadId/messages", anySession, requireStaff, scopeBranchHead, async (req, res) => {
   const text = cleanText(req.body?.message ?? req.body?.text);
@@ -555,19 +861,52 @@ router.post("/api/case/lead/:leadId/messages", anySession, requireStaff, scopeBr
     const lead = await staffLead(req, res);
     if (!lead) return;
     const conversation = await conversationFor(lead.user_id, lead.id);
-    const role = req.user.role;
-    const senderRole = role === ROLES.COUNSELOR || role === ROLES.TELECALLER ? role : "admin";
+    const senderRole = staffSenderRole(req.user.role);
     const message = await addMessage(conversation, {
       senderRole,
       senderId: req.user.id,
       senderName: await personName(req.user.id, senderRole === "admin" ? "Fly Masters" : senderRole),
       body: text,
     });
-    await jsonUpsert("case_conversations", { id: conversation.id, staff_last_read_at: new Date().toISOString() });
-    res.json({ message });
+    await patchConversation(conversation, { staff_last_read_at: new Date().toISOString() });
+    res.json({ message: publicMessage(message, { staff: true }) });
   } catch (error) {
     console.error("[case] staff send failed:", error);
     res.status(500).json({ error: "Could not send the message." });
+  }
+});
+
+/** Approve an AI FAQ answer as-is, or correct its text. The student sees the correction. */
+router.post("/api/case/lead/:leadId/messages/:messageId/review", anySession, requireStaff, scopeBranchHead, async (req, res) => {
+  try {
+    const lead = await staffLead(req, res);
+    if (!lead) return;
+    const action = String(req.body?.action || "");
+    if (!["approve", "correct"].includes(action)) return res.status(400).json({ error: "action must be approve or correct" });
+    const { rows } = await pool.query(
+      "SELECT id, data FROM app_records WHERE table_name = 'case_messages' AND id = $1",
+      [String(req.params.messageId)],
+    );
+    const msg = rows[0] ? { ...rows[0].data, id: rows[0].id } : null;
+    if (!msg || msg.conversation_id !== `case-${lead.user_id}` || msg.sender_role !== "ai") {
+      return res.status(404).json({ error: "Message not found." });
+    }
+    const reviewer = await personName(req.user.id, "Fly Masters");
+    const patch = { id: msg.id, reviewed_by: req.user.id, reviewed_by_name: reviewer, reviewed_at: new Date().toISOString() };
+    if (action === "approve") {
+      patch.review_status = "approved";
+    } else {
+      const body = cleanText(req.body?.body);
+      if (!body) return res.status(400).json({ error: "Corrected text cannot be empty." });
+      patch.review_status = "corrected";
+      patch.original_body = msg.original_body || msg.body;
+      patch.body = body;
+    }
+    const saved = await jsonUpsert("case_messages", patch);
+    res.json({ message: publicMessage(saved, { staff: true }) });
+  } catch (error) {
+    console.error("[case] review failed:", error);
+    res.status(500).json({ error: "Could not save the review." });
   }
 });
 
