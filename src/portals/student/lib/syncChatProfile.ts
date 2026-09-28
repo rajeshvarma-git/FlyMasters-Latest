@@ -83,6 +83,10 @@ export function buildProfileUpdateFromChat(chat: ChatContext, existing: Existing
     Object.assign(update, mapScoreFields(chat.qualification, chat.academicScore));
   }
   if (chat.budget) {
+    // study_budget is the field chatContext.ts reads back to decide whether
+    // to ask again. Previously only the free-text note was written, so the
+    // AI re-asked budget on every visit.
+    update.study_budget = chat.budget;
     update.student_notes = appendBudgetNote(existing?.student_notes, chat.budget);
   }
   if (chat.phone) {

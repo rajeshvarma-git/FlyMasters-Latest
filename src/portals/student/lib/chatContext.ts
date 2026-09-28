@@ -76,7 +76,22 @@ type UserProfile = {
   twelfth_grade_score?: string | null;
   tenth_grade_score?: string | null;
   study_budget?: string | null;
+  student_notes?: string | null;
 } | null;
+
+/**
+ * Students who answered budget before study_budget was saved only have it in
+ * student_notes as "Study budget (AI chat): X" — read it from there so they
+ * aren't asked again either.
+ */
+function pickBudget(profile: UserProfile): string | undefined {
+  const direct = profile?.study_budget?.trim();
+  if (direct) return direct;
+  const notes = profile?.student_notes || '';
+  const matches = [...notes.matchAll(/Study budget \(AI chat\):\s*(.+)/g)];
+  const last = matches.length ? matches[matches.length - 1][1].trim() : '';
+  return last || undefined;
+}
 
 function pickCountry(profile: UserProfile): string | undefined {
   const candidates = [
@@ -130,7 +145,7 @@ export function buildChatContext(user: AuthUser, profile: UserProfile): ChatCont
     ...(pickQualification(profile) ? { qualification: pickQualification(profile)! } : {}),
     ...(pickStream(profile) ? { streamOrProgram: pickStream(profile)! } : {}),
     ...(pickScore(profile) ? { academicScore: pickScore(profile)! } : {}),
-    ...(profile?.study_budget?.trim() ? { budget: profile.study_budget.trim() } : {}),
+    ...(pickBudget(profile) ? { budget: pickBudget(profile)! } : {}),
   };
 }
 

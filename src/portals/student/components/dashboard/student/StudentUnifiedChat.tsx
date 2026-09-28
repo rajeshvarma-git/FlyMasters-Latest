@@ -164,6 +164,16 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
 
+  // A student who hasn't talked to the AI advisor yet sees its questions
+  // open straight away; returning students get it collapsed above the
+  // timeline (its history is already in the timeline itself).
+  useEffect(() => {
+    if (!loading && aiMessages.length === 0 && !aiEverOpened) {
+      setAiOpen(true);
+      setAiEverOpened(true);
+    }
+  }, [loading, aiMessages.length, aiEverOpened]);
+
   useEffect(() => {
     if (!counselorConv?.id && !telecallerConv?.id && !whatsappVerified) return;
     const poll = window.setInterval(() => {
@@ -673,7 +683,7 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
         </div>
       )}
 
-      {(aiOpen || aiEverOpened || aiMessages.length === 0) && aiPanel}
+      {aiPanel}
 
       <Card className="glass-card h-[600px] flex flex-col">
         <CardHeader className="pb-4">
