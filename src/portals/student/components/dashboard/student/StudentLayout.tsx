@@ -117,15 +117,15 @@ export function StudentLayout() {
               <StudentMessages defaultTab="ai" />
             </div>
           } />
-          {/* Old direct links to a single channel still work — they open Messages on that tab. */}
+          {/* Old direct links to a single channel still work — they open Messages on the merged Team tab. */}
           <Route path="chat" element={
             <div className="mobile-page-content">
-              <StudentMessages defaultTab="counsellor" />
+              <StudentMessages defaultTab="team" />
             </div>
           } />
           <Route path="telecaller-chat" element={
             <div className="mobile-page-content">
-              <StudentMessages defaultTab="telecaller" />
+              <StudentMessages defaultTab="team" />
             </div>
           } />
           <Route path="notifications" element={

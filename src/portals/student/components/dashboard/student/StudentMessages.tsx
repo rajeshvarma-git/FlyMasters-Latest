@@ -1,35 +1,47 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { Bot, MessageCircle, Phone } from 'lucide-react';
+import { Bot, Users } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@student/components/ui/tabs';
 import ErrorBoundary from '@student/components/ErrorBoundary';
 import ChatInterface from '@student/components/ChatInterface';
-import { StudentPrivateChat } from './StudentPrivateChat';
-import { StudentTelecallerChat } from './StudentTelecallerChat';
+import { StudentUnifiedChat } from './StudentUnifiedChat';
 
 /**
- * One place for every conversation a student has with Fly Masters: the AI
- * advisor, their counselor, and their telecaller. Each channel still talks
- * to its own conversation store under the hood (chat_sessions,
- * private_conversations, telecaller_conversations) — merging those into one
- * thread is bigger, riskier work tracked separately. This screen is the MVP
- * version of "one chat": one page, one set of tabs, nothing to hunt for.
+ * One place for every conversation a student has with Fly Masters. The
+ * counselor and telecaller channels are merged into a single "Team" thread
+ * (StudentUnifiedChat) — one timeline, one input box, tagged by who sent
+ * each message, instead of two look-alike tabs a student had to hunt
+ * between. The AI Advisor stays a separate tab: it's a guided stepper, not
+ * freeform chat, and (see StudentUnifiedChat's header comment) has no
+ * persisted message-by-message transcript to merge in yet.
+ *
+ * 'counsellor' and 'telecaller' are kept as accepted URL/defaultTab values
+ * and silently mapped to 'team' below, so old links (?tab=counsellor, the
+ * /student/chat and /student/telecaller-chat routes) still land on the
+ * right tab instead of 404ing or falling back to AI.
  */
-type MessageTab = 'ai' | 'counsellor' | 'telecaller';
+type MessageTab = 'ai' | 'team';
+type LegacyTab = MessageTab | 'counsellor' | 'telecaller';
 
-const TAB_VALUES: MessageTab[] = ['ai', 'counsellor', 'telecaller'];
+const TAB_VALUES: MessageTab[] = ['ai', 'team'];
+
+function normalizeTab(value: LegacyTab | null): MessageTab | null {
+  if (value === 'counsellor' || value === 'telecaller') return 'team';
+  if (value === 'ai' || value === 'team') return value;
+  return null;
+}
 
 interface StudentMessagesProps {
-  defaultTab?: MessageTab;
+  defaultTab?: LegacyTab;
 }
 
 export function StudentMessages({ defaultTab = 'ai' }: StudentMessagesProps) {
   const [params, setParams] = useSearchParams();
-  const fromUrl = params.get('tab') as MessageTab | null;
-  const [tab, setTab] = useState<MessageTab>(fromUrl && TAB_VALUES.includes(fromUrl) ? fromUrl : defaultTab);
+  const fromUrl = normalizeTab(params.get('tab') as LegacyTab | null);
+  const [tab, setTab] = useState<MessageTab>(fromUrl || normalizeTab(defaultTab) || 'ai');
 
   useEffect(() => {
-    if (fromUrl && TAB_VALUES.includes(fromUrl) && fromUrl !== tab) {
+    if (fromUrl && fromUrl !== tab) {
       setTab(fromUrl);
     }
     // Only react to the URL changing (e.g. a sidebar link with ?tab=), not to our own setTab calls.
@@ -46,7 +58,7 @@ export function StudentMessages({ defaultTab = 'ai' }: StudentMessagesProps) {
     <div className="space-y-6">
       <div className="flex items-center gap-3">
         <div className="w-10 h-10 rounded-full bg-gradient-primary flex items-center justify-center">
-          <MessageCircle className="w-5 h-5 text-white" />
+          <Users className="w-5 h-5 text-white" />
         </div>
         <div>
           <h1 className="text-2xl font-bold">Messages</h1>
@@ -55,21 +67,15 @@ export function StudentMessages({ defaultTab = 'ai' }: StudentMessagesProps) {
       </div>
 
       <Tabs value={tab} onValueChange={selectTab}>
-        <TabsList className="grid w-full grid-cols-3 max-w-xl">
+        <TabsList className="grid w-full grid-cols-2 max-w-sm">
           <TabsTrigger value="ai" className="gap-2">
             <Bot className="w-4 h-4" />
             <span className="hidden sm:inline">AI Advisor</span>
             <span className="sm:hidden">AI</span>
           </TabsTrigger>
-          <TabsTrigger value="counsellor" className="gap-2">
-            <MessageCircle className="w-4 h-4" />
-            <span className="hidden sm:inline">Counselor</span>
-            <span className="sm:hidden">Counselor</span>
-          </TabsTrigger>
-          <TabsTrigger value="telecaller" className="gap-2">
-            <Phone className="w-4 h-4" />
-            <span className="hidden sm:inline">Telecaller</span>
-            <span className="sm:hidden">Telecaller</span>
+          <TabsTrigger value="team" className="gap-2">
+            <Users className="w-4 h-4" />
+            <span>Team Chat</span>
           </TabsTrigger>
         </TabsList>
 
@@ -79,12 +85,8 @@ export function StudentMessages({ defaultTab = 'ai' }: StudentMessagesProps) {
           </ErrorBoundary>
         </TabsContent>
 
-        <TabsContent value="counsellor" className="mt-4">
-          <StudentPrivateChat embedded />
-        </TabsContent>
-
-        <TabsContent value="telecaller" className="mt-4">
-          <StudentTelecallerChat embedded />
+        <TabsContent value="team" className="mt-4">
+          <StudentUnifiedChat embedded />
         </TabsContent>
       </Tabs>
     </div>
