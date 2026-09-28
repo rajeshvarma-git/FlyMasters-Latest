@@ -90,7 +90,16 @@ function Bubble({ m }: { m: CaseMessage }) {
   );
 }
 
-export function StudentCaseChat() {
+interface StudentCaseChatProps {
+  /** Fills its parent (the floating chat panel) with smaller spacing. */
+  compact?: boolean;
+  /** Called when a link in compact mode asks to open the full Messages page. */
+  onOpenFull?: () => void;
+  /** Lets the floating panel show who is helping in its own header. */
+  onOwnerChange?: (owner: CaseOwner | null) => void;
+}
+
+export function StudentCaseChat({ compact = false, onOpenFull, onOwnerChange }: StudentCaseChatProps = {}) {
   const [messages, setMessages] = useState<CaseMessage[]>([]);
   const [owner, setOwner] = useState<CaseOwner | null>(null);
   const [loading, setLoading] = useState(true);
@@ -116,6 +125,10 @@ export function StudentCaseChat() {
     }, 5000);
     return () => window.clearInterval(poll);
   }, [load]);
+
+  useEffect(() => {
+    onOwnerChange?.(owner);
+  }, [owner, onOwnerChange]);
 
   useEffect(() => {
     if (messages.length !== lastCount.current) {
@@ -173,18 +186,16 @@ export function StudentCaseChat() {
 
   const lastRecIndex = messages.map((m) => m.kind).lastIndexOf('recommendations');
 
-  return (
-    <div className="max-w-4xl mx-auto p-2 sm:p-4 h-[600px] sm:h-[700px] flex flex-col animate-scale-in" role="main">
-      <Card className="flex-1 flex flex-col shadow-hover backdrop-blur-sm border-border/50 min-h-0">
-        <CardContent className="flex-1 flex flex-col p-0 min-h-0">
-          {owner && owner.role !== 'ai' && (
+  const body = (
+    <>
+          {!compact && owner && owner.role !== 'ai' && (
             <div className="flex items-center gap-2 border-b px-4 py-2 text-xs text-muted-foreground">
               {owner.role === 'telecaller' ? <Headphones className="w-4 h-4" /> : <GraduationCap className="w-4 h-4" />}
               Your {ROLE_LABEL[owner.role].toLowerCase()}: <span className="font-medium text-foreground">{owner.name}</span>
             </div>
           )}
           <div
-            className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-1 bg-gradient-to-b from-background/50 to-background"
+            className={`flex-1 overflow-y-auto space-y-1 bg-gradient-to-b from-background/50 to-background ${compact ? 'p-3' : 'p-4 sm:p-6'}`}
             role="log"
             aria-label="Chat conversation"
             aria-live="polite"
@@ -201,6 +212,30 @@ export function StudentCaseChat() {
               }
               if (m.kind === 'recommendations') {
                 const unis = (m.data?.universities || []) as UniversityRecommendation[];
+                if (compact) {
+                  return (
+                    <div key={m.id}>
+                      <Bubble m={m} />
+                      {unis.length > 0 && (
+                        <div className="-mt-2 mb-4 ml-[52px] rounded-xl border border-border/60 bg-card p-3 text-sm">
+                          <ul className="space-y-1">
+                            {unis.map((u) => (
+                              <li key={u.id} className="flex items-start gap-2">
+                                <span className="mt-1.5 h-1.5 w-1.5 flex-none rounded-full bg-primary" />
+                                <span><span className="font-medium">{u.name}</span> <span className="text-muted-foreground">· {u.location}</span></span>
+                              </li>
+                            ))}
+                          </ul>
+                          {onOpenFull && (
+                            <button type="button" onClick={onOpenFull} className="mt-2 text-xs font-medium text-primary hover:underline">
+                              See full details →
+                            </button>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
                 return (
                   <div key={m.id}>
                     <Bubble m={m} />
@@ -224,7 +259,17 @@ export function StudentCaseChat() {
           </div>
 
           <ChatInput onSendMessage={send} isLoading={sending} otpMode={false} phoneNumber="" />
-        </CardContent>
+    </>
+  );
+
+  if (compact) {
+    return <div className="flex h-full min-h-0 flex-col">{body}</div>;
+  }
+
+  return (
+    <div className="max-w-4xl mx-auto p-2 sm:p-4 h-[600px] sm:h-[700px] flex flex-col animate-scale-in" role="main">
+      <Card className="flex-1 flex flex-col shadow-hover backdrop-blur-sm border-border/50 min-h-0">
+        <CardContent className="flex-1 flex flex-col p-0 min-h-0">{body}</CardContent>
       </Card>
     </div>
   );

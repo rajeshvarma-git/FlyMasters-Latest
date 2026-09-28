@@ -67,3 +67,7 @@ export function sendCaseMessage(message: string) {
     body: JSON.stringify({ message }),
   });
 }
+
+export function getMyCaseUnread() {
+  return call<{ unread: number }>('/case/me/unread');
+}

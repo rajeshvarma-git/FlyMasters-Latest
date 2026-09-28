@@ -685,6 +685,26 @@ function cleanText(value) {
 
 // ------------------------------------------------------------------ student
 
+/**
+ * Badge count for the chat button / Messages icon. Read-only: unlike
+ * GET /api/case/me it doesn't open the thread or mark anything read.
+ * A student who has never opened the chat gets 1, so the AI's first
+ * question is waiting for them.
+ */
+router.get("/api/case/me/unread", anySession, requireStudent, async (req, res) => {
+  try {
+    const conv = (await rowsWhere("case_conversations", "student_user_id", req.user.id))[0];
+    if (!conv) return res.json({ unread: 1 });
+    const readAt = String(conv.student_last_read_at || "");
+    const msgs = await rowsWhere("case_messages", "conversation_id", conv.id);
+    const unread = msgs.filter((m) => m.sender_role !== "student" && sentAt(m) > readAt).length;
+    res.json({ unread });
+  } catch (error) {
+    console.error("[case] unread failed:", error);
+    res.json({ unread: 0 });
+  }
+});
+
 router.get("/api/case/me", anySession, requireStudent, async (req, res) => {
   try {
     const lead = await leadForStudent(req.user.id);

@@ -5,6 +5,9 @@ import { User } from 'lucide-react';
 import { ensureStudentCounselorLink } from '@student/lib/ensureStudentCounselorLink';
 import { loadStudentInbox } from '@student/lib/studentInbox';
 import { StudentSidebar } from './StudentSidebar';
+import { StudentTopBar } from './StudentTopBar';
+import { StudentChatWidget } from './StudentChatWidget';
+import { getMyCaseUnread } from '@student/lib/caseChatApi';
 import { StudentContent } from './StudentContent';
 import { StudentProfileForm } from './StudentProfileForm';
 import { UniversityShortlists } from './UniversityShortlists';
@@ -21,6 +24,7 @@ export function StudentLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const [unreadCount, setUnreadCount] = useState(0);
+  const [chatUnread, setChatUnread] = useState(0);
   const isLoading = loading || roleLoading;
   const header = getStudentHeaderTitle(location.pathname);
 
@@ -43,6 +47,20 @@ export function StudentLayout() {
     return () => window.clearInterval(poll);
   }, [user?.id]);
 
+  // Unread count for the Messages icon and the floating chat button.
+  useEffect(() => {
+    if (!user?.id) return;
+    const load = () =>
+      getMyCaseUnread()
+        .then((r) => setChatUnread(r.unread))
+        .catch(() => setChatUnread(0));
+    void load();
+    const poll = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void load();
+    }, 10000);
+    return () => window.clearInterval(poll);
+  }, [user?.id, location.pathname]);
+
   if (isLoading) {
     return (
       <div className="min-h-screen bg-gradient-background flex items-center justify-center">
@@ -63,8 +81,9 @@ export function StudentLayout() {
   }
 
   return (
-    <div className="min-h-screen flex w-full max-w-full overflow-x-hidden bg-gradient-background">
+    <div className="min-h-screen md:h-screen flex w-full max-w-full overflow-x-hidden bg-gradient-background">
       <StudentSidebar />
+      <StudentChatWidget unread={chatUnread} />
       <MobilePortalHeader
         title={header.title}
         subtitle={header.subtitle}
@@ -73,6 +92,8 @@ export function StudentLayout() {
         unreadCount={unreadCount}
         onNotificationsClick={() => navigate('/student/notifications')}
       />
+      <div className="flex min-w-0 flex-1 flex-col md:h-screen">
+      <StudentTopBar notificationCount={unreadCount} messageCount={chatUnread} />
       <main className="mobile-scroll-area flex-1 overflow-y-auto overflow-x-hidden md:pt-0 pt-[60px] pb-6 md:pb-0">
         <Routes>
           <Route index element={<StudentContent />} />
@@ -135,6 +156,7 @@ export function StudentLayout() {
           } />
         </Routes>
       </main>
+      </div>
     </div>
   );
 }
