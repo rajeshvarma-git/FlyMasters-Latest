@@ -23,6 +23,21 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
+import ErrorBoundary from '@student/components/ErrorBoundary';
+
+// See StudentTelecallerChat.tsx for why this guard exists: an unparsable
+// created_at used to throw during render with no boundary to catch it,
+// blanking the whole student portal.
+function safeTime(value: string | null | undefined): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  try {
+    return format(date, 'HH:mm');
+  } catch {
+    return '';
+  }
+}
 
 interface PrivateMessage {
   id: string;
@@ -47,6 +62,14 @@ interface Conversation {
 }
 
 export function StudentPrivateChat() {
+  return (
+    <ErrorBoundary>
+      <StudentPrivateChatInner />
+    </ErrorBoundary>
+  );
+}
+
+function StudentPrivateChatInner() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const [conversation, setConversation] = useState<Conversation | null>(null);
@@ -113,7 +136,9 @@ export function StudentPrivateChat() {
       .subscribe();
 
     const poll = window.setInterval(() => {
-      void fetchMessages(conversation.id);
+      fetchMessages(conversation.id).catch((error) => {
+        console.error('Counselor chat poll failed:', error);
+      });
     }, 3000);
 
     return () => {
@@ -510,7 +535,7 @@ export function StudentPrivateChat() {
                       <div className="flex items-center gap-1 mt-1">
                         <Clock className="w-3 h-3 opacity-60" />
                         <span className="text-xs opacity-60">
-                          {format(new Date(message.created_at), 'HH:mm')}
+                          {safeTime(message.created_at)}
                         </span>
                         {isMessageEdited(message) && (
                           <span className="text-xs opacity-60 italic">edited</span>

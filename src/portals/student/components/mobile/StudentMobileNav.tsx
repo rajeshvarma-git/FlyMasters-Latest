@@ -9,7 +9,6 @@ import {
   User,
   Heart,
   List,
-  Phone,
   Bell,
 } from 'lucide-react';
 import { MobileTabBar, MobileMoreMenu, MobileMoreLink, MobileMoreSection, MobileNavItem } from './MobileTabBar';
@@ -18,14 +17,13 @@ const primaryTabs: MobileNavItem[] = [
   { icon: GraduationCap, label: 'Home', path: '/student', end: true },
   { icon: BookOpen, label: 'Universities', path: '/student/universities' },
   { icon: FileText, label: 'Documents', path: '/student/documents' },
-  { icon: MessageCircle, label: 'Chat', path: '/student/chat' },
+  { icon: MessageCircle, label: 'Messages', path: '/student/messages' },
 ];
 
 const morePaths = [
   '/student/profile',
   '/student/shortlists',
   '/student/applications',
-  '/student/telecaller-chat',
   '/student/notifications',
 ];
 
@@ -58,7 +56,6 @@ export function StudentMobileNav({ unreadCount = 0 }: StudentMobileNavProps) {
         </MobileMoreSection>
 
         <MobileMoreSection>
-          <MobileMoreLink icon={Phone} label="Telecaller Chat" to="/student/telecaller-chat" onClick={close} />
           <MobileMoreLink icon={Bell} label="Notifications" to="/student/notifications" badge={unreadCount} onClick={close} />
         </MobileMoreSection>
       </MobileMoreMenu>
@@ -82,8 +79,9 @@ export function getStudentHeaderTitle(pathname: string): {
   if (pathname.includes('/shortlists')) return { title: 'My Shortlists', showBack: true, backTo: '/student' };
   if (pathname.includes('/documents')) return { title: 'Documents', showBack: true, backTo: '/student' };
   if (pathname.includes('/applications')) return { title: 'Applications', showBack: true, backTo: '/student' };
-  if (pathname.includes('/telecaller')) return { title: 'Telecaller Chat', showBack: true, backTo: '/student' };
-  if (pathname.includes('/chat')) return { title: 'Counselor Chat', showBack: true, backTo: '/student' };
+  if (pathname.includes('/messages')) return { title: 'Messages', showBack: true, backTo: '/student' };
+  if (pathname.includes('/telecaller')) return { title: 'Messages', showBack: true, backTo: '/student' };
+  if (pathname.includes('/chat')) return { title: 'Messages', showBack: true, backTo: '/student' };
   if (pathname.includes('/notifications')) return { title: 'Notifications', showBack: true, backTo: '/student' };
   return { title: 'Student Portal' };
 }

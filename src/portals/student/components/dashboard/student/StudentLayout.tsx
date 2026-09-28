@@ -11,8 +11,7 @@ import { UniversityShortlists } from './UniversityShortlists';
 import { StudentUniversities } from './StudentUniversities';
 import { StudentDocuments } from './StudentDocuments';
 import { StudentApplications } from './StudentApplications';
-import { StudentPrivateChat } from './StudentPrivateChat';
-import { StudentTelecallerChat } from './StudentTelecallerChat';
+import { StudentMessages } from './StudentMessages';
 import { StudentNotifications } from './StudentNotifications';
 import { MobilePortalHeader } from '@student/components/mobile/MobilePortalHeader';
 import { getStudentHeaderTitle } from '@student/components/mobile/StudentMobileNav';
@@ -113,14 +112,20 @@ export function StudentLayout() {
               <StudentApplications />
             </div>
           } />
+          <Route path="messages" element={
+            <div className="mobile-page-content">
+              <StudentMessages defaultTab="ai" />
+            </div>
+          } />
+          {/* Old direct links to a single channel still work — they open Messages on that tab. */}
           <Route path="chat" element={
             <div className="mobile-page-content">
-              <StudentPrivateChat />
+              <StudentMessages defaultTab="counsellor" />
             </div>
           } />
           <Route path="telecaller-chat" element={
             <div className="mobile-page-content">
-              <StudentTelecallerChat />
+              <StudentMessages defaultTab="telecaller" />
             </div>
           } />
           <Route path="notifications" element={

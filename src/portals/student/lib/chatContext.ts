@@ -75,6 +75,7 @@ type UserProfile = {
   masters_score?: string | null;
   twelfth_grade_score?: string | null;
   tenth_grade_score?: string | null;
+  study_budget?: string | null;
 } | null;
 
 function pickCountry(profile: UserProfile): string | undefined {
@@ -129,6 +130,7 @@ export function buildChatContext(user: AuthUser, profile: UserProfile): ChatCont
     ...(pickQualification(profile) ? { qualification: pickQualification(profile)! } : {}),
     ...(pickStream(profile) ? { streamOrProgram: pickStream(profile)! } : {}),
     ...(pickScore(profile) ? { academicScore: pickScore(profile)! } : {}),
+    ...(profile?.study_budget?.trim() ? { budget: profile.study_budget.trim() } : {}),
   };
 }
 
@@ -151,6 +153,7 @@ export function buildWelcomeMessage(
   if (context.qualification) known.push(`qualification: ${context.qualification}`);
   if (context.streamOrProgram) known.push(`field: ${context.streamOrProgram}`);
   if (context.academicScore) known.push(`score: ${context.academicScore}`);
+  if (context.budget) known.push(`budget: ${context.budget}`);
 
   const profileNote =
     known.length > 0

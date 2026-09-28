@@ -18,6 +18,25 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
+import ErrorBoundary from '@student/components/ErrorBoundary';
+
+/**
+ * A message with a missing/invalid created_at (or any other unexpected shape
+ * coming back from the API) used to throw inside date-fns during render —
+ * an uncaught render error here has no boundary to catch it, so it blanked
+ * the whole student portal ("white screen when the telecaller replies").
+ * safeTime() never throws; ErrorBoundary below is the last-resort backstop.
+ */
+function safeTime(value: string | null | undefined): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  try {
+    return format(date, 'HH:mm');
+  } catch {
+    return '';
+  }
+}
 
 interface TelecallerMessage {
   id: string;
@@ -36,6 +55,14 @@ interface Conversation {
 }
 
 export function StudentTelecallerChat() {
+  return (
+    <ErrorBoundary>
+      <StudentTelecallerChatInner />
+    </ErrorBoundary>
+  );
+}
+
+function StudentTelecallerChatInner() {
   const { user } = useAuth();
   const [conversation, setConversation] = useState<Conversation | null>(null);
   const [messages, setMessages] = useState<TelecallerMessage[]>([]);
@@ -58,7 +85,9 @@ export function StudentTelecallerChat() {
   useEffect(() => {
     if (!conversation?.id) return;
     const poll = window.setInterval(() => {
-      void fetchMessages(conversation.id);
+      fetchMessages(conversation.id).catch((error) => {
+        console.error('Telecaller chat poll failed:', error);
+      });
     }, 3000);
     return () => window.clearInterval(poll);
   }, [conversation?.id]);
@@ -363,7 +392,7 @@ export function StudentTelecallerChat() {
                   <div className="flex items-center gap-1 mt-1">
                     <Clock className="w-3 h-3 opacity-60" />
                     <span className="text-xs opacity-60">
-                      {format(new Date(message.created_at), 'HH:mm')}
+                      {safeTime(message.created_at)}
                     </span>
                     {message.sender_id === user?.id && (
                       <CheckCircle2 className={`w-3 h-3 ${

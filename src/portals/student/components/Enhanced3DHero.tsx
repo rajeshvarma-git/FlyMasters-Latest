@@ -5,6 +5,7 @@ import { Link } from 'react-router-dom';
 import { useRef } from 'react';
 import { useChatNavigation } from '@student/hooks/useChatNavigation';
 import { CHAT_PATH } from '@student/lib/auth-utils';
+import { VoiceInvite } from '@student/components/VoiceInvite';
 
 export default function Enhanced3DHero() {
   const ref = useRef(null);
@@ -158,6 +159,16 @@ export default function Enhanced3DHero() {
                 </Button>
               </motion.div>
             </Link>
+          </motion.div>
+
+          {/* Voice invitation — free browser text-to-speech, routes into chat */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ duration: 0.6, delay: 1 }}
+            className="mt-5 flex justify-center"
+          >
+            <VoiceInvite />
           </motion.div>
 
           {/* Stats with 3D cards */}

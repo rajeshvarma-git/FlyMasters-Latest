@@ -61,7 +61,7 @@ function useAssistiveShortcuts(): ShortcutItem[] {
         { id: 'notifications', label: 'Notifications', icon: Bell, path: '/student/notifications', slot: 'top' },
         { id: 'universities', label: 'Universities', icon: BookOpen, path: '/student/universities', slot: 'top-left' },
         { id: 'profile', label: 'Profile', icon: Smartphone, path: '/student/profile', slot: 'top-right' },
-        { id: 'chat', label: 'Counselor Chat', icon: MessageCircle, path: '/student/chat', slot: 'bottom-left' },
+        { id: 'chat', label: 'Messages', icon: MessageCircle, path: '/student/messages', slot: 'bottom-left' },
         { id: 'documents', label: 'Documents', icon: SlidersHorizontal, path: '/student/documents', slot: 'bottom-right' },
         { id: 'home', label: 'Home', icon: Home, path: '/student', slot: 'bottom', isHome: true },
       ];
