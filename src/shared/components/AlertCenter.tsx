@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { AlarmClock, BellRing, X } from "lucide-react";
 
 /**
@@ -158,7 +159,17 @@ export default function AlertCenter({
                 {alert.body && <p className="mt-1 text-sm text-slate-600">{alert.body}</p>}
                 <div className="mt-2 flex items-center gap-3">
                   {alert.link && (
-                    <a href={alert.link} className="text-xs font-medium text-sky-700 hover:underline">Open</a>
+                    // A plain <a href> here always navigates as a full page load
+                    // against the site root, ignoring which portal (basename)
+                    // is currently mounted — a telecaller or counselor clicking
+                    // "Open" on a lead alert landed on the bare, prefix-less
+                    // /leads/:id, which only exists under /admin and
+                    // /telecaller, so it 404'd in whatever portal the router
+                    // falls back to. <Link> is router-aware: it resolves
+                    // against the ambient basename, so the same server-sent
+                    // link correctly becomes /admin/leads/:id here and
+                    // /telecaller/leads/:id there.
+                    <Link to={alert.link} className="text-xs font-medium text-sky-700 hover:underline">Open</Link>
                   )}
                   {alert.priority !== "urgent" && (
                     <button onClick={() => snooze(alert)} className="flex items-center gap-1 text-xs text-slate-500 hover:text-slate-800">

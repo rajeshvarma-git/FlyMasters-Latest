@@ -924,6 +924,22 @@ async function fireLeadEvent(event, lead, extra = {}) {
 }
 
 /**
+ * `AlertCenter` renders this with react-router's <Link>, so it resolves
+ * against whichever portal's basename is mounted — but only admin
+ * (/admin/leads/:id) and telecaller (/telecaller/leads/:id, via the same
+ * relative "/leads/:id" route definition) actually have a lead-detail page.
+ * The counselor portal has no such route (a counselor works students, not
+ * leads, and only ever owns an already-converted one), so an alert routed
+ * to a counselor sends them to the students list instead of a 404.
+ */
+function alertLinkForRole(role, leadId) {
+  if (role === "telecaller" || role === "admin" || role === "super_admin" || role === "branch_head") {
+    return `/leads/${leadId}`;
+  }
+  return "/students";
+}
+
+/**
  * One place where a change of owner turns into an alert and an automation
  * event. Wrapped so nothing here can throw into the request path.
  */
@@ -938,7 +954,7 @@ async function onLeadOwnerChanged(lead, role, ownerId, hadOwnerBefore) {
       alertType: transferred ? "lead_transferred" : "lead_assigned",
       title: transferred ? `Transferred to you: ${name}` : `New lead assigned: ${name}`,
       body: lead.lead_status === "hot" ? "Marked hot — call today." : "",
-      link: `/leads/${lead.id}`,
+      link: alertLinkForRole(role, lead.id),
       entityType: "student_leads",
       entityId: lead.id,
     });
@@ -1201,14 +1217,15 @@ async function applyLeadPatch(id, patch) {
   if (becameHot) {
     const owner = merged.assigned_telecaller_id || merged.assigned_counselor_id;
     if (owner) {
+      const ownerRole = merged.assigned_telecaller_id ? "telecaller" : "counselor";
       await raiseAlert({
         userId: String(owner),
-        role: merged.assigned_telecaller_id ? "telecaller" : "counselor",
+        role: ownerRole,
         branchId: merged.branch_id || null,
         alertType: "hot_lead_update",
         title: `Hot lead: ${merged.first_name || merged.full_name || merged.phone || "lead"}`,
         body: "Marked hot — this one needs a call today.",
-        link: `/leads/${storeId}`,
+        link: alertLinkForRole(ownerRole, storeId),
         entityType: "student_leads",
         entityId: storeId,
       }).catch(() => undefined);
