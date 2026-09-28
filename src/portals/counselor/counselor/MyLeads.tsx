@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
 import { format } from "date-fns";
-import { Flame, Mail, Phone, PhoneCall, UserCheck } from "lucide-react";
+import { Flame, Mail, Phone, PhoneCall } from "lucide-react";
 import { useAuth } from "@counselor/context/AuthContext";
-import { claimLead, updateLead, useLocalStore } from "@counselor/lib/store";
+import { updateLead, useLocalStore } from "@counselor/lib/store";
 import type { LeadStatus } from "@counselor/lib/types";
 import { isOpenLead } from "@counselor/lib/utils";
 import { Badge } from "@counselor/components/ui/Badge";
@@ -12,6 +12,13 @@ import { Input, Label, Select, Textarea } from "@counselor/components/ui/Field";
 
 const STATUSES: LeadStatus[] = ["cold", "warm", "hot"];
 
+// Self-claim ("Unassigned students" + "Assign to me") and counselor-side
+// conversion ("Convert to student") were both removed 28 Sep 2026: assigning
+// a counselor to a student, and converting a lead to a student, are now
+// admin/telecaller actions only — see platform-merge/07-... in the project
+// docs. Every lead a counselor sees here already arrived pre-converted via
+// admin assignment, so there is nothing left to convert or claim from this
+// screen.
 export default function MyLeads() {
   const { user } = useAuth();
   const store = useLocalStore();
@@ -26,18 +33,6 @@ export default function MyLeads() {
         (lead) => lead.assigned_counselor_id === user?.id && isOpenLead(lead),
       ),
     [store.leads, user?.id],
-  );
-  // Only students already converted (by their telecaller, or by another
-  // counselor's own conversion) belong here. A pre-conversion lead with no
-  // counselor yet is still the assigned telecaller's to convert — showing it
-  // as "unassigned" let any counselor claim it straight out from under the
-  // telecaller with one click, before the telecaller had converted them.
-  const unassigned = useMemo(
-    () =>
-      store.leads.filter(
-        (lead) => !lead.assigned_counselor_id && (lead.entity_type === "student" || lead.lead_status === "converted"),
-      ),
-    [store.leads],
   );
   const selected = leads.find((lead) => lead.id === selectedId) || null;
 
@@ -54,20 +49,6 @@ export default function MyLeads() {
     setSelectedId(null);
   };
 
-  const convertToStudent = (leadId: string) => {
-    const lead = leads.find((row) => row.id === leadId);
-    if (!lead) return;
-    const stamp = `\n[${format(new Date(), "PPP")}] Converted to student by counselor`;
-    updateLead(leadId, {
-      lead_status: "converted",
-      lead_stage: "converted",
-      entity_type: "student",
-      conversion_date: new Date().toISOString(),
-      last_contact_date: new Date().toISOString(),
-      notes: `${lead.notes || ""}${stamp}`.trim(),
-    });
-  };
-
   return (
     <div>
       <div className="mb-6 flex items-center gap-3">
@@ -79,19 +60,6 @@ export default function MyLeads() {
       </div>
 
       <div className="grid gap-4">
-        {unassigned.length > 0 && (
-          <Card className="p-5">
-            <p className="font-semibold">Unassigned students</p>
-            <div className="mt-3 space-y-2">
-              {unassigned.map((lead) => (
-                <div key={lead.id} className="flex items-center justify-between gap-3 rounded-xl border px-3 py-2">
-                  <span className="text-sm">{lead.first_name} {lead.last_name} · {lead.email}</span>
-                  <Button size="sm" onClick={() => user && claimLead(lead.id, user.id)}>Assign to me</Button>
-                </div>
-              ))}
-            </div>
-          </Card>
-        )}
         {leads.map((lead) => (
           <Card key={lead.id} className="p-5">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -114,9 +82,6 @@ export default function MyLeads() {
                   setStatus((lead.lead_status as LeadStatus) || "cold");
                   setFollow(lead.next_follow_up_date?.slice(0, 10) || "");
                 }}>Update status</Button>
-                <Button size="sm" variant="secondary" onClick={() => convertToStudent(lead.id)}>
-                  <UserCheck className="h-4 w-4" /> Convert to student
-                </Button>
               </div>
             </div>
             {lead.notes && <pre className="mt-3 whitespace-pre-wrap rounded-xl bg-slate-50 p-3 text-xs text-slate-600">{lead.notes}</pre>}

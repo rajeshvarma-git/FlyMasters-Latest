@@ -17,7 +17,7 @@ import { randomBytes, scryptSync, timingSafeEqual } from "crypto";
 import { readFileSync, existsSync } from "fs";
 import path from "path";
 import { sendVerificationEmail } from "../lib/email.mjs";
-import { handoffOnConversion, syncConversationFromLead } from "../lib/whatsappStore.mjs";
+import { syncConversationFromLead } from "../lib/whatsappStore.mjs";
 import { pool, jsonTable, jsonUpsert } from "../lib/db.mjs";
 import {
   ROOT as root,
@@ -1071,30 +1071,16 @@ router.get("/api/counselor/state", counselorAuth, async (req, res) => {
   });
 });
 
+// Retired (28 Sep 2026): a counselor creating a lead and self-assigning it
+// skips admin intake and telecaller qualification entirely — the exact
+// bypass the client flagged. No screen in the counselor portal calls this
+// (grepped the frontend, nothing wires to it), so this is a server-side
+// close of an unused door rather than a UI change. New leads go through
+// admin intake / the student application, per the intended journey.
 router.post("/api/counselor/leads", counselorAuth, async (req, res) => {
-  const studentId = crypto.randomUUID();
-  const countries = String(req.body.countries || "").split(",").map((item) => item.trim()).filter(Boolean);
-  const lead = await pool.query(
-    `INSERT INTO student_leads (
-      user_id, email, phone, first_name, last_name, preferred_countries, field_of_interest,
-      lead_status, lead_stage, lead_source, assigned_counselor_id, entity_type, status
-    ) VALUES ($1,$2,$3,$4,$5,$6,$7,'warm','warm','manual',$8,'lead','assigned')
-    RETURNING *`,
-    [studentId, req.body.email, req.body.phone || "", req.body.firstName, req.body.lastName, countries, req.body.field || "", req.user.id],
-  );
-  await pool.query(
-    `INSERT INTO private_conversations (counselor_id, student_id, last_message_at)
-     VALUES ($1, $2, now())`,
-    [req.user.id, studentId],
-  );
-  const created = lead.rows[0];
-  await jsonUpsert("student_leads", {
-    ...created,
-    user_id: studentId,
-    assigned_counselor_id: SHARED_STUDENT_COUNSELOR_ID,
-    preferred_countries: created.preferred_countries || [],
-  }).catch(() => {});
-  res.json(created);
+  res.status(403).json({
+    error: "Counselors can no longer create and self-assign leads. New leads go through admin intake.",
+  });
 });
 
 router.patch("/api/counselor/leads/:id", counselorAuth, async (req, res) => {
@@ -1116,64 +1102,48 @@ router.patch("/api/counselor/leads/:id", counselorAuth, async (req, res) => {
   const owned = counselorAliases.has(String(current.assigned_counselor_id || ""));
   if (!owned) return res.status(403).json({ error: "This lead is not assigned to you." });
 
+  // Conversion is no longer a counselor action (28 Sep 2026). In the intended
+  // journey a counselor only ever receives a lead an admin has already routed
+  // to them after telecaller qualification, so it is already a student by
+  // the time it reaches here — a counselor "converting" one was really the
+  // sign of an out-of-process lead (see platform-merge/07-...). Block it
+  // outright instead of silently taking ownership, same as the telecaller
+  // PATCH route already blocks a telecaller from touching assigned_counselor_id.
   const converting = patch.lead_status === "converted" || patch.entity_type === "student"
     || patch.lead_stage === "converted";
   if (converting) {
-    const stamp = new Date().toISOString();
-    patch.entity_type = "student";
-    patch.lead_status = "converted";
-    patch.lead_stage = "converted";
-    patch.conversion_date = patch.conversion_date || stamp;
-    patch.last_contact_date = patch.last_contact_date || stamp;
-    patch.assigned_counselor_id = req.user.id;
-    patch.status = "assigned";
+    return res.status(403).json({
+      error: "Only the assigned telecaller (or an admin) can convert a lead to a student.",
+    });
   }
+  delete patch.assigned_counselor_id;
+  delete patch.entity_type;
+  if (!Object.keys(patch).length) return res.json({ ok: true });
 
   const sets = Object.keys(patch).map((key, index) => `${key} = $${index + 2}`);
   const values = Object.values(patch);
   await pool.query(`UPDATE student_leads SET ${sets.join(", ")} WHERE id = $1`, [req.params.id, ...values]).catch(() => {});
   const updated = { ...current, ...patch, id: current.id || req.params.id };
   await jsonUpsert("student_leads", updated);
-  if (converting) {
-    await handoffOnConversion(pool, req.params.id).catch(() => {});
-  } else {
-    await syncConversationFromLead(pool, updated).catch(() => {});
-  }
+  await syncConversationFromLead(pool, updated).catch(() => {});
   res.json({ ok: true });
 });
 
-// Self-service pickup for a student who has already been converted (by their
-// telecaller or another counselor's own /convert route) and has no counselor
-// yet. This must NEVER let a counselor take a lead a telecaller is still
-// working — that boundary is a lead's `entity_type`, the same check
-// /api/telecaller/leads/:id strips assigned_counselor_id to protect, and the
-// same check /api/counselor/leads/:id's `converting` branch relies on already
-// owning the lead. This endpoint used to have no check at all: any signed-in
-// counselor could claim ANY lead, including ones a telecaller had not yet
-// converted, taking ownership with one click and no admin involvement.
+// Counselor self-claim, fully retired (28 Sep 2026). This started with no
+// check at all — any counselor could take ANY lead, converted or not. A
+// same-day fix added an ownership/conversion check, but the client's
+// intended journey is stricter still: counselor <-> student assignment is an
+// admin action, full stop, the same way telecaller <-> lead assignment is.
+// A counselor picking their own students — even only already-converted,
+// unclaimed ones — is a second, informal assignment path that can silently
+// disagree with branch, language, or workload decisions the admin is
+// supposed to be making. So this endpoint no longer assigns anything; it
+// exists only to give counselors still on an old client build a clear error
+// instead of a 404. See platform-merge/07-... in the project docs.
 router.post("/api/counselor/leads/:id/claim", counselorAuth, async (req, res) => {
-  const jsonLeads = await jsonTable("student_leads").catch(() => []);
-  const claimKey = String(req.params.id);
-  const lead = jsonLeads.find((row) => String(row.id) === claimKey)
-    || jsonLeads.find((row) => String(row.user_id) === claimKey)
-    || null;
-  if (!lead) return res.status(404).json({ error: "Lead not found." });
-
-  if (!isLeadConverted(lead) && lead.entity_type !== "student") {
-    return res.status(403).json({
-      error: "This lead hasn't been converted to a student yet. Only the assigned telecaller (or an admin) can do that.",
-    });
-  }
-  const counselorAliases = await resolveCounselorAliases(req.user.id);
-  const currentOwner = String(lead.assigned_counselor_id || "");
-  if (currentOwner && !counselorAliases.has(currentOwner)) {
-    return res.status(403).json({ error: "This student already has a counselor assigned." });
-  }
-
-  await pool.query("UPDATE student_leads SET assigned_counselor_id = $2, status = 'assigned' WHERE id = $1", [req.params.id, req.user.id]).catch(() => {});
-  await jsonUpsert("student_leads", { ...lead, assigned_counselor_id: req.user.id, status: "assigned" });
-  await syncConversationFromLead(pool, { ...lead, assigned_counselor_id: req.user.id, status: "assigned" }, { recordHandoff: true, previousLead: lead }).catch(() => {});
-  res.json({ ok: true });
+  res.status(403).json({
+    error: "Counselor self-assignment has been removed. Ask an admin to assign this student to you.",
+  });
 });
 
 router.post("/api/counselor/leave", counselorAuth, async (req, res) => {

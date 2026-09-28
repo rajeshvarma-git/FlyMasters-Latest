@@ -2317,14 +2317,43 @@ router.patch("/api/leads/:id", auth, async (req, res) => {
   if ((patch.assigned_counselor_id || patch.assigned_telecaller_id) && !patch.status) {
     patch.status = "assigned";
   }
-  // Conversion must go through POST /api/counselor/leads/:id/convert in the counselor portal.
+  // Conversion is telecaller/admin-only now (28 Sep 2026) — counselor-side
+  // conversion routes were removed, so this stays blocked from here too;
+  // there is no portal left for it to redirect to.
   if (patch.lead_status === "converted" || patch.entity_type === "student") {
     return res.status(403).json({
-      error: "Only the assigned counselor can convert a lead from the counselor portal.",
+      error: "Only the assigned telecaller can convert a lead. Use the telecaller portal's convert action.",
     });
   }
   const jsonLeads = await jsonTable("student_leads");
   const current = findLeadJsonRecord(jsonLeads, req.params.id);
+  // A counselor is only ever handed an already-converted student — assigning
+  // one to a pre-conversion lead is the same bypass /claim used to allow,
+  // just from the admin side instead of the counselor side.
+  if (patch.assigned_counselor_id && current) {
+    const alreadyConverted = current.entity_type === "student" || current.lead_status === "converted";
+    if (!alreadyConverted) {
+      return res.status(400).json({
+        error: "This lead hasn't been converted to a student yet. Assign a telecaller first; assign a counselor after conversion.",
+      });
+    }
+    // Branch check: don't hand a student to a counselor outside their
+    // branch. Soft-fails open when either side has no branch on record yet
+    // (doc 03 flags real leads still missing branch_id) rather than blocking
+    // legitimate assignments on incomplete legacy data — but blocks a clear
+    // cross-branch conflict.
+    if (current.branch_id) {
+      const membership = await pool
+        .query("SELECT branch_id FROM user_branches WHERE user_id = $1", [patch.assigned_counselor_id])
+        .catch(() => ({ rows: [] }));
+      const counselorBranchIds = membership.rows.map((row) => String(row.branch_id));
+      if (counselorBranchIds.length && !counselorBranchIds.includes(String(current.branch_id))) {
+        return res.status(400).json({
+          error: "That counselor is not assigned to this student's branch.",
+        });
+      }
+    }
+  }
   const updated = await applyLeadPatch(req.params.id, patch);
   await syncOwnershipOnAssignment(current, updated);
   if (patch.assigned_telecaller_id) {
@@ -2373,59 +2402,17 @@ async function commissionOnConvert(req, leadId) {
   }
 }
 
+// Retired (28 Sep 2026): counselor-side conversion, including the WhatsApp
+// path this route was built for. Not called from the counselor frontend
+// (grepped — nothing wires to it). Conversion is now telecaller/admin-only
+// everywhere, so a WhatsApp-sourced lead needs the same telecaller
+// qualification step as any other before a counselor should be touching it.
+// If the client wants a WhatsApp-specific fast path back, it needs its own
+// explicit decision — not a quiet exception to the rest of this fix.
 router.post("/api/counselor/leads/:id/convert", counselorAuth, async (req, res) => {
-  void commissionOnConvert(req, req.params.id);
-  try {
-    const owned = await ownedCounselorLead(req.user.id, req.params.id);
-    if (owned.error) return res.status(403).json({ error: owned.error });
-    const lead = owned.lead;
-    if (lead.entity_type === "student" || lead.lead_status === "converted") {
-      return res.json({ ok: true, lead: asLead(lead) });
-    }
-
-    const stamp = new Date().toISOString();
-    const before = { ...lead };
-    const updated = await applyLeadPatch(req.params.id, {
-      lead_status: "converted",
-      lead_stage: "converted",
-      entity_type: "student",
-      conversion_date: stamp,
-      status: lead.assigned_counselor_id ? "assigned" : "unassigned",
-    });
-
-    await syncOwnershipOnAssignment(before, updated);
-    await whatsapp.syncConversationForLead(updated);
-
-    if (updated.assigned_telecaller_id) {
-      await notify(
-        updated.assigned_telecaller_id,
-        "Lead converted to student",
-        `${updated.first_name || "Lead"} is now a student. Counselor takes over WhatsApp when assigned.`,
-        "info",
-        `/admin/students/${updated.id}`,
-      );
-    }
-
-    if (updated.assigned_counselor_id) {
-      await notify(
-        updated.assigned_counselor_id,
-        "Student ready on WhatsApp",
-        `${updated.first_name || "Student"} was converted. You can reply on WhatsApp from your counselor portal.`,
-        "info",
-        `/admin/counselors/${updated.assigned_counselor_id}`,
-      );
-    } else {
-      await notifyAdmins(
-        "Converted student needs counselor",
-        `${updated.first_name || "Student"} was converted from WhatsApp. Assign a counselor on Lead alerts.`,
-        "/admin/alerts",
-      );
-    }
-
-    res.json({ ok: true, lead: updated });
-  } catch (error) {
-    res.status(500).json({ error: error.message || "Could not convert the lead." });
-  }
+  res.status(403).json({
+    error: "Counselor-side conversion has been removed. Ask the assigned telecaller or an admin to convert this lead.",
+  });
 });
 
 router.post("/api/leads/bulk-assign", auth, async (req, res) => {
@@ -2433,25 +2420,38 @@ router.post("/api/leads/bulk-assign", auth, async (req, res) => {
   const counselorId = req.body.counselorId ? String(req.body.counselorId) : "";
   if (!ids.length) return res.status(400).json({ error: "Select at least one student." });
   if (!counselorId) return res.status(400).json({ error: "Choose a counselor to assign." });
+  // Same branch check as the single-lead PATCH route — resolved once here
+  // rather than per lead, since the counselor doesn't change across the batch.
+  const counselorMembership = await pool
+    .query("SELECT branch_id FROM user_branches WHERE user_id = $1", [counselorId])
+    .catch(() => ({ rows: [] }));
+  const counselorBranchIds = counselorMembership.rows.map((row) => String(row.branch_id));
   let count = 0;
+  let skippedBranch = 0;
   for (const id of ids) {
     const jsonLeads = await jsonTable("student_leads");
     const lead = jsonLeads.find((row) => String(row.id) === id);
     if (!lead) continue;
     const converted = lead.entity_type === "student" || lead.lead_status === "converted";
     if (!converted) continue;
+    if (lead.branch_id && counselorBranchIds.length && !counselorBranchIds.includes(String(lead.branch_id))) {
+      skippedBranch += 1;
+      continue;
+    }
     const updated = await applyLeadPatch(id, { assigned_counselor_id: counselorId, status: "assigned" });
     await syncOwnershipOnAssignment(lead, updated);
     count += 1;
   }
-  await notify(
-    counselorId,
-    "Students assigned",
-    `${count} student(s) were assigned to you with full history.`,
-    "info",
-    "/counselor/students",
-  );
-  res.json({ ok: true, count });
+  if (count) {
+    await notify(
+      counselorId,
+      "Students assigned",
+      `${count} student(s) were assigned to you with full history.`,
+      "info",
+      "/counselor/students",
+    );
+  }
+  res.json({ ok: true, count, skippedBranch });
 });
 
 router.post("/api/leads/bulk-assign-telecaller", auth, async (req, res) => {
@@ -3335,11 +3335,27 @@ async function autoAssignTelecallers() {
     .filter((row) => !row.assigned_telecaller_id)
     .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
 
+  const telecallersById = new Map(telecallers.map((row) => [String(row.id), row]));
+
   let assigned = 0;
   for (const lead of waiting) {
+    // Branch-scope the pool when the lead has one on record: a telecaller in
+    // Hyderabad picking up a Vijayawada lead is exactly the kind of
+    // auto-assignment the client flagged as unsafe. Falls back to every
+    // active telecaller when the lead has no branch yet (still real, per
+    // doc 03) rather than stranding it unassigned. Skill/language/capacity
+    // matching is not implemented — there's no data for it yet (no skill or
+    // language fields on telecaller accounts); that needs its own feature,
+    // not a guess bolted onto this loop.
+    const eligibleIds = lead.branch_id
+      ? [...load.keys()].filter((id) => (telecallersById.get(id)?.branch_ids || []).includes(String(lead.branch_id)))
+      : [...load.keys()];
+    const candidateIds = eligibleIds.length ? eligibleIds : [...load.keys()];
+
     let target = null;
     let lowest = Infinity;
-    for (const [id, count] of load) {
+    for (const id of candidateIds) {
+      const count = load.get(id) ?? 0;
       if (count < lowest) {
         lowest = count;
         target = id;
