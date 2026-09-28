@@ -20,6 +20,7 @@ import { validateDocumentFile } from '@student/lib/documentTypeValidation';
 import { notifyCounselorsOfStudentDocument } from '@student/lib/notifyCounselorsOfStudentDocument';
 import { normalizeCountry } from '@student/lib/universityRecommendations';
 import { filterDocumentChecklistsForProfile, normalizeDegreeLevel } from '@student/lib/documentChecklistMatching';
+import { fetchAssignedChecklists, type AssignedChecklist, type AssignedChecklistResponse } from '@student/lib/crmApi';
 
 interface Document {
   id: string;
@@ -40,6 +41,10 @@ interface DocumentChecklist {
   is_required: boolean;
   max_file_size_mb: number;
   allowed_file_types: string[];
+  // Present only when this list came from an activated CRM checklist.
+  already_available?: boolean;
+  rejection_reason?: string;
+  next_step_note?: string;
 }
 
 interface DocumentRequest {
@@ -72,6 +77,15 @@ export function StudentDocuments() {
     countries: [],
     degreeLevel: '',
   });
+  /**
+   * CRM 2.6.2: when a counsellor has activated a country checklist for this
+   * student, that is the list shown here — pinned to the version live when
+   * it was activated, with the counsellor's status and notes on each item.
+   * The profile-derived checklist below stays as the fallback for students
+   * with nothing activated yet.
+   */
+  const [assigned, setAssigned] = useState<AssignedChecklist[]>([]);
+  const [assignedLoaded, setAssignedLoaded] = useState(false);
 
   useEffect(() => {
     if (user) {
@@ -83,12 +97,34 @@ export function StudentDocuments() {
     }
   }, [user]);
 
+  const fetchAssignedChecklist = async (): Promise<AssignedChecklistResponse> => {
+    try {
+      const data = await fetchAssignedChecklists();
+      setAssigned(data.activated ? data.checklists : []);
+      if (data.activated) {
+        // Feed the existing checklist UI the same shape it already expects.
+        setChecklist(
+          data.checklists.flatMap((list) => list.items).map(withPracticalUploadLimit) as unknown as DocumentChecklist[],
+        );
+      }
+      return data;
+    } catch (error: any) {
+      // A student with no CRM record yet is normal, not an error to shout about.
+      console.error('Could not load the assigned checklist:', error?.message || error);
+      return { activated: false, checklists: [] };
+    } finally {
+      setAssignedLoaded(true);
+    }
+  };
+
   const fetchAllData = async (silent = false) => {
     if (!silent) setLoading(true);
+    const assignedData = await fetchAssignedChecklist();
     await Promise.all([
       fetchDocuments(),
-      fetchChecklistFromProfile(),
-      fetchDocumentRequests()
+      fetchDocumentRequests(),
+      // Once a checklist is activated, that replaces the profile-derived one.
+      assignedData.activated ? Promise.resolve() : fetchChecklistFromProfile(),
     ]);
     if (!silent) setLoading(false);
   };
@@ -635,11 +671,15 @@ export function StudentDocuments() {
       {checklist.length > 0 && (
         <Card className="glass-card overflow-hidden">
           <CardHeader className="p-4 md:p-6">
-            <CardTitle className="text-base md:text-lg">Required Documents</CardTitle>
+            <CardTitle className="text-base md:text-lg">
+              {assigned.length > 0 ? `Documents for ${assigned.map((list) => list.country).join(' and ')}` : 'Required Documents'}
+            </CardTitle>
             <CardDescription className="text-xs md:text-sm">
-              {profileSummary.countries.length > 0
-                ? `Based on your profile: ${profileSummary.countries.join(', ')}${profileSummary.degreeLevel ? ` · ${profileSummary.degreeLevel}` : ''}. Upload the matching document for each item.`
-                : 'Upload the matching document for each item. A resume cannot be submitted as Original Degree (OD).'}
+              {assigned.length > 0
+                ? 'Your counselor set this list up for you. Upload each document and they will review it.'
+                : profileSummary.countries.length > 0
+                  ? `Based on your profile: ${profileSummary.countries.join(', ')}${profileSummary.degreeLevel ? ` · ${profileSummary.degreeLevel}` : ''}. Upload the matching document for each item.`
+                  : 'Upload the matching document for each item. A resume cannot be submitted as Original Degree (OD).'}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3 p-4 pt-0 md:p-6 md:pt-0">
@@ -668,6 +708,25 @@ export function StudentDocuments() {
                       <span>Max size: {item.max_file_size_mb}MB</span>
                       <span>Types: {item.allowed_file_types.join(', ')}</span>
                     </div>
+
+                    {item.already_available && (
+                      <div className="mt-2 flex items-start gap-2 rounded-md bg-violet-50 p-2 text-xs text-violet-800">
+                        <CheckCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span>Already uploaded for another country — you don't need to send this again.</span>
+                      </div>
+                    )}
+                    {item.rejection_reason && (
+                      <div className="mt-2 flex items-start gap-2 rounded-md bg-destructive/10 p-2 text-xs text-destructive">
+                        <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                        <span>{item.rejection_reason}</span>
+                      </div>
+                    )}
+                    {item.next_step_note && (
+                      <div className="mt-2 flex items-start gap-2 rounded-md bg-muted/40 p-2 text-xs">
+                        <Clock className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
+                        <span><span className="font-medium">Next: </span>{item.next_step_note}</span>
+                      </div>
+                    )}
 
                     {uploadedDoc && (
                       <div className="flex flex-col gap-2 mt-3">
