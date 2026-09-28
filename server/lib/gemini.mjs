@@ -2,7 +2,7 @@
  * Minimal Gemini client for the student case chat — plain REST, no SDK.
  *
  * Set GEMINI_API_KEY in Railway (Google AI Studio key). GEMINI_MODEL is
- * optional. With no key the chat still works: the AI step just answers with
+ * optional (default gemini-3.5-flash-lite, falling back to 3.5-flash and 3.7-flash). With no key the chat still works: the AI step just answers with
  * a holding line and a human picks the conversation up.
  */
 // GEMINI_API_BASE only exists so tests can point at a local stub.
@@ -14,8 +14,19 @@ export function geminiConfigured() {
   return Boolean(String(process.env.GEMINI_API_KEY || "").trim());
 }
 
-function geminiModel() {
-  return String(process.env.GEMINI_MODEL || "gemini-2.5-flash").trim();
+// Free-tier models as of Sep 2026 (ai.google.dev/gemini-api/docs/pricing).
+// Flash-Lite first: fastest, cheapest, most generous free quota, and plenty
+// for a short advisor chat. If a model is missing or its free quota is used
+// up, the next one is tried — each model has its own quota.
+const DEFAULT_MODELS = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.7-flash"];
+
+function modelsToTry() {
+  const configured = String(process.env.GEMINI_MODEL || "").trim();
+  return [...new Set([configured, ...DEFAULT_MODELS].filter(Boolean))];
+}
+
+export function geminiModelName() {
+  return modelsToTry()[0];
 }
 
 const RESPONSE_SCHEMA = {
@@ -58,32 +69,53 @@ export async function geminiChat({ systemPrompt, history }) {
     throw new Error("Gemini call needs the student's message last");
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 25000);
-  try {
-    const res = await fetch(`${apiBase()}/${encodeURIComponent(geminiModel())}:generateContent`, {
-      method: "POST",
-      signal: controller.signal,
-      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemPrompt }] },
-        contents,
-        generationConfig: {
-          temperature: 0.4,
-          maxOutputTokens: 1024,
-          responseMimeType: "application/json",
-          responseSchema: RESPONSE_SCHEMA,
-          // Flash models "think" by default and that eats the output budget;
-          // a chat reply doesn't need it and is faster/cheaper without.
-          ...(/flash/i.test(geminiModel()) ? { thinkingConfig: { thinkingBudget: 0 } } : {}),
-        },
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      throw new Error(data?.error?.message || `Gemini request failed (${res.status})`);
+  const body = JSON.stringify({
+    systemInstruction: { parts: [{ text: systemPrompt }] },
+    contents,
+    generationConfig: {
+      temperature: 0.4,
+      // Gemini 3 models think before answering and that counts here, so
+      // leave headroom; the reply itself is ~90 words.
+      maxOutputTokens: 2048,
+      responseMimeType: "application/json",
+      responseSchema: RESPONSE_SCHEMA,
+    },
+  });
+
+  let data = null;
+  let lastError = null;
+  for (const model of modelsToTry()) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 25000);
+    try {
+      const res = await fetch(`${apiBase()}/${encodeURIComponent(model)}:generateContent`, {
+        method: "POST",
+        signal: controller.signal,
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body,
+      });
+      const json = await res.json().catch(() => ({}));
+      if (res.ok) {
+        data = json;
+        break;
+      }
+      lastError = new Error(`${model}: ${json?.error?.message || `Gemini request failed (${res.status})`}`);
+      // Wrong/retired model name or free quota exhausted → try the next model.
+      // Anything else (bad key, bad request) won't be fixed by another model.
+      if (![404, 429, 503].includes(res.status)) throw lastError;
+      console.warn("[gemini] falling back:", lastError.message);
+    } finally {
+      clearTimeout(timer);
     }
-    const raw = data?.candidates?.[0]?.content?.parts?.map((p) => p.text || "").join("") || "";
+  }
+  if (!data) throw lastError || new Error("Gemini request failed");
+
+  {
+    // Skip "thought" parts some models return alongside the answer.
+    const raw = (data?.candidates?.[0]?.content?.parts || [])
+      .filter((p) => !p.thought)
+      .map((p) => p.text || "")
+      .join("");
     let parsed;
     try {
       parsed = JSON.parse(raw);
@@ -98,7 +130,5 @@ export async function geminiChat({ systemPrompt, history }) {
       if (value && !/^(unknown|n\/a|none|null|not provided)$/i.test(value)) profile[k] = value;
     }
     return { reply, profile };
-  } finally {
-    clearTimeout(timer);
   }
 }
