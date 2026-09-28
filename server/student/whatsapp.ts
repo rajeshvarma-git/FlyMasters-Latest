@@ -1,7 +1,9 @@
 import { createHash, createHmac, randomInt, timingSafeEqual } from "crypto";
 import type { IncomingMessage, ServerResponse } from "http";
-import { mutateAppState, readAppState } from "./postgres";
+import jwt from "jsonwebtoken";
+import { getPool, mutateAppState, readAppState } from "./postgres";
 import { getSessionByToken, readBearerToken, type PublicUser } from "./studentAuth";
+import { JWT_SECRET } from "../lib/env.mjs";
 
 const CODE_TTL_MS = 10 * 60 * 1000;
 const MAX_VERIFY_ATTEMPTS = 5;
@@ -57,7 +59,28 @@ function sendJson(res: ServerResponse, status: number, payload: unknown) {
   res.end(JSON.stringify(payload));
 }
 
+/**
+ * Same fix as server/student/httpApi.ts's readBody (see its comment): this
+ * handler runs inside Express, and express.json() drains the request stream
+ * before it ever gets here, so every POST (verify-otp, send reply,
+ * app-message, send document, ...) sat here waiting for a "data" event that
+ * would never arrive — a silent hang, not an error. When Express already
+ * parsed the body, use it; only fall through to reading the raw stream for
+ * requests it left untouched.
+ */
 function readBody(req: IncomingMessage): Promise<string> {
+  const parsed = (req as IncomingMessage & { body?: unknown }).body;
+  if (parsed !== undefined && parsed !== null) {
+    if (typeof parsed === "string") return Promise.resolve(parsed);
+    if (Buffer.isBuffer(parsed)) return Promise.resolve(parsed.toString("utf8"));
+    if (typeof parsed === "object") {
+      const keys = Object.keys(parsed as Record<string, unknown>);
+      if (keys.length > 0) return Promise.resolve(JSON.stringify(parsed));
+      if (!req.readable) return Promise.resolve("");
+    }
+  }
+  if (!req.readable) return Promise.resolve("");
+
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -274,8 +297,49 @@ async function sendWhatsAppOtpTemplate(to: string, code: string) {
   }
 }
 
+/**
+ * Staff (counselor/telecaller/admin/super_admin) carry a signed JWT from
+ * server/lib/auth.mjs's signUser(); the student portal still carries an
+ * opaque token in auth_sessions (see server/routes/student.mjs's comment —
+ * unifying the two realms is tracked, not done). This whole file is mounted
+ * ahead of core.mjs and claims every /api/whatsapp/* path unconditionally
+ * (see isWhatsAppPath below), so it's the ONLY place either realm's request
+ * for a WhatsApp route actually lands — it has to accept both token kinds
+ * itself rather than delegate to one realm's session lookup. Mirrors
+ * server/lib/auth.mjs's anySession(): try the JWT first, fall back to the
+ * opaque session lookup.
+ */
+async function staffFromJwt(token: string): Promise<{ user: PublicUser; role: string } | null> {
+  let claims: any;
+  try {
+    claims = jwt.verify(token, JWT_SECRET);
+  } catch {
+    return null;
+  }
+  if (!claims?.id) return null;
+  const result = await getPool().query(
+    `SELECT u.id, u.email, u.user_metadata, COALESCE(r.role, 'student') AS role, r.is_active
+       FROM auth_users u
+       LEFT JOIN user_roles r ON r.user_id = u.id
+      WHERE u.id = $1`,
+    [String(claims.id)]
+  );
+  const row = result.rows[0];
+  if (!row || row.is_active === false) return null;
+  return {
+    user: { id: String(row.id), email: String(row.email || ""), user_metadata: row.user_metadata || {} },
+    role: String(row.role || "student"),
+  };
+}
+
 async function requireSession(req: IncomingMessage) {
-  const session = await getSessionByToken(readBearerToken(req));
+  const token = readBearerToken(req);
+  const staffAuth = token ? await staffFromJwt(token).catch(() => null) : null;
+  if (staffAuth) {
+    return { session: null as any, role: staffAuth.role, user: staffAuth.user };
+  }
+
+  const session = await getSessionByToken(token);
   if (!session?.user) {
     const error = new Error("Please sign in to continue.") as Error & { status?: number };
     error.status = 401;
@@ -527,11 +591,108 @@ async function handleVerifyOtp(req: IncomingMessage, res: ServerResponse) {
   sendJson(res, 200, { ok: true, verified: true, phone_number: formatDisplayPhone(phone) });
 }
 
+/**
+ * Unauthenticated status check the counselor WhatsApp screen polls to show
+ * a "sending is not working" banner. (It's the same shape that check
+ * expects — see src/portals/counselor/counselor/WhatsAppChat.tsx's
+ * WhatsAppStatus interface — this route just never existed here before.)
+ */
+async function handleStatus(_req: IncomingMessage, res: ServerResponse) {
+  const configured = isWhatsAppConfigured();
+  sendJson(res, 200, {
+    ok: true,
+    whatsappApiConfigured: configured,
+    credentialsValid: configured,
+    webhookReady: Boolean(getVerifyToken()),
+    credentialError: configured ? null : "WHATSAPP_API_KEY/WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID are not set.",
+    displayPhone: null,
+  });
+}
+
 async function handleVerificationStatus(req: IncomingMessage, res: ServerResponse) {
   const { user } = await requireSession(req);
   const profile = await findProfileForUserOrPhone(user.id);
   const lead = await findLeadForUserOrPhone(user.id);
   sendJson(res, 200, publicVerification(user.id, profile, lead));
+}
+
+/**
+ * The student's own read of their WhatsApp thread, for
+ * src/portals/student/components/dashboard/student/StudentUnifiedChat.tsx —
+ * folding WhatsApp into the same merged conversation as the counselor/
+ * telecaller/AI channels there.
+ */
+async function handleMyThread(req: IncomingMessage, res: ServerResponse) {
+  const { user } = await requireSession(req);
+  const profile = await findProfileForUserOrPhone(user.id);
+  const lead = await findLeadForUserOrPhone(user.id);
+  const verified = Boolean(profile?.whatsapp_verified || lead?.whatsapp_verified);
+  if (!verified) {
+    sendJson(res, 200, { verified: false, conversation: null, messages: [] });
+    return;
+  }
+  const phoneRaw = profile?.whatsapp_number || lead?.whatsapp_number || profile?.phone || lead?.phone || "";
+  const phone = normalizeWhatsAppPhone(String(phoneRaw)) || String(phoneRaw);
+  const conversation = await ensureConversation({
+    phone,
+    userId: user.id,
+    leadId: lead?.id,
+    contactName: personName(profile) || personName(lead) || user.email,
+  });
+  const messages = (await loadTable("whatsapp_messages"))
+    .filter((row) => String(row.conversation_id) === String(conversation.id))
+    .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
+  sendJson(res, 200, { verified: true, conversation, messages });
+}
+
+/**
+ * A message the student types inside the unified chat's WhatsApp tab. It
+ * can't actually be dispatched as a WhatsApp send — the Cloud API only lets
+ * the business number message the customer, never the reverse — so it's
+ * stored the same way an inbound webhook message would be (direction:
+ * "inbound", tagged channel: "app" so it can be told apart from a real
+ * WhatsApp bubble), landing in the same conversation staff already watch.
+ */
+async function handleAppMessage(req: IncomingMessage, res: ServerResponse) {
+  const { user } = await requireSession(req);
+  const body = JSON.parse((await readBody(req)) || "{}");
+  const text = String(body.message || body.text || "").trim();
+  if (!text) {
+    sendJson(res, 400, { error: "Message cannot be empty." });
+    return;
+  }
+  const profile = await findProfileForUserOrPhone(user.id);
+  const lead = await findLeadForUserOrPhone(user.id);
+  const verified = Boolean(profile?.whatsapp_verified || lead?.whatsapp_verified);
+  if (!verified) {
+    sendJson(res, 400, { error: "Verify your WhatsApp number first." });
+    return;
+  }
+  const phoneRaw = profile?.whatsapp_number || lead?.whatsapp_number || profile?.phone || lead?.phone || "";
+  const phone = normalizeWhatsAppPhone(String(phoneRaw)) || String(phoneRaw);
+  const conversation = await ensureConversation({
+    phone,
+    userId: user.id,
+    leadId: lead?.id,
+    contactName: personName(profile) || personName(lead) || user.email,
+  });
+  const now = new Date().toISOString();
+  const message = await insertRow("whatsapp_messages", {
+    conversation_id: conversation.id,
+    direction: "inbound",
+    body: text,
+    wa_message_id: null,
+    staff_id: null,
+    channel: "app",
+    is_read: false,
+    created_at: now,
+  });
+  await updateRow("whatsapp_conversations", conversation.id, { last_message_at: now });
+  sendJson(res, 200, { message, conversation });
+}
+
+function isConvertedLead(lead: any) {
+  return Boolean(lead) && (lead.entity_type === "student" || lead.lead_status === "converted");
 }
 
 function displayNameForConversation(conversation: any, lead: any, profile: any) {
@@ -567,6 +728,7 @@ async function enrichConversations(role: string, userId: string) {
         .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
       const last = thread[thread.length - 1];
       const unread = thread.filter((row) => row.direction === "inbound" && row.is_read !== true).length;
+      const converted = isConvertedLead(lead);
 
       return {
         id: conversation.id,
@@ -576,10 +738,13 @@ async function enrichConversations(role: string, userId: string) {
         assigned_staff_id: conversation.assigned_staff_id || lead?.assigned_counselor_id || lead?.assigned_telecaller_id || null,
         staff_role: conversation.staff_role || null,
         student_name: displayNameForConversation(conversation, lead, profile),
+        is_unknown: !lead,
         last_message: last?.body || "",
         last_message_at: conversation.last_message_at || last?.created_at || conversation.created_at,
         unread_count: unread,
         whatsapp_verified: Boolean(profile?.whatsapp_verified || lead?.whatsapp_verified),
+        stage: lead ? (converted ? "student" : "lead") : (conversation.staff_role === "counselor" ? "student" : "lead"),
+        canReply: canAccessConversation(role, userId, conversation, lead) && (role === "counselor" || role === "telecaller"),
         created_at: conversation.created_at,
       };
     })
@@ -587,9 +752,11 @@ async function enrichConversations(role: string, userId: string) {
     .sort((a: any, b: any) => String(b.last_message_at || "").localeCompare(String(a.last_message_at || "")));
 }
 
-async function handleListConversations(req: IncomingMessage, res: ServerResponse) {
+async function handleListConversations(req: IncomingMessage, res: ServerResponse, stageFilter: string) {
   const { user, role } = await requireStaff(req);
-  sendJson(res, 200, { conversations: await enrichConversations(role, user.id) });
+  const all = await enrichConversations(role, user.id);
+  const conversations = stageFilter ? all.filter((row: any) => row.stage === stageFilter) : all;
+  sendJson(res, 200, { conversations });
 }
 
 async function loadAccessibleConversation(role: string, userId: string, conversationId: string) {
@@ -611,17 +778,28 @@ async function handleGetMessages(req: IncomingMessage, res: ServerResponse, conv
   const messages = (await loadTable("whatsapp_messages"))
     .filter((row) => String(row.conversation_id) === String(conversationId))
     .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
-  sendJson(res, 200, { messages });
+  const lastInbound = messages
+    .filter((row) => row.direction === "inbound")
+    .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))[0];
+  const windowOpen = Boolean(
+    lastInbound?.created_at && Date.now() - new Date(lastInbound.created_at).getTime() < 24 * 3600 * 1000
+  );
+  sendJson(res, 200, {
+    messages,
+    windowStatus: {
+      open: windowOpen,
+      reason: windowOpen ? undefined : "WhatsApp only allows a free reply within 24 hours of the student's last message.",
+    },
+  });
 }
 
 async function handleSendReply(req: IncomingMessage, res: ServerResponse) {
   const { user, role } = await requireStaff(req);
-  if (!isWhatsAppConfigured()) {
-    sendJson(res, 503, { error: "WhatsApp is not configured on the server." });
-    return;
-  }
   const body = JSON.parse((await readBody(req)) || "{}");
-  const conversationId = String(body.conversation_id || "");
+  // Every portal client (admin/counselor/telecaller WhatsAppChat screens)
+  // posts camelCase conversationId; only snake_case was read here, so the
+  // send button silently 400'd ("Message text is required") on every portal.
+  const conversationId = String(body.conversationId || body.conversation_id || "");
   const text = String(body.body || body.message || "").trim();
   if (!conversationId || !text) {
     sendJson(res, 400, { error: "Message text is required." });
@@ -632,6 +810,15 @@ async function handleSendReply(req: IncomingMessage, res: ServerResponse) {
     sendJson(res, 404, { error: "Conversation not found." });
     return;
   }
+  // Checked after validating the request/access, not before (like
+  // handleSendDocument below), so a bad id or a staff member without access
+  // gets the real 404/403 instead of a generic "not configured" — and so
+  // this stays testable without real WhatsApp credentials in every
+  // environment.
+  if (!isWhatsAppConfigured()) {
+    sendJson(res, 503, { error: "WhatsApp is not configured on the server." });
+    return;
+  }
 
   const sent = await sendWhatsAppText(access.conversation.phone_number, text);
   const now = new Date().toISOString();
@@ -639,6 +826,176 @@ async function handleSendReply(req: IncomingMessage, res: ServerResponse) {
     conversation_id: conversationId,
     direction: "outbound",
     body: text,
+    wa_message_id: sent?.messages?.[0]?.id || null,
+    staff_id: user.id,
+    is_read: true,
+    created_at: now,
+  });
+  await updateRow("whatsapp_conversations", conversationId, {
+    last_message_at: now,
+    assigned_staff_id: user.id,
+    staff_role: role === "super_admin" ? "admin" : role,
+  });
+  sendJson(res, 200, { ok: true, message });
+}
+
+function decodeDataUrl(dataUrl: string) {
+  const match = /^data:([^;]+);base64,(.+)$/s.exec(String(dataUrl || ""));
+  if (!match) return null;
+  return { mimeType: match[1], buffer: Buffer.from(match[2], "base64") };
+}
+
+/**
+ * Lists the student's on-file documents (offer letters, checklist uploads —
+ * see asDocument() in server/routes/counselor.mjs) behind a WhatsApp
+ * conversation, so staff can pick one to send without leaving the chat
+ * screen. `documents` and `app_storage` are shared with every other portal —
+ * documents lives in the same JSONB app_records store as whatsapp_messages
+ * etc. (loadTable works on it unchanged); app_storage is a real Postgres
+ * table (path -> base64 data URL), read the same way
+ * routes/counselor.mjs's GET /api/counselor/documents/:id/file does.
+ */
+async function handleListDocuments(req: IncomingMessage, res: ServerResponse, conversationId: string) {
+  const { user, role } = await requireStaff(req);
+  const access = await loadAccessibleConversation(role, user.id, conversationId);
+  if (!access) {
+    sendJson(res, 404, { error: "Conversation not found." });
+    return;
+  }
+  const studentId = access.conversation.user_id || access.lead?.user_id;
+  if (!studentId) {
+    sendJson(res, 200, { documents: [] });
+    return;
+  }
+  const docs = (await loadTable("documents"))
+    .filter((row: any) => String(row.user_id || "") === String(studentId) && !row.archived && row.file_path)
+    .map((row: any) => ({
+      id: String(row.id),
+      document_type: row.document_type || "",
+      file_name: row.file_name || "document",
+      status: row.status === "pending" ? "uploaded" : row.status || "uploaded",
+      created_at: row.created_at || null,
+    }))
+    .sort((a: any, b: any) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
+  sendJson(res, 200, { documents: docs });
+}
+
+async function sendWhatsAppDocumentMessage(
+  to: string,
+  doc: { buffer: Buffer; mimeType: string; filename: string; caption?: string }
+) {
+  const phoneNumberId = getPhoneNumberId();
+  const token = getAccessToken();
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("file", new Blob([doc.buffer], { type: doc.mimeType || "application/octet-stream" }), doc.filename || "document");
+
+  const uploadRes = await fetch(graphUrl(`${phoneNumberId}/media`), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form as any,
+  });
+  const uploadBody = await uploadRes.json().catch(() => ({}));
+  if (!uploadRes.ok || !uploadBody?.id) {
+    const message = uploadBody?.error?.message || `WhatsApp media upload failed (${uploadRes.status})`;
+    const error = new Error(message) as Error & { status?: number };
+    error.status = uploadRes.status;
+    throw error;
+  }
+
+  return graphPost(`${phoneNumberId}/messages`, {
+    messaging_product: "whatsapp",
+    to,
+    type: "document",
+    document: {
+      id: uploadBody.id,
+      filename: doc.filename || "document",
+      ...(doc.caption ? { caption: String(doc.caption).slice(0, 1024) } : {}),
+    },
+  });
+}
+
+/**
+ * Sends one of those on-file documents over WhatsApp — the feature this
+ * whole unified-chat round exists for. Ownership/lookup validation runs
+ * BEFORE the isWhatsAppConfigured() gate (unlike handleSendReply, which
+ * checks configuration first) so a bad documentId or a staff member without
+ * access to this thread gets the real 404/403, not a generic "not
+ * configured" — and so this logic stays testable without real WhatsApp
+ * credentials in every environment.
+ */
+async function handleSendDocument(req: IncomingMessage, res: ServerResponse, conversationId: string) {
+  const { user, role } = await requireStaff(req);
+  const body = JSON.parse((await readBody(req)) || "{}");
+  const documentId = String(body.documentId || body.document_id || "");
+  const caption = body.caption ? String(body.caption).trim() : "";
+  if (!documentId) {
+    sendJson(res, 400, { error: "documentId is required." });
+    return;
+  }
+
+  const access = await loadAccessibleConversation(role, user.id, conversationId);
+  if (!access) {
+    sendJson(res, 404, { error: "Conversation not found." });
+    return;
+  }
+  const studentId = access.conversation.user_id || access.lead?.user_id;
+  if (!studentId) {
+    sendJson(res, 404, { error: "No student found for this conversation." });
+    return;
+  }
+
+  const docs = await loadTable("documents");
+  const doc = docs.find((row: any) => String(row.id) === documentId);
+  if (!doc) {
+    sendJson(res, 404, { error: "Document not found." });
+    return;
+  }
+  // A document belongs to a specific student — never let staff on one
+  // conversation send a file that was uploaded by a different student.
+  if (String(doc.user_id || "") !== String(studentId)) {
+    sendJson(res, 403, { error: "That document does not belong to this student." });
+    return;
+  }
+  if (!doc.file_path) {
+    sendJson(res, 404, { error: "File not found." });
+    return;
+  }
+
+  const fileRow = await getPool().query("SELECT data_url FROM app_storage WHERE path = $1", [doc.file_path]);
+  const decoded = decodeDataUrl(fileRow.rows[0]?.data_url);
+  if (!decoded) {
+    sendJson(res, 404, { error: "File not found in storage." });
+    return;
+  }
+
+  if (!isWhatsAppConfigured()) {
+    sendJson(res, 503, { error: "WhatsApp is not configured on the server." });
+    return;
+  }
+
+  const fileName = doc.file_name || "document";
+  let sent: any;
+  try {
+    sent = await sendWhatsAppDocumentMessage(access.conversation.phone_number, {
+      buffer: decoded.buffer,
+      mimeType: doc.mime_type || decoded.mimeType,
+      filename: fileName,
+      caption,
+    });
+  } catch (error: any) {
+    sendJson(res, error.status && error.status < 500 ? 400 : 502, {
+      error: error.message || "Could not send document.",
+    });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const label = caption ? `📎 ${fileName} — ${caption}` : `📎 ${fileName}`;
+  const message = await insertRow("whatsapp_messages", {
+    conversation_id: conversationId,
+    direction: "outbound",
+    body: label,
     wa_message_id: sent?.messages?.[0]?.id || null,
     staff_id: user.id,
     is_read: true,
@@ -794,12 +1151,24 @@ export async function handleWhatsAppRequest(req: IncomingMessage, res: ServerRes
       await handleVerificationStatus(req, res);
       return;
     }
+    if (url === "/api/whatsapp/status" && method === "GET") {
+      await handleStatus(req, res);
+      return;
+    }
     if (url === "/api/whatsapp/conversations" && method === "GET") {
-      await handleListConversations(req, res);
+      await handleListConversations(req, res, String(parsed.searchParams.get("stage") || "").trim());
       return;
     }
     if (url === "/api/whatsapp/messages" && method === "POST") {
       await handleSendReply(req, res);
+      return;
+    }
+    if (url === "/api/whatsapp/my-thread" && method === "GET") {
+      await handleMyThread(req, res);
+      return;
+    }
+    if (url === "/api/whatsapp/app-message" && method === "POST") {
+      await handleAppMessage(req, res);
       return;
     }
 
@@ -811,6 +1180,16 @@ export async function handleWhatsAppRequest(req: IncomingMessage, res: ServerRes
     const readMatch = url.match(/^\/api\/whatsapp\/conversations\/([^/]+)\/read$/);
     if (readMatch && method === "POST") {
       await handleMarkRead(req, res, decodeURIComponent(readMatch[1]));
+      return;
+    }
+    const documentsMatch = url.match(/^\/api\/whatsapp\/conversations\/([^/]+)\/documents$/);
+    if (documentsMatch && method === "GET") {
+      await handleListDocuments(req, res, decodeURIComponent(documentsMatch[1]));
+      return;
+    }
+    const documentMatch = url.match(/^\/api\/whatsapp\/conversations\/([^/]+)\/document$/);
+    if (documentMatch && method === "POST") {
+      await handleSendDocument(req, res, decodeURIComponent(documentMatch[1]));
       return;
     }
 

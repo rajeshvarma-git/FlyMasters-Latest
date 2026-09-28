@@ -68,7 +68,30 @@ export const useChat = () => {
       timestamp: new Date(),
     };
     setState((prev) => ({ ...prev, messages: [...prev.messages, newMessage] }));
-  }, []);
+
+    // Durable, message-by-message history — separate from persistSession()'s
+    // single summarized chat_sessions row above. That row is enough for the
+    // wizard to resume its own state, but not enough for anyone (a returning
+    // student, a counselor/telecaller picking up the thread, the merged
+    // StudentUnifiedChat timeline) to see what was actually said. Written to
+    // a new JSONB-backed table — no migration needed, same pattern as
+    // telecaller_messages. Fire-and-forget: never block the chat UI on it.
+    const sessionId = sessionIdRef.current;
+    if (sessionId && user?.id) {
+      supabase.from('ai_chat_messages').insert({
+        id: crypto.randomUUID(),
+        session_id: sessionId,
+        user_id: user.id,
+        role: message.type,
+        content: message.content,
+        created_at: newMessage.timestamp.toISOString(),
+      }).then(({ error }: { error?: { message?: string } | null }) => {
+        if (error) console.warn('AI chat message persist skipped:', error.message);
+      }).catch((error: unknown) => {
+        console.warn('AI chat message persist skipped:', error);
+      });
+    }
+  }, [user?.id]);
 
   const persistSession = useCallback(async (
     conversationData: Record<string, any>,

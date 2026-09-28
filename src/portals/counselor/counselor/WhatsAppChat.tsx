@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { format } from "date-fns";
-import { AlertCircle, MessageCircle, Phone, Send, Users } from "lucide-react";
+import { AlertCircle, MessageCircle, Paperclip, Phone, Send, Users } from "lucide-react";
 import { useAuth } from "@counselor/context/AuthContext";
 import { api } from "@counselor/lib/api";
 import { useLocalStore } from "@counselor/lib/store";
@@ -52,6 +52,14 @@ interface WhatsAppMeta {
   missingPhone?: number;
   provisioned?: number;
   skippedNoPhone?: number;
+}
+
+interface OnFileDocument {
+  id: string;
+  document_type: string;
+  file_name: string;
+  status: string;
+  created_at: string | null;
 }
 
 const PAGE_COPY: Record<
@@ -115,6 +123,9 @@ export default function WhatsAppChat({ mode }: WhatsAppChatProps) {
   const [status, setStatus] = useState<WhatsAppStatus | null>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [windowStatus, setWindowStatus] = useState<{ open: boolean; reason?: string } | null>(null);
+  const [documents, setDocuments] = useState<OnFileDocument[]>([]);
+  const [showDocPicker, setShowDocPicker] = useState(false);
+  const [sendingDocId, setSendingDocId] = useState<string | null>(null);
 
   const assignedCount = useMemo(() => {
     if (!user?.id) return 0;
@@ -180,6 +191,43 @@ export default function WhatsAppChat({ mode }: WhatsAppChatProps) {
     const timer = window.setInterval(loadMessages, 5000);
     return () => window.clearInterval(timer);
   }, [selected?.id]);
+
+  useEffect(() => {
+    // Documents only exist for converted students (the checklist system this
+    // reads from — server/routes/counselor.mjs's asDocument() — is post-
+    // conversion), so don't bother fetching on the leads page.
+    setShowDocPicker(false);
+    if (mode !== "student" || !selected?.id) {
+      setDocuments([]);
+      return;
+    }
+    api<{ documents: OnFileDocument[] }>(`/whatsapp/conversations/${selected.id}/documents`)
+      .then((data) => setDocuments(data.documents || []))
+      .catch(() => setDocuments([]));
+  }, [mode, selected?.id]);
+
+  const sendDocument = async (doc: OnFileDocument) => {
+    if (!selected?.id || sendingDocId) return;
+    setSendingDocId(doc.id);
+    setSendError(null);
+    try {
+      const result = await api<{ message: WhatsAppMessage }>(`/whatsapp/conversations/${selected.id}/document`, {
+        method: "POST",
+        body: { documentId: doc.id },
+      });
+      setMessages((prev) => [...prev, result.message]);
+      setShowDocPicker(false);
+      setConversations((prev) =>
+        prev.map((item) =>
+          item.id === selected.id ? { ...item, last_message: `📎 ${doc.file_name}`, is_unknown: false, unread_count: 0 } : item,
+        ),
+      );
+    } catch (error) {
+      setSendError(error instanceof Error ? error.message : "Could not send that document.");
+    } finally {
+      setSendingDocId(null);
+    }
+  };
 
   const contactLabel = (item: WhatsAppConversation) => {
     if (item.student_name) return item.student_name;
@@ -372,7 +420,41 @@ export default function WhatsAppChat({ mode }: WhatsAppChatProps) {
                 })}
                 {messages.length === 0 && <p className="text-sm text-slate-500">No messages yet.</p>}
               </div>
+              {mode === "student" && showDocPicker && (
+                <div className="mt-3 max-h-40 overflow-y-auto rounded-xl border border-slate-200 bg-white p-2">
+                  {documents.length === 0 ? (
+                    <p className="p-2 text-xs text-slate-500">No documents on file for this student yet.</p>
+                  ) : (
+                    documents.map((doc) => (
+                      <button
+                        key={doc.id}
+                        type="button"
+                        onClick={() => void sendDocument(doc)}
+                        disabled={!!sendingDocId || selected.canReply === false}
+                        className="flex w-full items-center justify-between gap-2 rounded-lg px-2 py-1.5 text-left text-xs hover:bg-slate-50 disabled:opacity-50"
+                      >
+                        <span className="truncate">
+                          <span className="font-medium">{doc.file_name}</span>
+                          {doc.document_type && <span className="text-slate-400"> · {doc.document_type}</span>}
+                        </span>
+                        {sendingDocId === doc.id && <span className="shrink-0 text-slate-400">Sending…</span>}
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
               <div className="mt-4 flex gap-2 border-t border-slate-100 pt-4">
+                {mode === "student" && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={() => setShowDocPicker((v) => !v)}
+                    disabled={selected.canReply === false}
+                    title="Send a document on file over WhatsApp"
+                  >
+                    <Paperclip className="h-4 w-4" />
+                  </Button>
+                )}
                 <input
                   className="flex-1 rounded-xl border border-slate-200 px-3 py-2 text-sm disabled:bg-slate-50"
                   value={draft}

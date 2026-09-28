@@ -32,8 +32,11 @@ export async function api<T = unknown>(path: string, options: { method?: string;
   let res: Response;
   try {
     // Counselor endpoints moved under /api/counselor/* in the merge so they no
-    // longer shadow the shared routes. Sign-in is now one endpoint for all roles.
-    const url = path.startsWith("/auth/signin") ? `/api${path}` : `/api/counselor${path}`;
+    // longer shadow the shared routes. Sign-in and WhatsApp are shared across
+    // portals (server/routes/core.mjs's /api/whatsapp/*) and stayed there —
+    // they never had counselor-specific copies, unlike everything else here.
+    const isShared = path.startsWith("/auth/signin") || path.startsWith("/whatsapp");
+    const url = isShared ? `/api${path}` : `/api/counselor${path}`;
     res = await fetch(url, {
       method: options.method || "GET",
       headers,

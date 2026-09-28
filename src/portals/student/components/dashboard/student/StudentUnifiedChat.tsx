@@ -1,6 +1,13 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useAuth } from '@student/hooks/useAuth';
 import { supabase } from '@student/integrations/supabase/client';
+import {
+  getWhatsAppVerificationStatus,
+  getMyWhatsAppThread,
+  sendWhatsAppAppMessage,
+  sendWhatsAppOtp,
+  verifyWhatsAppOtp,
+} from '@student/lib/whatsappUnifiedApi';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@student/components/ui/card';
 import { Button } from '@student/components/ui/button';
 import { Input } from '@student/components/ui/input';
@@ -17,28 +24,47 @@ import {
   Circle,
   RefreshCw,
   Users,
+  Bot,
+  ChevronDown,
+  ChevronUp,
+  ShieldCheck,
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 import ErrorBoundary from '@student/components/ErrorBoundary';
+import ChatInterface from '@student/components/ChatInterface';
 
 /**
- * One real conversation with the Fly Masters team, instead of two separate
- * "Counselor" and "Telecaller" tabs. Under the hood there are still two
- * stores (private_conversations/private_messages for the counselor,
- * telecaller_conversations/telecaller_messages for the telecaller — see
- * server/routes/core.mjs and server/routes/counselor.mjs) because a full
- * schema merge is bigger, riskier work tracked separately. This component
- * fetches both, tags every message with which staff member sent it, and
- * renders one chronologically-sorted timeline with one input box — so from
- * the student's side it reads and behaves like a single thread with
- * whoever is currently assigned to them.
+ * One real conversation with the Fly Masters team — counselor, telecaller,
+ * AI advisor, and WhatsApp — instead of four look-alike places to check.
  *
- * The AI Advisor is intentionally NOT folded into this timeline: it has no
- * server-side message-by-message transcript today (src/portals/student/
- * hooks/useChat.tsx only persists a single summarized chat_sessions row),
- * so merging it here would need new persistence first. It stays its own
- * tab in StudentMessages.tsx.
+ * Under the hood there are still separate stores (private_conversations/
+ * private_messages for the counselor, telecaller_conversations/
+ * telecaller_messages for the telecaller, ai_chat_messages for the AI
+ * advisor, whatsapp_conversations/whatsapp_messages for WhatsApp — see
+ * server/routes/core.mjs, server/routes/counselor.mjs, useChat.tsx, and
+ * server/lib/whatsappStore.mjs) — a real schema merge into one case
+ * conversation is bigger work tracked separately. This component fetches
+ * all four, tags every message with its source, and renders one
+ * chronologically-sorted timeline instead.
+ *
+ * The AI advisor's history is read-only in this timeline (it's a durable
+ * transcript — see useChat.tsx's ai_chat_messages persistence — not a
+ * summary that forgets what was said). Continuing the AI's own guided
+ * questions still uses its own input below, expandable inline on this same
+ * page rather than hidden behind a separate top-level tab, because the AI
+ * flow is a structured step-by-step wizard (country, budget, field of
+ * interest -> university matches), not freeform chat — forcing it into the
+ * same send box as the human channels would break that wizard's state
+ * machine. Everything it has ever said still shows up in the merged
+ * timeline below either way.
+ *
+ * WhatsApp is fully read/write here: once the student verifies their
+ * WhatsApp number (OTP over the real Meta Cloud API — see
+ * whatsappUnifiedApi.ts), messages sent from this box go out over
+ * WhatsApp via the same store staff already see on their WhatsApp inbox
+ * screens (src/portals/counselor/counselor/WhatsAppChat.tsx and the
+ * telecaller equivalent), and WhatsApp replies from staff show up here.
  */
 function safeTime(value: string | null | undefined): string {
   if (!value) return '';
@@ -51,14 +77,14 @@ function safeTime(value: string | null | undefined): string {
   }
 }
 
-type Channel = 'counselor' | 'telecaller';
+type Channel = 'counselor' | 'telecaller' | 'ai' | 'whatsapp';
+type SendableChannel = 'counselor' | 'telecaller' | 'whatsapp';
 
 interface UnifiedMessage {
   id: string;
   message: string;
-  sender_id: string;
-  receiver_id: string;
-  is_read: boolean;
+  isMine: boolean;
+  is_read?: boolean;
   created_at: string;
   channel: Channel;
 }
@@ -72,6 +98,8 @@ interface StoredConversation {
 const CHANNEL_META: Record<Channel, { label: string; icon: typeof MessageCircle; badge: string; bubbleStaff: string }> = {
   counselor: { label: 'Counselor', icon: MessageCircle, badge: 'bg-sky-100 text-sky-700', bubbleStaff: 'bg-sky-50 border border-sky-100' },
   telecaller: { label: 'Telecaller', icon: Phone, badge: 'bg-violet-100 text-violet-700', bubbleStaff: 'bg-violet-50 border border-violet-100' },
+  ai: { label: 'AI Advisor', icon: Bot, badge: 'bg-amber-100 text-amber-700', bubbleStaff: 'bg-amber-50 border border-amber-100' },
+  whatsapp: { label: 'WhatsApp', icon: Phone, badge: 'bg-emerald-100 text-emerald-700', bubbleStaff: 'bg-emerald-50 border border-emerald-100' },
 };
 
 interface StudentUnifiedChatProps {
@@ -96,8 +124,21 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
   const [telecallerConv, setTelecallerConv] = useState<StoredConversation | null>(null);
   const [counselorName, setCounselorName] = useState('Your Counselor');
   const [telecallerName, setTelecallerName] = useState('Your Telecaller');
-  const [messages, setMessages] = useState<UnifiedMessage[]>([]);
-  const [activeChannel, setActiveChannel] = useState<Channel>('counselor');
+  const [aiMessages, setAiMessages] = useState<UnifiedMessage[]>([]);
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiEverOpened, setAiEverOpened] = useState(false);
+
+  const [whatsappVerified, setWhatsappVerified] = useState<boolean | null>(null);
+  const [whatsappConvId, setWhatsappConvId] = useState<string | null>(null);
+  const [whatsappMessages, setWhatsappMessages] = useState<UnifiedMessage[]>([]);
+  const [waPhoneInput, setWaPhoneInput] = useState('');
+  const [waOtpSent, setWaOtpSent] = useState(false);
+  const [waCodeInput, setWaCodeInput] = useState('');
+  const [waBusy, setWaBusy] = useState(false);
+  const [waError, setWaError] = useState('');
+
+  const [humanMessages, setHumanMessages] = useState<UnifiedMessage[]>([]);
+  const [activeChannel, setActiveChannel] = useState<SendableChannel>('counselor');
   const [newMessage, setNewMessage] = useState('');
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
@@ -110,20 +151,29 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user]);
 
+  // One source of truth per channel (humanMessages, aiMessages, whatsappMessages),
+  // merged here for display instead of a fourth piece of state — avoids two
+  // different fetchers racing to write the same "messages" array.
+  const messages = useMemo(() => {
+    const merged = [...humanMessages, ...aiMessages, ...whatsappMessages];
+    merged.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+    return merged;
+  }, [humanMessages, aiMessages, whatsappMessages]);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
 
   useEffect(() => {
-    if (!counselorConv?.id && !telecallerConv?.id) return;
+    if (!counselorConv?.id && !telecallerConv?.id && !whatsappVerified) return;
     const poll = window.setInterval(() => {
-      fetchAllMessages(counselorConv, telecallerConv).catch((error) => {
+      refreshAll().catch((error) => {
         console.error('Team chat poll failed:', error);
       });
     }, 3000);
     return () => window.clearInterval(poll);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [counselorConv?.id, telecallerConv?.id]);
+  }, [counselorConv?.id, telecallerConv?.id, whatsappVerified]);
 
   const findAssignedId = async (column: 'assigned_counselor_id' | 'assigned_telecaller_id'): Promise<string | null> => {
     if (!user) return null;
@@ -204,7 +254,7 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
     return created as StoredConversation;
   };
 
-  const fetchAllMessages = useCallback(async (counselor: StoredConversation | null, telecaller: StoredConversation | null) => {
+  const fetchHumanMessages = useCallback(async (counselor: StoredConversation | null, telecaller: StoredConversation | null) => {
     const [counselorRows, telecallerRows] = await Promise.all([
       counselor
         ? supabase.from('private_messages').select('*').eq('conversation_id', counselor.id).order('created_at', { ascending: true })
@@ -218,13 +268,79 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
     if (telecallerRows.error) throw telecallerRows.error;
 
     const tagged: UnifiedMessage[] = [
-      ...(counselorRows.data || []).map((row: Omit<UnifiedMessage, 'channel'>) => ({ ...row, channel: 'counselor' as const })),
-      ...(telecallerRows.data || []).map((row: Omit<UnifiedMessage, 'channel'>) => ({ ...row, channel: 'telecaller' as const })),
+      ...(counselorRows.data || []).map((row: { id: string; message: string; sender_id: string; is_read: boolean; created_at: string }) => ({
+        id: row.id,
+        message: row.message,
+        isMine: row.sender_id === user?.id,
+        is_read: row.is_read,
+        created_at: row.created_at,
+        channel: 'counselor' as const,
+      })),
+      ...(telecallerRows.data || []).map((row: { id: string; message: string; sender_id: string; is_read: boolean; created_at: string }) => ({
+        id: row.id,
+        message: row.message,
+        isMine: row.sender_id === user?.id,
+        is_read: row.is_read,
+        created_at: row.created_at,
+        channel: 'telecaller' as const,
+      })),
     ];
-    tagged.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-    setMessages(tagged);
+    setHumanMessages(tagged);
     return tagged;
+  }, [user?.id]);
+
+  const fetchAiMessages = useCallback(async () => {
+    if (!user) return;
+    const { data, error } = await supabase
+      .from('ai_chat_messages')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: true });
+    if (error) return;
+    const tagged: UnifiedMessage[] = (data || []).map((row: { id: string; content: string; role: string; created_at: string }) => ({
+      id: row.id,
+      message: row.content,
+      isMine: row.role === 'user',
+      created_at: row.created_at,
+      channel: 'ai' as const,
+    }));
+    setAiMessages(tagged);
+  }, [user]);
+
+  const fetchWhatsApp = useCallback(async () => {
+    try {
+      const thread = await getMyWhatsAppThread();
+      setWhatsappVerified(thread.verified);
+      if (!thread.verified || !thread.conversation) {
+        setWhatsappConvId(null);
+        setWhatsappMessages([]);
+        return;
+      }
+      setWhatsappConvId(thread.conversation.id);
+      const tagged: UnifiedMessage[] = (thread.messages || [])
+        .filter((row) => row.channel !== 'system')
+        .map((row) => ({
+          id: row.id,
+          message: row.body,
+          isMine: row.direction === 'inbound',
+          is_read: row.is_read,
+          created_at: row.created_at,
+          channel: 'whatsapp' as const,
+        }));
+      setWhatsappMessages(tagged);
+    } catch (error) {
+      console.warn('WhatsApp thread load skipped:', error);
+    }
   }, []);
+
+  const refreshAll = useCallback(async () => {
+    await Promise.all([
+      fetchHumanMessages(counselorConv, telecallerConv),
+      fetchAiMessages(),
+      fetchWhatsApp(),
+    ]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [counselorConv, telecallerConv, fetchHumanMessages, fetchAiMessages, fetchWhatsApp]);
 
   const openChat = async () => {
     if (!user) return;
@@ -240,13 +356,6 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
       setCounselorId(foundCounselorId);
       setTelecallerId(foundTelecallerId);
 
-      if (!foundCounselorId && !foundTelecallerId) {
-        setCounselorConv(null);
-        setTelecallerConv(null);
-        setStatusMessage('No one has been assigned to you yet.');
-        return;
-      }
-
       const [counselorChat, telecallerChat] = await Promise.all([
         foundCounselorId ? ensureConversation('private_conversations', 'counselor_id', foundCounselorId) : Promise.resolve(null),
         foundTelecallerId ? ensureConversation('telecaller_conversations', 'telecaller_id', foundTelecallerId) : Promise.resolve(null),
@@ -259,13 +368,17 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
         foundTelecallerId ? loadName(foundTelecallerId, setTelecallerName, 'Fly Masters Telecaller') : Promise.resolve(),
       ]);
 
-      const tagged = await fetchAllMessages(counselorChat, telecallerChat);
+      const [taggedHuman] = await Promise.all([
+        fetchHumanMessages(counselorChat, telecallerChat),
+        fetchAiMessages(),
+        fetchWhatsApp(),
+      ]);
 
-      // Default the reply target to whoever spoke to the student most recently;
-      // fall back to counselor (then telecaller) when nobody has said anything yet.
-      const lastIncoming = [...tagged].reverse().find((row) => row.sender_id !== user.id);
+      // Default the reply target to whoever (human) spoke to the student most
+      // recently; WhatsApp and AI are never the default send target.
+      const lastIncoming = [...taggedHuman].reverse().find((row) => !row.isMine);
       if (lastIncoming) {
-        setActiveChannel(lastIncoming.channel);
+        setActiveChannel(lastIncoming.channel as SendableChannel);
       } else if (counselorChat) {
         setActiveChannel('counselor');
       } else if (telecallerChat) {
@@ -273,7 +386,7 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
       }
 
       if (!counselorChat && !telecallerChat) {
-        setStatusMessage('Could not start a conversation. Please try again.');
+        setStatusMessage('No one has been assigned to you yet.');
       }
     } catch (error) {
       console.error('Error opening team chat:', error);
@@ -292,18 +405,46 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
     await openChat();
   };
 
-  const targetChannel: Channel | null = counselorConv && telecallerConv
+  const sendableChannels: SendableChannel[] = [
+    ...(counselorConv ? (['counselor'] as const) : []),
+    ...(telecallerConv ? (['telecaller'] as const) : []),
+    ...(whatsappVerified && whatsappConvId ? (['whatsapp'] as const) : []),
+  ];
+
+  const targetChannel: SendableChannel | null = sendableChannels.includes(activeChannel)
     ? activeChannel
-    : counselorConv
-      ? 'counselor'
-      : telecallerConv
-        ? 'telecaller'
-        : null;
+    : sendableChannels[0] || null;
 
   const sendMessage = async () => {
     if (!targetChannel || !newMessage.trim() || sending || !user) return;
 
     const text = newMessage.trim();
+
+    if (targetChannel === 'whatsapp') {
+      const optimistic: UnifiedMessage = {
+        id: crypto.randomUUID(),
+        message: text,
+        isMine: true,
+        created_at: new Date().toISOString(),
+        channel: 'whatsapp',
+      };
+      try {
+        setSending(true);
+        setWhatsappMessages((prev) => [...prev, optimistic]);
+        setNewMessage('');
+        await sendWhatsAppAppMessage(text);
+        await fetchWhatsApp();
+      } catch (error) {
+        console.error('Error sending WhatsApp message:', error);
+        setWhatsappMessages((prev) => prev.filter((msg) => msg.id !== optimistic.id));
+        setNewMessage(text);
+        toast.error(error instanceof Error ? error.message : 'Failed to send WhatsApp message');
+      } finally {
+        setSending(false);
+      }
+      return;
+    }
+
     const isCounselor = targetChannel === 'counselor';
     const conv = isCounselor ? counselorConv : telecallerConv;
     const ownerId = isCounselor ? counselorId : telecallerId;
@@ -312,8 +453,7 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
     const optimistic: UnifiedMessage = {
       id: crypto.randomUUID(),
       message: text,
-      sender_id: user.id,
-      receiver_id: ownerId,
+      isMine: true,
       is_read: false,
       created_at: new Date().toISOString(),
       channel: targetChannel,
@@ -321,7 +461,7 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
 
     try {
       setSending(true);
-      setMessages((prev) => [...prev, optimistic]);
+      setHumanMessages((prev) => [...prev, optimistic]);
       setNewMessage('');
 
       const table = isCounselor ? 'private_messages' : 'telecaller_messages';
@@ -352,13 +492,13 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
             is_read: false,
           });
         }
-        await fetchAllMessages(counselorConv, telecallerConv);
+        await fetchHumanMessages(counselorConv, telecallerConv);
       } catch (refreshError) {
         console.error('Message sent, but refresh failed:', refreshError);
       }
     } catch (error) {
       console.error('Error sending message:', error);
-      setMessages((prev) => prev.filter((msg) => msg.id !== optimistic.id));
+      setHumanMessages((prev) => prev.filter((msg) => msg.id !== optimistic.id));
       setNewMessage(text);
       toast.error('Failed to send message');
     } finally {
@@ -373,6 +513,53 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
     }
   };
 
+  const sendWaOtp = async () => {
+    setWaError('');
+    if (!waPhoneInput.trim()) {
+      setWaError('Enter your WhatsApp number.');
+      return;
+    }
+    try {
+      setWaBusy(true);
+      await sendWhatsAppOtp(waPhoneInput.trim());
+      setWaOtpSent(true);
+    } catch (error) {
+      setWaError(error instanceof Error ? error.message : 'Could not send the code.');
+    } finally {
+      setWaBusy(false);
+    }
+  };
+
+  const verifyWaOtp = async () => {
+    setWaError('');
+    if (!waCodeInput.trim()) {
+      setWaError('Enter the 6-digit code.');
+      return;
+    }
+    try {
+      setWaBusy(true);
+      await verifyWhatsAppOtp(waPhoneInput.trim(), waCodeInput.trim());
+      setWaOtpSent(false);
+      setWaCodeInput('');
+      await fetchWhatsApp();
+      toast.success('WhatsApp connected');
+    } catch (error) {
+      setWaError(error instanceof Error ? error.message : 'Could not verify that code.');
+    } finally {
+      setWaBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (whatsappVerified === false) {
+      getWhatsAppVerificationStatus()
+        .then((status) => {
+          if (status.phone_number) setWaPhoneInput(status.phone_number);
+        })
+        .catch(() => undefined);
+    }
+  }, [whatsappVerified]);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
@@ -381,9 +568,50 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
     );
   }
 
-  if (!counselorConv && !telecallerConv) {
+  const hasAnyConversation = !!counselorConv || !!telecallerConv || (whatsappVerified && !!whatsappConvId);
+
+  const headerNames = [
+    counselorConv ? `${counselorName} (Counselor)` : null,
+    telecallerConv ? `${telecallerName} (Telecaller)` : null,
+    whatsappVerified && whatsappConvId ? 'WhatsApp' : null,
+  ].filter(Boolean).join(' · ') || 'your Fly Masters team';
+
+  const aiPanel = (
+    <Card className="glass-card">
+      <button
+        type="button"
+        onClick={() => {
+          setAiOpen((v) => !v);
+          setAiEverOpened(true);
+        }}
+        className="flex w-full items-center justify-between gap-3 p-4 text-left"
+      >
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 rounded-full bg-amber-100 flex items-center justify-center">
+            <Bot className="w-4 h-4 text-amber-700" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold">AI Advisor</p>
+            <p className="text-xs text-muted-foreground">
+              {aiMessages.length > 0 ? 'Continue your university matching chat' : 'Answer a few quick questions for university matches'}
+            </p>
+          </div>
+        </div>
+        {aiOpen ? <ChevronUp className="w-4 h-4 text-muted-foreground" /> : <ChevronDown className="w-4 h-4 text-muted-foreground" />}
+      </button>
+      {aiOpen && (
+        <div className="border-t px-2 pb-2">
+          <ErrorBoundary>
+            <ChatInterface />
+          </ErrorBoundary>
+        </div>
+      )}
+    </Card>
+  );
+
+  if (!hasAnyConversation) {
     return (
-      <div className="space-y-6">
+      <div className="space-y-4">
         {!embedded && (
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-full bg-gradient-primary flex items-center justify-center">
@@ -395,6 +623,8 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
             </div>
           </div>
         )}
+
+        {aiPanel}
 
         <Card className="glass-card">
           <CardContent className="text-center py-12 space-y-4">
@@ -411,17 +641,26 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
             </div>
           </CardContent>
         </Card>
+
+        {whatsappVerified === false && (
+          <WhatsAppVerifyCard
+            phone={waPhoneInput}
+            setPhone={setWaPhoneInput}
+            otpSent={waOtpSent}
+            code={waCodeInput}
+            setCode={setWaCodeInput}
+            busy={waBusy}
+            error={waError}
+            onSendOtp={sendWaOtp}
+            onVerify={verifyWaOtp}
+          />
+        )}
       </div>
     );
   }
 
-  const headerNames = [
-    counselorConv ? `${counselorName} (Counselor)` : null,
-    telecallerConv ? `${telecallerName} (Telecaller)` : null,
-  ].filter(Boolean).join(' · ');
-
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {!embedded && (
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-full bg-gradient-primary flex items-center justify-center">
@@ -433,6 +672,8 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
           </div>
         </div>
       )}
+
+      {(aiOpen || aiEverOpened || aiMessages.length === 0) && aiPanel}
 
       <Card className="glass-card h-[600px] flex flex-col">
         <CardHeader className="pb-4">
@@ -464,16 +705,22 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
             </div>
           ) : (
             messages.map((message) => {
-              const isMine = message.sender_id === user?.id;
+              const isMine = message.isMine;
               const meta = CHANNEL_META[message.channel];
               const ChannelIcon = meta.icon;
-              const staffName = message.channel === 'counselor' ? counselorName : telecallerName;
+              const staffName = message.channel === 'counselor'
+                ? counselorName
+                : message.channel === 'telecaller'
+                  ? telecallerName
+                  : message.channel === 'ai'
+                    ? 'Fly Masters AI'
+                    : 'WhatsApp';
               return (
                 <div key={message.id} className={`flex gap-3 ${isMine ? 'justify-end' : 'justify-start'}`}>
                   {!isMine && (
                     <Avatar className="w-6 h-6 mt-1">
                       <AvatarFallback className="bg-primary/10 text-primary text-xs">
-                        <User className="w-3 h-3" />
+                        {message.channel === 'ai' ? <Bot className="w-3 h-3" /> : <User className="w-3 h-3" />}
                       </AvatarFallback>
                     </Avatar>
                   )}
@@ -485,11 +732,11 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
                       </div>
                     )}
                     <div className={`rounded-lg px-3 py-2 ${isMine ? 'bg-primary text-primary-foreground' : meta.bubbleStaff}`}>
-                      <p className="text-sm">{message.message}</p>
+                      <p className="text-sm whitespace-pre-wrap">{message.message}</p>
                       <div className="flex items-center gap-1 mt-1">
                         <Clock className="w-3 h-3 opacity-60" />
                         <span className="text-xs opacity-60">{safeTime(message.created_at)}</span>
-                        {isMine && (
+                        {isMine && message.channel !== 'ai' && (
                           <CheckCircle2 className={`w-3 h-3 ${message.is_read ? 'text-blue-400' : 'opacity-40'}`} />
                         )}
                       </div>
@@ -512,13 +759,14 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
         <Separator />
 
         <div className="p-4 space-y-2">
-          {counselorConv && telecallerConv && (
+          {sendableChannels.length > 1 && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
               <span>Replying to:</span>
-              {(['counselor', 'telecaller'] as Channel[]).map((ch) => {
+              {sendableChannels.map((ch) => {
                 const meta = CHANNEL_META[ch];
                 const ChannelIcon = meta.icon;
-                const isActive = activeChannel === ch;
+                const isActive = targetChannel === ch;
+                const label = ch === 'counselor' ? counselorName : ch === 'telecaller' ? telecallerName : 'WhatsApp';
                 return (
                   <button
                     key={ch}
@@ -529,7 +777,7 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
                     }`}
                   >
                     <ChannelIcon className="w-3 h-3" />
-                    {ch === 'counselor' ? counselorName : telecallerName}
+                    {label}
                   </button>
                 );
               })}
@@ -537,19 +785,98 @@ function StudentUnifiedChatInner({ embedded }: { embedded: boolean }) {
           )}
           <div className="flex gap-2">
             <Input
-              placeholder="Type your message..."
+              placeholder={targetChannel === 'whatsapp' ? 'Message on WhatsApp...' : 'Type your message...'}
               value={newMessage}
               onChange={(e) => setNewMessage(e.target.value)}
               onKeyDown={handleKeyPress}
-              disabled={sending}
+              disabled={sending || !targetChannel}
               className="flex-1"
             />
-            <Button onClick={sendMessage} disabled={!newMessage.trim() || sending} size="sm">
+            <Button onClick={sendMessage} disabled={!newMessage.trim() || sending || !targetChannel} size="sm">
               <Send className="w-4 h-4" />
             </Button>
           </div>
         </div>
       </Card>
+
+      {whatsappVerified === false && (
+        <WhatsAppVerifyCard
+          phone={waPhoneInput}
+          setPhone={setWaPhoneInput}
+          otpSent={waOtpSent}
+          code={waCodeInput}
+          setCode={setWaCodeInput}
+          busy={waBusy}
+          error={waError}
+          onSendOtp={sendWaOtp}
+          onVerify={verifyWaOtp}
+        />
+      )}
     </div>
+  );
+}
+
+function WhatsAppVerifyCard({
+  phone,
+  setPhone,
+  otpSent,
+  code,
+  setCode,
+  busy,
+  error,
+  onSendOtp,
+  onVerify,
+}: {
+  phone: string;
+  setPhone: (v: string) => void;
+  otpSent: boolean;
+  code: string;
+  setCode: (v: string) => void;
+  busy: boolean;
+  error: string;
+  onSendOtp: () => void;
+  onVerify: () => void;
+}) {
+  return (
+    <Card className="glass-card border-emerald-100">
+      <CardContent className="p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <ShieldCheck className="w-4 h-4 text-emerald-600" />
+          <p className="text-sm font-semibold">Connect WhatsApp</p>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Verify your WhatsApp number once, and your team can reach you there too — including sending documents
+          directly on WhatsApp — all in this same chat.
+        </p>
+        {!otpSent ? (
+          <div className="flex gap-2">
+            <Input
+              placeholder="10-digit WhatsApp number"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              disabled={busy}
+              className="flex-1"
+            />
+            <Button onClick={onSendOtp} disabled={busy} size="sm">
+              Send code
+            </Button>
+          </div>
+        ) : (
+          <div className="flex gap-2">
+            <Input
+              placeholder="6-digit code"
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+              disabled={busy}
+              className="flex-1"
+            />
+            <Button onClick={onVerify} disabled={busy} size="sm">
+              Verify
+            </Button>
+          </div>
+        )}
+        {error && <p className="text-xs text-rose-600">{error}</p>}
+      </CardContent>
+    </Card>
   );
 }
