@@ -31,6 +31,7 @@ import partnerRoutes from "./routes/partner.mjs";
 import financeRoutes from "./routes/finance.mjs";
 import configRoutes from "./routes/config.mjs";
 import commsRoutes, { startCommsScheduler } from "./routes/comms.mjs";
+import caseRoutes from "./routes/cases.mjs";
 
 assertBootConfig();
 
@@ -64,6 +65,8 @@ app.use(financeRoutes);
 // by core's older catch-all handlers.
 app.use(configRoutes);
 app.use(commsRoutes);
+// One student conversation: AI advisor -> telecaller -> counselor.
+app.use(caseRoutes);
 app.use(coreRoutes);
 app.use(counselorRoutes);
 

@@ -1,12 +1,10 @@
 import { Users } from 'lucide-react';
-import { StudentUnifiedChat } from './StudentUnifiedChat';
+import { StudentCaseChat } from './StudentCaseChat';
 
 /**
- * One place for every conversation a student has with Fly Masters: AI
- * advisor, counselor, telecaller and WhatsApp in a single timeline
- * (StudentUnifiedChat). No tabs — the AI advisor's guided questions open
- * inline at the top of the same screen, and everything it says lands in the
- * same timeline as the team's messages.
+ * The student's one conversation with Fly Masters (StudentCaseChat): the AI
+ * advisor answers first, then the assigned telecaller, then the counselor —
+ * same thread, same history, one input box.
  *
  * defaultTab is still accepted so old routes/links (/student/chat,
  * /student/telecaller-chat, ?tab=counsellor) keep compiling and landing
@@ -26,11 +24,11 @@ export function StudentMessages(_props: StudentMessagesProps = {}) {
         </div>
         <div>
           <h1 className="text-2xl font-bold">Messages</h1>
-          <p className="text-muted-foreground">AI advisor, your counselor, telecaller and WhatsApp — one conversation</p>
+          <p className="text-muted-foreground">One chat with your AI advisor, telecaller and counselor</p>
         </div>
       </div>
 
-      <StudentUnifiedChat embedded />
+      <StudentCaseChat />
     </div>
   );
 }

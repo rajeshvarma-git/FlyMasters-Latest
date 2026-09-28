@@ -10,7 +10,7 @@ import CounselorHome from "@counselor/counselor/CounselorHome";
 import MyLeads from "@counselor/counselor/MyLeads";
 import MyStudents from "@counselor/counselor/MyStudents";
 import Shortlists from "@counselor/counselor/Shortlists";
-import CounselorChat from "@counselor/counselor/CounselorChat";
+import CaseInbox from "@shared/components/CaseInbox";
 import { WhatsAppLeadsChat, WhatsAppStudentsChat } from "@counselor/counselor/WhatsAppChat";
 import Documents from "@counselor/counselor/Documents";
 import DocumentsSetup from "@counselor/counselor/DocumentsSetup";
@@ -74,7 +74,7 @@ export default function App() {
             <Route path="leads" element={<MyLeads />} />
             <Route path="students" element={<MyStudents />} />
             <Route path="shortlists" element={<Shortlists />} />
-            <Route path="chat" element={<CounselorChat />} />
+            <Route path="chat" element={<CaseInbox title="Student Chat" />} />
             <Route path="whatsapp" element={<Navigate to="/whatsapp/students" replace />} />
             <Route path="whatsapp/leads" element={<WhatsAppLeadsChat />} />
             <Route path="whatsapp/students" element={<WhatsAppStudentsChat />} />

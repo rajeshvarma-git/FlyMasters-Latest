@@ -1,6 +1,6 @@
 import React from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
-import ChatInterface from '@student/components/ChatInterface';
+import { StudentCaseChat } from '@student/components/dashboard/student/StudentCaseChat';
 import ErrorBoundary from '@student/components/ErrorBoundary';
 import { useAuth } from '@student/hooks/useAuth';
 import { CHAT_PATH, getAuthRedirectPath } from '@student/lib/auth-utils';
@@ -32,16 +32,18 @@ const Chat: React.FC = () => {
       <div className="container mx-auto px-4">
         <div className="text-center mb-8">
           <h1 className="text-4xl font-bold mb-4 bg-gradient-to-r from-primary to-primary-foreground bg-clip-text text-transparent">
-            University Advisor AI
+            Chat with Fly Masters
           </h1>
           <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-            Get personalized university recommendations and expert guidance for your study abroad journey
+            Our AI advisor answers first. Your telecaller and counselor join this same chat as you move ahead.
           </p>
         </div>
         
-        <ErrorBoundary>
-          <ChatInterface />
-        </ErrorBoundary>
+        <div className="max-w-3xl mx-auto">
+          <ErrorBoundary>
+            <StudentCaseChat />
+          </ErrorBoundary>
+        </div>
       </div>
     </div>
   );

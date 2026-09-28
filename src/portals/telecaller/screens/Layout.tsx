@@ -10,7 +10,7 @@ import { api } from "@telecaller/lib/api";
 const items = [
   { to: "/queue", label: "My queue", icon: PhoneCall },
   { to: "/whatsapp", label: "WhatsApp", icon: Smartphone },
-  { to: "/chat", label: "Chat", icon: MessageCircle },
+  { to: "/chat", label: "Student Chat", icon: MessageCircle },
   { to: "/converted", label: "Converted", icon: CheckCircle2 },
 ];
 
@@ -58,7 +58,7 @@ export default function Layout() {
                 {item.label === "WhatsApp" && unreadWhatsApp > 0 && (
                   <span className="rounded-full bg-emerald-500 px-1.5 text-[10px] font-bold text-white">{unreadWhatsApp}</span>
                 )}
-                {item.label === "Chat" && unreadChats > 0 && (
+                {item.label === "Student Chat" && unreadChats > 0 && (
                   <span className="rounded-full bg-sky-500 px-1.5 text-[10px] font-bold text-white">{unreadChats}</span>
                 )}
               </NavLink>

@@ -9,7 +9,7 @@ import Layout from "@telecaller/screens/Layout";
 import Queue from "@telecaller/screens/Queue";
 import LeadWorkspace from "@telecaller/screens/LeadWorkspace";
 import Converted from "@telecaller/screens/Converted";
-import Chat from "@telecaller/screens/Chat";
+import CaseInbox from "@shared/components/CaseInbox";
 import WhatsAppChat from "@telecaller/screens/WhatsAppChat";
 
 export default function App() {
@@ -32,7 +32,7 @@ export default function App() {
               <Route path="/queue" element={<Queue />} />
               <Route path="/leads/:id" element={<LeadWorkspace />} />
               <Route path="/whatsapp" element={<WhatsAppChat />} />
-              <Route path="/chat" element={<Chat />} />
+              <Route path="/chat" element={<CaseInbox title="Student Chat" />} />
               <Route path="/converted" element={<Converted />} />
             </Route>
             <Route path="*" element={<NotFound />} />
