@@ -2,7 +2,6 @@
  * The student dashboard's news feed: recommended universities (saved ones
  * first, then the student's destination countries) with a real campus photo
  * and their latest headlines, plus destination-country student-visa news.
- * Also a public list of famous-campus photos for the homepage headline.
  * Photos and news come from server/lib/uniMedia.mjs (Wikipedia + Google
  * News RSS, cached).
  */
@@ -121,26 +120,6 @@ router.get("/api/student/feed", anySession, async (req, res) => {
     console.error("[feed] failed:", error);
     res.status(500).json({ error: "Could not load your feed." });
   }
-});
-
-// Famous campuses whose photos fill the letters of "YOUR DREAM UNIVERSITY" on the homepage.
-const CAMPUSES = [
-  "University of Oxford", "University of Toronto", "University of Melbourne", "Harvard University",
-  "University of Cambridge", "McGill University", "University of Sydney", "Stanford University",
-  "Trinity College Dublin", "University of Auckland", "Imperial College London", "University of British Columbia",
-  "Technical University of Munich", "University of Edinburgh", "Princeton University", "Yale University",
-  "Australian National University", "University of Glasgow", "Columbia University", "University of Waterloo",
-];
-
-router.get("/api/public/campus-photos", async (_req, res) => {
-  const photos = await Promise.all(
-    CAMPUSES.map(async (name) => {
-      const p = await withTimeout(universityPhoto(name), 6000, null);
-      return { name, image: p?.image || null, credit: p?.page_url || null };
-    }),
-  );
-  res.set("Cache-Control", "public, max-age=3600");
-  res.json({ photos });
 });
 
 export default router;

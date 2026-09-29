@@ -1,5 +1,4 @@
 import { motion, useScroll, useTransform } from 'framer-motion';
-import { PhotoLetters } from '@student/components/PhotoLetters';
 import { Button } from '@student/components/ui/button';
 import { ArrowRight, Sparkles } from 'lucide-react';
 import { Link } from 'react-router-dom';
@@ -96,28 +95,20 @@ export default function Enhanced3DHero() {
             animate={{ opacity: 1 }}
             transition={{ duration: 0.8, delay: 0.2 }}
           >
-            <h1 className="mb-6 leading-none" aria-label="Your Dream University Awaits You">
+            <h1 className="text-5xl md:text-7xl font-bold mb-6 leading-tight">
               <motion.span
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.5, delay: 0.3 }}
-                className="block text-[2.9rem] sm:text-6xl md:text-7xl lg:text-[6.5rem]"
+                className="block"
               >
-                <PhotoLetters word="YOUR DREAM" />
-              </motion.span>
-              <motion.span
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.5, delay: 0.4 }}
-                className="mt-1 block text-[3.3rem] sm:text-7xl md:text-8xl lg:text-[7.75rem]"
-              >
-                <PhotoLetters word="UNIVERSITY" offset={9} />
+                Your Dream University
               </motion.span>
               <motion.span
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.5, delay: 0.5 }}
-                className="mt-3 block gradient-text text-5xl md:text-7xl font-bold leading-tight"
+                className="block gradient-text"
               >
                 Awaits You
               </motion.span>
