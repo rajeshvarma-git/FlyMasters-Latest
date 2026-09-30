@@ -60,6 +60,7 @@ export function StudentProfileForm() {
     backlogs_history: '',
     course_preferences: '',
     degree_level: '',
+    study_budget: '',
     student_notes: ''
   });
 
@@ -79,6 +80,12 @@ export function StudentProfileForm() {
 
       const extras = ((lead?.preferences as Record<string, any> | null) || {});
       const profileExtras = profile as Record<string, any> | null;
+      // Older AI-chat versions wrote the budget into the notes as
+      // "Study budget (AI chat): …". Show it in its own field and keep the
+      // notes for what the student actually wrote.
+      const rawNotes: string = extras.student_notes || lead?.notes || profileExtras?.student_notes || '';
+      const noteBudget = [...rawNotes.matchAll(/Study budget \(AI chat\):\s*(.+)/g)].pop()?.[1]?.trim() || '';
+      const cleanNotes = rawNotes.replace(/^\s*Study budget \(AI chat\):.*$/gm, '').replace(/\n{2,}/g, '\n').trim();
 
       setFormData({
         first_name: profile?.first_name || lead?.first_name || '',
@@ -97,7 +104,8 @@ export function StudentProfileForm() {
         backlogs_history: extras.backlogs_history || profileExtras?.backlogs_history || '',
         course_preferences: extras.course_preferences || lead?.field_of_interest || profileExtras?.course_preferences || '',
         degree_level: extras.degree_level || lead?.qualification_level || profileExtras?.degree_level || '',
-        student_notes: extras.student_notes || lead?.notes || profileExtras?.student_notes || '',
+        study_budget: profileExtras?.study_budget || extras.study_budget || noteBudget || '',
+        student_notes: cleanNotes,
       });
 
       if (profile?.date_of_birth) {
@@ -106,9 +114,10 @@ export function StudentProfileForm() {
       if (extras.test_scores || lead?.test_scores) {
         setTestScores((extras.test_scores || lead?.test_scores || []) as TestScore[]);
       }
-      if (extras.interested_countries || lead?.preferred_countries) {
-        setSelectedCountries(extras.interested_countries || lead?.preferred_countries || []);
-      }
+      // The AI chat saves the destination to the profile; older forms saved it on the lead.
+      const countries = [extras.interested_countries, lead?.preferred_countries, profileExtras?.interested_countries]
+        .find((list) => Array.isArray(list) && list.length);
+      if (countries) setSelectedCountries(countries);
     } catch (error: any) {
       console.error('Error loading profile:', error);
     } finally {
@@ -167,6 +176,7 @@ export function StudentProfileForm() {
         backlogs_history: formData.backlogs_history || null,
         course_preferences: formData.course_preferences || null,
         degree_level: formData.degree_level || null,
+        study_budget: formData.study_budget || null,
         student_notes: formData.student_notes || null,
         interested_countries: selectedCountries,
         test_scores: testScores,
@@ -190,6 +200,7 @@ export function StudentProfileForm() {
         backlogs_history: formData.backlogs_history,
         course_preferences: formData.course_preferences,
         degree_level: formData.degree_level,
+        study_budget: formData.study_budget,
         student_notes: formData.student_notes,
         test_scores: testScores,
         interested_countries: selectedCountries,
@@ -605,6 +616,16 @@ export function StudentProfileForm() {
               value={formData.course_preferences}
               onChange={(e) => setFormData({ ...formData, course_preferences: e.target.value })}
               rows={3}
+            />
+          </div>
+
+          <div>
+            <Label htmlFor="study_budget">Study budget</Label>
+            <Input
+              id="study_budget"
+              placeholder="e.g., 25 lakhs per year or $30,000"
+              value={formData.study_budget}
+              onChange={(e) => setFormData({ ...formData, study_budget: e.target.value })}
             />
           </div>
 

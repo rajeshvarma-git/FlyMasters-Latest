@@ -90,6 +90,15 @@ function readBody(req: IncomingMessage): Promise<string> {
 }
 
 function readRawBody(req: IncomingMessage): Promise<Buffer> {
+  // Inside Express, express.json() has already consumed the stream (waiting
+  // for it here hung every webhook call forever); it keeps the bytes as
+  // req.rawBody for exactly this.
+  const kept = (req as IncomingMessage & { rawBody?: Buffer }).rawBody;
+  if (Buffer.isBuffer(kept)) return Promise.resolve(kept);
+  if (!req.readable) {
+    const parsed = (req as IncomingMessage & { body?: unknown }).body;
+    return Promise.resolve(Buffer.from(parsed ? JSON.stringify(parsed) : "", "utf8"));
+  }
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => chunks.push(chunk));
@@ -1091,10 +1100,11 @@ async function storeInboundMessage(value: any) {
     const now = message.timestamp
       ? new Date(Number(message.timestamp) * 1000).toISOString()
       : new Date().toISOString();
-    await insertRow("whatsapp_messages", {
+    const body = extractInboundBody(message) || "";
+    const stored = await insertRow("whatsapp_messages", {
       conversation_id: conversation.id,
       direction: "inbound",
-      body: extractInboundBody(message) || "",
+      body,
       wa_message_id: waId || null,
       staff_id: null,
       is_read: false,
@@ -1104,6 +1114,20 @@ async function storeInboundMessage(value: any) {
       last_message_at: now,
       contact_name: contactName || conversation.contact_name,
     });
+    // Same conversation as the app: AI intake / FAQ answers / assigned staff,
+    // with replies sent back to this WhatsApp number.
+    // Not awaited: Meta wants a quick 200, and an AI reply can take seconds.
+    // cases.mjs handles one number's messages in order.
+    if (stored?.id) {
+      void import("../routes/cases.mjs")
+        .then(({ handleWhatsAppInbound }) =>
+          handleWhatsAppInbound({ phone, contactName, body, sourceId: `whatsapp_messages:${stored.id}`, sentAt: now }),
+        )
+        .then((leadId) =>
+          leadId && !conversation.lead_id ? updateRow("whatsapp_conversations", conversation.id, { lead_id: leadId }) : null,
+        )
+        .catch((error: any) => console.error("[whatsapp] case chat handling failed:", error?.message || error));
+    }
   }
 }
 

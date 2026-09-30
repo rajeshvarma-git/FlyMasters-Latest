@@ -17,6 +17,13 @@
  *      Anything the articles don't cover goes to the assigned person; the AI
  *      just says so.
  *
+ * WhatsApp is the same conversation: a message to the Fly Masters number
+ * lands here (a new number becomes a new lead), gets the same AI intake and
+ * FAQ answers, and replies — AI, staff and assignment notices — go back to
+ * the student's WhatsApp while Meta's 24-hour reply window is open. A lead
+ * who starts on WhatsApp has a conversation before they have a portal
+ * account (id case-lead-<leadId>); it becomes theirs when they sign up.
+ *
  * Storage: case_conversations + case_messages, JSONB in app_records, no
  * migration. Older chat stores (private_messages, telecaller_messages,
  * ai_chat_messages, whatsapp_messages) are copied in on open, keyed by
@@ -27,6 +34,7 @@ import crypto from "crypto";
 import { pool, jsonTable, jsonFind, jsonUpsert } from "../lib/db.mjs";
 import { anySession, branchScope, ROLES } from "../lib/auth.mjs";
 import { geminiJson, geminiConfigured } from "../lib/gemini.mjs";
+import { sendWhatsAppText, whatsappSendConfigured, normalizeWaPhone } from "../lib/waSend.mjs";
 
 const router = express.Router();
 
@@ -171,18 +179,37 @@ async function ownerOf(lead) {
 const ownerKey = (owner) => (owner.role === "ai" ? "ai" : `${owner.role}:${owner.id}`);
 
 async function conversationFor(studentUserId, leadId) {
-  const existing = (await rowsWhere("case_conversations", "student_user_id", studentUserId))[0];
-  if (existing) {
-    if (leadId && String(existing.lead_id || "") !== String(leadId)) {
-      return jsonUpsert("case_conversations", { id: existing.id, lead_id: String(leadId) });
+  if (studentUserId) {
+    const existing = (await rowsWhere("case_conversations", "student_user_id", studentUserId))[0];
+    if (existing) {
+      if (leadId && String(existing.lead_id || "") !== String(leadId)) {
+        return jsonUpsert("case_conversations", { id: existing.id, lead_id: String(leadId) });
+      }
+      return existing;
     }
-    return existing;
   }
-  // Deterministic id: two requests racing to create it land on the same row.
+  // A conversation that started on WhatsApp before the student had an
+  // account: it becomes theirs once the lead is linked to their account.
+  if (leadId) {
+    const byLead = (await rowsWhere("case_conversations", "lead_id", leadId)).find((c) => !c.student_user_id);
+    if (byLead) {
+      if (studentUserId) return jsonUpsert("case_conversations", { id: byLead.id, student_user_id: String(studentUserId) });
+      return byLead;
+    }
+  }
+  // Deterministic ids: two requests racing to create it land on the same row.
+  if (studentUserId) {
+    return jsonUpsert("case_conversations", {
+      id: `case-${studentUserId}`,
+      student_user_id: String(studentUserId),
+      lead_id: leadId ? String(leadId) : null,
+      last_message_at: new Date().toISOString(),
+    });
+  }
   return jsonUpsert("case_conversations", {
-    id: `case-${studentUserId}`,
-    student_user_id: String(studentUserId),
-    lead_id: leadId ? String(leadId) : null,
+    id: `case-lead-${leadId}`,
+    student_user_id: null,
+    lead_id: String(leadId),
     last_message_at: new Date().toISOString(),
   });
 }
@@ -221,7 +248,10 @@ function publicMessage(row, { staff = false } = {}) {
     reviewed_by_name: row.reviewed_by_name || null,
     created_at: sentAt(row),
   };
-  if (staff) msg.original_body = row.original_body || null;
+  if (staff) {
+    msg.original_body = row.original_body || null;
+    msg.wa_status = row.wa_status || null;
+  }
   return msg;
 }
 
@@ -385,18 +415,17 @@ function mergeList(existing, value) {
 /** Saves one intake answer to profile + lead so staff see it and nobody re-asks. */
 async function saveAnswer(studentUserId, lead, key, value, known) {
   const now = new Date().toISOString();
-  const profile = await jsonFind("profiles", "user_id", studentUserId).catch(() => null);
-  const p = { id: profile?.id || crypto.randomUUID(), user_id: String(studentUserId), updated_at: now };
-  if (key === "country") p.interested_countries = mergeList(profile?.interested_countries, value);
-  if (key === "qualification") p.degree_level = mapQualification(value);
-  if (key === "field") p.course_preferences = value;
-  if (key === "score") p[scoreField(known.qualification)] = value;
-  if (key === "budget") {
-    p.study_budget = value;
-    const notes = String(profile?.student_notes || "");
-    if (!notes.includes(value)) p.student_notes = [notes.trim(), `Study budget (AI chat): ${value}`].filter(Boolean).join("\n");
+  // A WhatsApp-only lead has no portal account yet, so no profile to write.
+  if (studentUserId) {
+    const profile = await jsonFind("profiles", "user_id", studentUserId).catch(() => null);
+    const p = { id: profile?.id || crypto.randomUUID(), user_id: String(studentUserId), updated_at: now };
+    if (key === "country") p.interested_countries = mergeList(profile?.interested_countries, value);
+    if (key === "qualification") p.degree_level = mapQualification(value);
+    if (key === "field") p.course_preferences = value;
+    if (key === "score") p[scoreField(known.qualification)] = value;
+    if (key === "budget") p.study_budget = value;
+    await jsonUpsert("profiles", p);
   }
-  await jsonUpsert("profiles", p);
 
   if (lead) {
     const prefs = { ...(lead.preferences || {}), ai_chat_updated_at: now };
@@ -414,12 +443,7 @@ async function saveAnswer(studentUserId, lead, key, value, known) {
       l.stream_or_program = value;
     }
     if (key === "score") l.academic_score = value;
-    if (key === "budget") {
-      prefs.study_budget = value;
-      if (!String(lead.notes || "").includes(value)) {
-        l.notes = [String(lead.notes || "").trim(), `Study budget (AI chat): ${value}`].filter(Boolean).join("\n");
-      }
-    }
+    if (key === "budget") prefs.study_budget = value;
     l.preferences = prefs;
     Object.assign(lead, l);
     await jsonUpsert("student_leads", l);
@@ -447,6 +471,7 @@ async function recommendations(known) {
   const country = normalizeCountry(known.country);
   if (!country) return [];
   const level = studyLevel(known.qualification);
+  const phd = /phd|doctor/i.test(known.qualification || "");
   const field = (known.field || "your chosen field").trim();
   const rows = await jsonTable("universities").catch(() => []);
   const wanted = country.toLowerCase();
@@ -456,14 +481,16 @@ async function recommendations(known) {
       const c = String(u.country || "").toLowerCase();
       return c && (c === wanted || c.includes(wanted) || wanted.includes(c));
     })
+    // Best-ranked first; unranked partners after them.
+    .sort((a, b) => (Number(a.ranking) || 9999) - (Number(b.ranking) || 9999))
     .slice(0, 6)
     .map((u) => ({
       id: String(u.id),
       name: u.name,
       location: [u.city, u.country].filter(Boolean).join(", "),
-      programs: [level === "UG" ? `Bachelor in ${field}` : `Master in ${field}`],
+      programs: [phd ? `PhD in ${field}` : level === "UG" ? `Bachelor in ${field}` : `Master in ${field}`],
       tuitionFee: "Contact for fees",
-      duration: level === "UG" ? "3-4 years" : "1-2 years",
+      duration: phd ? "3-5 years" : level === "UG" ? "3-4 years" : "1-2 years",
       deadline: "Rolling admissions",
       languageReq: country === "Nepal" || country === "India" ? "English or local language as required" : "IELTS 6.5+ or TOEFL 80+",
       postStudyVisa: VISA[country] || "Check local student visa rules for this destination",
@@ -591,13 +618,14 @@ async function announceOwner(conversation, owner) {
     const body = owner.role === "telecaller"
       ? `📞 ${owner.name} from Fly Masters has been assigned to you and will assist you further. They may call you on your registered number.`
       : `🎓 ${owner.name} is now your Fly Masters counselor and will assist you further with universities, applications and documents.`;
-    await addMessage(conversation, {
+    const notice = await addMessage(conversation, {
       senderRole: "system",
       kind: "system",
       body,
       sourceId: `announce:${conversation.id}:${key}`,
       extra: { owner_role: owner.role, owner_id: owner.id },
     });
+    await deliverToWhatsApp(conversation, [notice]);
   }
   const patch = { announced_owner: key };
   // A person has taken over: the AI stops asking intake questions.
@@ -609,7 +637,7 @@ async function announceOwner(conversation, owner) {
 async function prepareThread(studentUserId, lead) {
   const owner = await ownerOf(lead);
   const conversation = await conversationFor(studentUserId, lead?.id);
-  await importLegacy(conversation, studentUserId);
+  if (studentUserId) await importLegacy(conversation, studentUserId);
   // flow_version 2 = guided intake. Threads from before it (none, or the
   // short-lived free-chat version) start the intake once, if the AI still
   // owns the student; with a human already assigned there's no questionnaire.
@@ -622,7 +650,7 @@ async function prepareThread(studentUserId, lead) {
       [String(conversation.id), `greeting:${conversation.id}`],
     );
     if (owner.role === "ai" && !conversation.intake_complete) {
-      const profile = await jsonFind("profiles", "user_id", studentUserId).catch(() => null);
+      const profile = studentUserId ? await jsonFind("profiles", "user_id", studentUserId).catch(() => null) : null;
       await startIntake(conversation, profile, lead);
     } else {
       await patchConversation(conversation, { intake_complete: true, intake_field: null });
@@ -630,6 +658,194 @@ async function prepareThread(studentUserId, lead) {
   }
   await announceOwner(conversation, owner);
   return { owner, conversation };
+}
+
+// ---------------------------------------------------------------- WhatsApp
+
+// Meta only accepts free-form replies within 24 hours of the student's last
+// WhatsApp message; outside it a pre-approved template is required. We stop
+// a few minutes early so a reply isn't rejected mid-flight.
+const WA_WINDOW_MS = 24 * 60 * 60 * 1000 - 5 * 60 * 1000;
+
+function whatsappText(row) {
+  if (row.kind === "recommendations") {
+    const unis = row.data?.universities || [];
+    if (!unis.length) return row.body;
+    const lines = unis.map((u, i) => `${i + 1}. ${u.name}${u.location ? ` — ${u.location}` : ""}`);
+    return [row.body, "", ...lines, "", "Sign in to the Fly Masters student portal to save them and see details."].join("\n");
+  }
+  if (["counselor", "telecaller", "admin"].includes(row.sender_role) && row.sender_name) {
+    return `${row.sender_name} (Fly Masters): ${row.body}`;
+  }
+  return row.body;
+}
+
+/**
+ * Sends the non-student messages among `rows` to the student's WhatsApp,
+ * if this conversation is on WhatsApp and the 24-hour window is open.
+ * Each message records the outcome (wa_status) so staff can see it.
+ */
+async function deliverToWhatsApp(conversation, rows) {
+  const to = conversation.whatsapp_phone;
+  if (!to || !rows.length) return;
+  const last = Date.parse(conversation.whatsapp_last_inbound_at || "");
+  const windowOpen = Number.isFinite(last) && Date.now() - last < WA_WINDOW_MS;
+  for (const row of rows) {
+    if (!row || row.sender_role === "student" || !String(row.body || "").trim()) continue;
+    let patch;
+    if (!whatsappSendConfigured()) patch = { wa_status: "not_configured" };
+    else if (!windowOpen) patch = { wa_status: "window_closed" };
+    else {
+      try {
+        patch = { wa_status: "sent", wa_message_id: await sendWhatsAppText(to, whatsappText(row)) };
+      } catch (error) {
+        console.error("[case-wa] send failed:", error.message || error);
+        patch = { wa_status: "failed", wa_error: String(error.message || error).slice(0, 200) };
+      }
+    }
+    Object.assign(row, patch);
+    await jsonUpsert("case_messages", { id: row.id, ...patch });
+  }
+}
+
+async function leadByPhone(phone) {
+  const last10 = String(phone || "").replace(/\D/g, "").slice(-10);
+  if (last10.length < 10) return null;
+  const { rows } = await pool.query(
+    `SELECT id, data, branch_id FROM app_records
+      WHERE table_name = 'student_leads'
+        AND (right(regexp_replace(coalesce(data->>'whatsapp_number',''), '[^0-9]', '', 'g'), 10) = $1
+          OR right(regexp_replace(coalesce(data->>'phone',''), '[^0-9]', '', 'g'), 10) = $1)
+      ORDER BY (data->>'user_id' IS NOT NULL) DESC, coalesce(data->>'updated_at','') DESC
+      LIMIT 1`,
+    [last10],
+  );
+  return rows[0] ? { ...rows[0].data, id: rows[0].id, branch_id: rows[0].branch_id } : null;
+}
+
+async function userIdByPhone(phone) {
+  const last10 = String(phone || "").replace(/\D/g, "").slice(-10);
+  if (last10.length < 10) return null;
+  const { rows } = await pool.query(
+    `SELECT data->>'user_id' AS user_id FROM app_records
+      WHERE table_name = 'profiles' AND data->>'user_id' IS NOT NULL
+        AND (right(regexp_replace(coalesce(data->>'whatsapp_number',''), '[^0-9]', '', 'g'), 10) = $1
+          OR right(regexp_replace(coalesce(data->>'phone',''), '[^0-9]', '', 'g'), 10) = $1)
+      LIMIT 1`,
+    [last10],
+  );
+  return rows[0]?.user_id || null;
+}
+
+/** A first message from an unknown number becomes a hot lead, like a portal sign-up. */
+async function createWhatsAppLead(phone, contactName, userId) {
+  const now = new Date().toISOString();
+  const [first, ...rest] = String(contactName || "").trim().split(/\s+/).filter(Boolean);
+  const lead = {
+    id: crypto.randomUUID(),
+    user_id: userId ? String(userId) : null,
+    first_name: first || "WhatsApp",
+    last_name: rest.join(" ") || (first ? "" : `+${phone}`),
+    email: "",
+    phone: String(phone).slice(-10),
+    whatsapp_number: phone,
+    lead_source: "whatsapp",
+    lead_status: "hot",
+    lead_stage: "hot",
+    entity_type: "lead",
+    status: "new",
+    notes: "Started on WhatsApp.",
+    created_at: now,
+    updated_at: now,
+    last_activity_at: now,
+  };
+  // Mirror into the SQL table too, like portal sign-ups, for screens that read it.
+  await pool.query(
+    `INSERT INTO student_leads (id, user_id, email, phone, first_name, last_name, lead_status, lead_stage,
+       lead_source, entity_type, status, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,'hot','hot','whatsapp','lead','new',$7)
+     ON CONFLICT (id) DO NOTHING`,
+    [lead.id, lead.user_id, lead.email, lead.phone, lead.first_name, lead.last_name, now],
+  ).catch(() => {});
+  return jsonUpsert("student_leads", lead);
+}
+
+/**
+ * A WhatsApp message from a student (called by the webhook after it has been
+ * stored). `sourceId` must be `whatsapp_messages:<row id>` — the same key the
+ * portal's history import uses, so the message is never added twice.
+ * Returns the lead id it was filed under.
+ */
+const inboundQueues = new Map();
+
+export function handleWhatsAppInbound(input) {
+  // One number's messages are handled one after another, so two quick
+  // messages can't both answer the same intake question.
+  const key = String(input?.phone || "").replace(/\D/g, "").slice(-10);
+  const run = (inboundQueues.get(key) || Promise.resolve()).then(() => processWhatsAppInbound(input));
+  const tail = run.catch(() => {});
+  inboundQueues.set(key, tail);
+  tail.then(() => { if (inboundQueues.get(key) === tail) inboundQueues.delete(key); });
+  return run;
+}
+
+async function processWhatsAppInbound({ phone: rawPhone, contactName, body, sourceId, sentAt }) {
+  const phone = normalizeWaPhone(rawPhone);
+  const text = cleanText(body);
+  if (!phone || !text) return null;
+
+  const messageId = `cm-${crypto.createHash("sha1").update(sourceId).digest("hex")}`;
+  const { rows: dup } = await pool.query(
+    "SELECT 1 FROM app_records WHERE table_name = 'case_messages' AND id = $1",
+    [messageId],
+  );
+  if (dup.length) return null; // Meta retried a message we already handled.
+
+  let lead = await leadByPhone(phone);
+  let userId = lead?.user_id || (await userIdByPhone(phone));
+  if (!lead && userId) lead = await leadForStudent(userId);
+  if (!lead) lead = await createWhatsAppLead(phone, contactName, userId);
+  if (lead.user_id) userId = lead.user_id;
+  if (!lead.whatsapp_number) {
+    await jsonUpsert("student_leads", { id: lead.id, whatsapp_number: phone });
+    lead.whatsapp_number = phone;
+  }
+
+  const conversation = await conversationFor(userId || null, lead.id);
+  const fresh = conversation.flow_version !== 2;
+  const before = new Set((await rawMessages(conversation.id)).map((m) => m.id));
+  await addMessage(conversation, {
+    senderRole: "student",
+    senderId: userId || null,
+    body: text,
+    channel: "whatsapp",
+    sourceId,
+    createdAt: sentAt || null,
+  });
+  await patchConversation(conversation, {
+    whatsapp_phone: phone,
+    whatsapp_last_inbound_at: new Date().toISOString(),
+  });
+
+  // A brand-new conversation's reply is the intake greeting and first question.
+  const { owner, conversation: thread } = await prepareThread(userId || null, lead);
+  // (With a person already assigned there is no intake, so the message is handled normally.)
+  if (!fresh || owner.role !== "ai") await handleStudentMessage(thread, userId || null, lead, owner, text);
+
+  const created = (await rawMessages(thread.id)).filter((m) => !before.has(m.id));
+  await deliverToWhatsApp(thread, created.filter((m) => m.sender_role !== "system"));
+  return String(lead.id);
+}
+
+/** Called when admin assigns a telecaller or counselor: the notice appears (and reaches WhatsApp) right away. */
+export async function announceCaseOwner(leadId) {
+  const lead = await leadById(leadId);
+  if (!lead) return;
+  const conversation = lead.user_id
+    ? (await rowsWhere("case_conversations", "student_user_id", lead.user_id))[0]
+    : (await rowsWhere("case_conversations", "lead_id", lead.id))[0];
+  if (!conversation) return; // No chat yet; the notice is posted when one starts.
+  await announceOwner(conversation, await ownerOf(lead));
 }
 
 // -------------------------------------------------------------- permissions
@@ -722,6 +938,36 @@ router.get("/api/case/me", anySession, requireStudent, async (req, res) => {
   }
 });
 
+/**
+ * The same university matches the AI shows in the chat, for the dashboard:
+ * computed from the student's current profile, so editing the profile
+ * updates them. `saved` marks the ones in the student's saved list.
+ */
+router.get("/api/case/me/recommendations", anySession, requireStudent, async (req, res) => {
+  try {
+    const [profile, lead, favorites, conv] = await Promise.all([
+      jsonFind("profiles", "user_id", req.user.id).catch(() => null),
+      leadForStudent(req.user.id),
+      rowsWhere("user_favorites", "user_id", req.user.id).catch(() => []),
+      rowsWhere("case_conversations", "student_user_id", req.user.id).then((r) => r[0] || null),
+    ]);
+    const known = knownProfile(profile, lead);
+    const saved = new Set(favorites.map((f) => String(f.university_id)));
+    const missing = STEPS.filter((s) => !String(known[s.key] || "").trim()).map((s) => LABELS[s.key]);
+    const universities = (await recommendations(known)).map((u) => ({ ...u, saved: saved.has(u.id) }));
+    res.json({
+      known,
+      missing,
+      chat_started: Boolean(conv),
+      intake_complete: Boolean(conv?.intake_complete),
+      universities,
+    });
+  } catch (error) {
+    console.error("[case] recommendations failed:", error);
+    res.status(500).json({ error: "Could not load your recommendations." });
+  }
+});
+
 async function handleStudentMessage(conversation, studentUserId, lead, owner, text) {
   // 1. Still in the guided questions.
   if (!conversation.intake_complete && conversation.intake_field) {
@@ -737,7 +983,7 @@ async function handleStudentMessage(conversation, studentUserId, lead, owner, te
       await aiSay(conversation, checked.error);
       return;
     }
-    const profile = await jsonFind("profiles", "user_id", studentUserId).catch(() => null);
+    const profile = studentUserId ? await jsonFind("profiles", "user_id", studentUserId).catch(() => null) : null;
     const before = knownProfile(profile, lead);
     await saveAnswer(studentUserId, lead, step.key, checked.value, before);
     const known = { ...before, [step.key]: checked.value };
@@ -795,17 +1041,26 @@ router.get("/api/case/inbox", anySession, requireStaff, scopeBranchHead, async (
     } else if (role === ROLES.COUNSELOR) {
       leads = await rowsWhere("student_leads", "assigned_counselor_id", [...(await counselorAliases(req.user)), SHARED_COUNSELOR_ID]);
     } else {
-      const convs = await jsonTable("case_conversations");
-      leads = await rowsWhere("student_leads", "user_id", convs.map((c) => c.student_user_id));
+      const all = await jsonTable("case_conversations");
+      const byUser = await rowsWhere("student_leads", "user_id", all.map((c) => c.student_user_id));
+      const byId = await rowsWhere("student_leads", "id", all.filter((c) => !c.student_user_id).map((c) => c.lead_id));
+      leads = [...new Map([...byUser, ...byId].map((l) => [String(l.id), l])).values()];
       if (role === ROLES.BRANCH_HEAD && !req.scope?.allBranches) {
         const allowed = new Set((req.scope?.branchIds || []).map(String));
         leads = leads.filter((l) => allowed.has(String(l.branch_id || "")));
       }
     }
-    leads = leads.filter((l) => l.user_id);
 
-    const convs = await rowsWhere("case_conversations", "student_user_id", leads.map((l) => l.user_id));
-    const convByStudent = new Map(convs.map((c) => [String(c.student_user_id), c]));
+    const convs = [
+      ...(await rowsWhere("case_conversations", "student_user_id", leads.map((l) => l.user_id))),
+      ...(await rowsWhere("case_conversations", "lead_id", leads.map((l) => l.id))).filter((c) => !c.student_user_id),
+    ];
+    const convFor = (lead) =>
+      (lead.user_id && convs.find((c) => String(c.student_user_id) === String(lead.user_id)))
+      || convs.find((c) => !c.student_user_id && String(c.lead_id) === String(lead.id));
+    // Portal accounts always have a thread (it opens on first visit); a lead
+    // without an account appears once they message on WhatsApp.
+    leads = leads.filter((l) => l.user_id || convFor(l));
     const msgs = await rowsWhere("case_messages", "conversation_id", convs.map((c) => c.id));
     const byConv = new Map();
     for (const m of msgs) {
@@ -815,15 +1070,16 @@ router.get("/api/case/inbox", anySession, requireStaff, scopeBranchHead, async (
     }
 
     const items = await Promise.all(leads.map(async (lead) => {
-      const conv = convByStudent.get(String(lead.user_id));
+      const conv = convFor(lead);
       const list = (conv && byConv.get(String(conv.id))) || [];
       list.sort((a, b) => sentAt(a).localeCompare(sentAt(b)));
       const last = list[list.length - 1];
       const readAt = String(conv?.staff_last_read_at || "");
       return {
         lead_id: String(lead.id),
-        student_user_id: String(lead.user_id),
+        student_user_id: lead.user_id ? String(lead.user_id) : null,
         student_name: studentNameFromLead(lead),
+        channel: conv?.whatsapp_phone ? "whatsapp" : "app",
         owner: await ownerOf(lead),
         last_message: last ? { body: last.body, sender_role: last.sender_role, created_at: sentAt(last) } : null,
         last_message_at: last ? sentAt(last) : null,
@@ -845,10 +1101,6 @@ async function staffLead(req, res) {
     res.status(404).json({ error: "Conversation not found." });
     return null;
   }
-  if (!lead.user_id) {
-    res.status(400).json({ error: "This lead has no student portal account yet, so there is no chat." });
-    return null;
-  }
   return lead;
 }
 
@@ -856,13 +1108,16 @@ router.get("/api/case/lead/:leadId", anySession, requireStaff, scopeBranchHead, 
   try {
     const lead = await staffLead(req, res);
     if (!lead) return;
-    const { owner, conversation } = await prepareThread(lead.user_id, lead);
+    const { owner, conversation } = await prepareThread(lead.user_id || null, lead);
     await patchConversation(conversation, { staff_last_read_at: new Date().toISOString() });
-    const profile = await jsonFind("profiles", "user_id", lead.user_id).catch(() => null);
+    const profile = lead.user_id ? await jsonFind("profiles", "user_id", lead.user_id).catch(() => null) : null;
     res.json({
       conversation_id: conversation.id,
       owner,
-      student: { lead_id: String(lead.id), user_id: String(lead.user_id), name: studentNameFromLead(lead), email: lead.email || "", phone: lead.phone || "" },
+      whatsapp: conversation.whatsapp_phone
+        ? { phone: conversation.whatsapp_phone, last_inbound_at: conversation.whatsapp_last_inbound_at || null }
+        : null,
+      student: { lead_id: String(lead.id), user_id: lead.user_id ? String(lead.user_id) : null, name: studentNameFromLead(lead), email: lead.email || "", phone: lead.phone || "" },
       known: knownProfile(profile, lead),
       messages: (await rawMessages(conversation.id)).map((m) => publicMessage(m, { staff: true })),
     });
@@ -882,7 +1137,7 @@ router.post("/api/case/lead/:leadId/messages", anySession, requireStaff, scopeBr
   try {
     const lead = await staffLead(req, res);
     if (!lead) return;
-    const conversation = await conversationFor(lead.user_id, lead.id);
+    const conversation = await conversationFor(lead.user_id || null, lead.id);
     const senderRole = staffSenderRole(req.user.role);
     const message = await addMessage(conversation, {
       senderRole,
@@ -891,6 +1146,7 @@ router.post("/api/case/lead/:leadId/messages", anySession, requireStaff, scopeBr
       body: text,
     });
     await patchConversation(conversation, { staff_last_read_at: new Date().toISOString() });
+    await deliverToWhatsApp(conversation, [message]);
     res.json({ message: publicMessage(message, { staff: true }) });
   } catch (error) {
     console.error("[case] staff send failed:", error);
@@ -910,7 +1166,8 @@ router.post("/api/case/lead/:leadId/messages/:messageId/review", anySession, req
       [String(req.params.messageId)],
     );
     const msg = rows[0] ? { ...rows[0].data, id: rows[0].id } : null;
-    if (!msg || msg.conversation_id !== `case-${lead.user_id}` || msg.sender_role !== "ai") {
+    const conversation = await conversationFor(lead.user_id || null, lead.id);
+    if (!msg || msg.conversation_id !== conversation.id || msg.sender_role !== "ai") {
       return res.status(404).json({ error: "Message not found." });
     }
     const reviewer = await personName(req.user.id, "Fly Masters");
@@ -925,6 +1182,10 @@ router.post("/api/case/lead/:leadId/messages/:messageId/review", anySession, req
       patch.body = body;
     }
     const saved = await jsonUpsert("case_messages", patch);
+    // The wrong answer already reached WhatsApp, so the correction goes there too.
+    if (action === "correct") {
+      await deliverToWhatsApp(conversation, [{ ...saved, body: `Correction from ${reviewer} (Fly Masters): ${saved.body}` }]);
+    }
     res.json({ message: publicMessage(saved, { staff: true }) });
   } catch (error) {
     console.error("[case] review failed:", error);

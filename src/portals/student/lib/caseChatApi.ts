@@ -72,37 +72,31 @@ export function getMyCaseUnread() {
   return call<{ unread: number }>('/case/me/unread');
 }
 
-export interface FeedNews {
-  title: string;
-  link: string;
-  source: string;
-  published_at: string | null;
-  topic?: string;
-}
-
-export interface FeedUniversity {
+/** One university the AI matched to the student's profile (same list as in the chat). */
+export interface RecommendedUniversity {
   id: string;
   name: string;
-  city: string;
-  country: string;
-  ranking: number | string | null;
-  website: string | null;
-  is_favorite: boolean;
-  image: string | null;
-  image_credit: string | null;
-  summary: string;
-  news: FeedNews[];
+  location: string;
+  programs: string[];
+  tuitionFee: string;
+  duration: string;
+  deadline: string;
+  languageReq: string;
+  postStudyVisa: string;
+  ranking: string;
+  website?: string;
+  saved: boolean;
 }
 
-export interface StudentFeed {
-  countries: string[];
-  field: string;
-  universities: FeedUniversity[];
-  stories: FeedNews[];
-  generated_at: string;
+export interface MyRecommendations {
+  known: { country: string; qualification: string; field: string; score: string; budget: string };
+  /** Profile answers the AI still needs before it can match (e.g. "budget"). */
+  missing: string[];
+  chat_started: boolean;
+  intake_complete: boolean;
+  universities: RecommendedUniversity[];
 }
 
-/** Dashboard feed: recommended universities with photos + latest news. */
-export function getStudentFeed() {
-  return call<StudentFeed>('/student/feed');
+export function getMyRecommendations() {
+  return call<MyRecommendations>('/case/me/recommendations');
 }

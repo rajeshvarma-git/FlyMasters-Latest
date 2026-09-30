@@ -33,7 +33,6 @@ import configRoutes from "./routes/config.mjs";
 import commsRoutes, { startCommsScheduler } from "./routes/comms.mjs";
 import caseRoutes from "./routes/cases.mjs";
 import knowledgeRoutes from "./routes/knowledge.mjs";
-import studentFeedRoutes from "./routes/studentFeed.mjs";
 
 assertBootConfig();
 
@@ -48,7 +47,9 @@ const ALLOWED_ORIGINS = String(process.env.ALLOWED_ORIGINS || "")
   .filter(Boolean);
 
 app.use(cors(ALLOWED_ORIGINS.length ? { origin: ALLOWED_ORIGINS, credentials: true } : undefined));
-app.use(express.json({ limit: "20mb" }));
+// Keep the raw bytes too: the WhatsApp webhook checks Meta's signature over
+// them, and once express.json has read the stream it cannot be read again.
+app.use(express.json({ limit: "20mb", verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
 app.get("/api/health", async (_req, res) => {
   try {
@@ -70,7 +71,6 @@ app.use(commsRoutes);
 // One student conversation: AI advisor -> telecaller -> counselor.
 app.use(caseRoutes);
 app.use(knowledgeRoutes);
-app.use(studentFeedRoutes);
 app.use(coreRoutes);
 app.use(counselorRoutes);
 

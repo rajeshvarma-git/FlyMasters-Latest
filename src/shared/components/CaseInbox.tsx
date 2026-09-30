@@ -16,8 +16,10 @@ type Owner = { role: "ai" | "telecaller" | "counselor"; id: string | null; name:
 
 type InboxItem = {
   lead_id: string;
-  student_user_id: string;
+  /** null for a lead who has only written on WhatsApp so far (no portal account) */
+  student_user_id: string | null;
   student_name: string;
+  channel?: "app" | "whatsapp";
   owner: Owner;
   last_message: { body: string; sender_role: Role; created_at: string } | null;
   last_message_at: string | null;
@@ -38,11 +40,21 @@ type Message = {
   review_status: "pending" | "approved" | "corrected" | null;
   reviewed_by_name: string | null;
   original_body: string | null;
+  /** Whether this reply reached the student's WhatsApp */
+  wa_status?: "sent" | "failed" | "window_closed" | "not_configured" | null;
   created_at: string;
+};
+
+const WA_STATUS: Record<string, string> = {
+  sent: " · sent to WhatsApp",
+  failed: " · WhatsApp send failed",
+  window_closed: " · app only (WhatsApp 24h window closed)",
+  not_configured: " · app only (WhatsApp not set up)",
 };
 
 type Thread = {
   owner: Owner;
+  whatsapp: { phone: string; last_inbound_at: string | null } | null;
   student: { lead_id: string; name: string; email: string; phone: string };
   known: Record<string, string>;
   messages: Message[];
@@ -245,7 +257,15 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
                 }`}
               >
                 <span className="flex items-center justify-between gap-2">
-                  <span className="truncate text-sm font-medium">{item.student_name}</span>
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate text-sm font-medium">{item.student_name}</span>
+                    {item.channel === "whatsapp" && (
+                      <span className="shrink-0 rounded bg-emerald-100 px-1 text-[10px] font-semibold text-emerald-700">WhatsApp</span>
+                    )}
+                    {!item.student_user_id && (
+                      <span title="Has not created a student portal account yet" className="shrink-0 rounded bg-slate-100 px-1 text-[10px] text-slate-500">no app</span>
+                    )}
+                  </span>
                   <span className="shrink-0 text-[11px] text-slate-400">{when(item.last_message_at)}</span>
                 </span>
                 <span className="flex items-center justify-between gap-2">
@@ -293,6 +313,14 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
                   <p className="truncate text-xs text-slate-500">
                     {[thread?.student.phone, thread?.student.email].filter(Boolean).join(" · ")}
                   </p>
+                  {thread?.whatsapp && (
+                    <p className="mt-0.5 text-[11px] text-emerald-700">
+                      On WhatsApp —{" "}
+                      {thread.whatsapp.last_inbound_at && Date.now() - Date.parse(thread.whatsapp.last_inbound_at) < 24 * 3600 * 1000
+                        ? "your replies also go to their WhatsApp"
+                        : "last WhatsApp message over 24h ago, so replies stay in the app until they write again"}
+                    </p>
+                  )}
                   {knownFacts.length > 0 && (
                     <p className="mt-1 flex flex-wrap gap-1">
                       {knownFacts.map(([k, v]) => (
@@ -392,6 +420,7 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
                         <p className={`mt-1 text-[10px] ${student || ai ? "text-slate-400" : "text-emerald-100"}`}>
                           {when(m.created_at)}
                           {m.channel === "whatsapp" ? " · WhatsApp" : ""}
+                          {m.sender_role !== "student" && m.wa_status ? WA_STATUS[m.wa_status] || "" : ""}
                         </p>
                       </div>
                     </div>

@@ -16,6 +16,7 @@ import path from "path";
 import { buildCatalogRecords, parseCatalogCsv } from "../lib/csvImport.mjs";
 import { createWhatsAppService } from "../lib/whatsappService.mjs";
 import { runEvent as runCommsEvent } from "../lib/automation.mjs";
+import { announceCaseOwner } from "./cases.mjs";
 import { raiseAlert } from "../lib/alerts.mjs";
 import { pool, jsonTable, jsonUpsert } from "../lib/db.mjs";
 import {
@@ -944,6 +945,9 @@ function alertLinkForRole(role, leadId) {
  * event. Wrapped so nothing here can throw into the request path.
  */
 async function onLeadOwnerChanged(lead, role, ownerId, hadOwnerBefore) {
+  // "X has been assigned and will assist you further" in the student's chat
+  // (and on WhatsApp) right away, not only when someone next opens it.
+  await announceCaseOwner(lead.id).catch((error) => console.error("case assignment notice failed:", error.message || error));
   try {
     const transferred = hadOwnerBefore;
     const name = lead.full_name || lead.name || lead.phone || "a lead";
@@ -2375,13 +2379,13 @@ router.patch("/api/leads/:id", auth, async (req, res) => {
   await syncOwnershipOnAssignment(current, updated);
   if (patch.assigned_telecaller_id) {
     const hasWhatsApp = Boolean(updated.whatsapp_number || updated.phone || updated.lead_source === "whatsapp");
-    const waNote = hasWhatsApp ? " Reply on WhatsApp from your telecaller inbox." : "";
+    const waNote = hasWhatsApp ? " Their chat — app and WhatsApp together — is in Messages." : "";
     await notify(
       patch.assigned_telecaller_id,
       updated.lead_source === "whatsapp" ? "WhatsApp lead assigned" : "Lead assigned",
       `${updated.first_name || "A lead"} was assigned to you.${waNote}`,
       "info",
-      hasWhatsApp ? `/whatsapp?lead=${updated.id}` : "/queue",
+      `/chat?lead=${updated.id}`,
     );
   }
   if (patch.assigned_counselor_id) {
