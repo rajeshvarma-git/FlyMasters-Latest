@@ -96,7 +96,6 @@ function mergeStudents(...lists) {
     const key = emailLocalKey(email);
     const current = (uid && byUser.get(uid))
       || (email && byEmail.get(email))
-      || (key.length >= 4 && byEmailKey.get(key))
       || null;
     const converted = isLeadConverted(row) || isLeadConverted(current);
     const convertedRow = isLeadConverted(current) ? current : isLeadConverted(row) ? row : null;
@@ -128,7 +127,6 @@ function mergeStudents(...lists) {
     const nextEmail = String(merged.email || "").trim().toLowerCase();
     if (nextEmail) byEmail.set(nextEmail, merged);
     const nextKey = emailLocalKey(nextEmail);
-    if (nextKey.length >= 4) byEmailKey.set(nextKey, merged);
   };
 
   for (const list of lists) {
@@ -256,6 +254,38 @@ async function markNotificationReadForUser(userId, notificationId) {
   if (docFound) await jsonUpsert("document_notifications", { ...docFound, is_read: true });
 }
 
+/**
+ * The students an admin has actually assigned to this counselor (by any of
+ * the counselor's own ids). Everything a counselor can see or change is
+ * limited to these. The old shared placeholder id ("local-counselor-1",
+ * meaning "any counselor") no longer grants access — such students wait in
+ * the admin's assignment list.
+ */
+async function myAssignedLeads(counselorId) {
+  const own = await resolveCounselorAliases(counselorId);
+  const [sqlLeads, jsonLeads] = await Promise.all([
+    pool.query("SELECT * FROM student_leads").catch(() => ({ rows: [] })),
+    jsonTable("student_leads").catch(() => []),
+  ]);
+  const mine = (row) => own.has(String(row.assigned_counselor_id || ""));
+  const leads = mergeStudents(
+    sqlLeads.rows.filter(mine).map((row) => asLead(row, counselorId, own)),
+    jsonLeads.filter(mine).map((row) => asLead(row, counselorId, own)),
+  );
+  const leadIds = new Set();
+  const userIds = new Set();
+  const emails = new Set();
+  for (const lead of leads) {
+    if (lead.id) leadIds.add(String(lead.id));
+    if (lead.user_id) userIds.add(String(lead.user_id));
+    if (lead.email) emails.add(String(lead.email).trim().toLowerCase());
+  }
+  // A student's documents/applications are keyed by their portal user id;
+  // older rows sometimes used the lead id.
+  const studentKeys = new Set([...leadIds, ...userIds]);
+  return { leads, leadIds, userIds, emails, studentKeys, aliases: own };
+}
+
 function remapSharedCounselorId(value, counselorId) {
   if (value == null || value === "") return value;
   return String(value) === SHARED_STUDENT_COUNSELOR_ID ? counselorId : value;
@@ -280,10 +310,8 @@ async function resolveCounselorAliases(portalCounselorId) {
         aliases.add(`counselor-${row.id}`);
       }
     }
-    const roles = await jsonTable("user_roles").catch(() => []);
-    for (const role of roles.filter((row) => row.role === "counselor")) {
-      aliases.add(String(role.user_id));
-    }
+    // (This used to add every counselor's user id, which made every
+    // counselor "own" every other counselor's students.)
     const counselors = await jsonTable("counselors").catch(() => []);
     for (const row of counselors) {
       const rowEmail = String(row.email || "").trim().toLowerCase();
@@ -567,15 +595,24 @@ async function publishCounselorAccount(row, passwordPlain) {
   });
 }
 
+// Two addresses are the same person only if they are the same mailbox:
+// exact match, except Gmail ignores dots and "+tags". (Matching on the part
+// before "@" alone used to join different people across domains.)
+function sameMailbox(value) {
+  const email = String(value || "").trim().toLowerCase();
+  const at = email.lastIndexOf("@");
+  if (at < 1) return "";
+  let local = email.slice(0, at);
+  let domain = email.slice(at + 1);
+  if (domain === "googlemail.com") domain = "gmail.com";
+  if (domain === "gmail.com") local = local.split("+")[0].replace(/\./g, "");
+  return `${local}@${domain}`;
+}
+
 function emailsMatch(left, right) {
-  const a = String(left || "").trim().toLowerCase();
-  const b = String(right || "").trim().toLowerCase();
-  if (!a || !b) return false;
-  if (a === b) return true;
-  const key = (value) => String(value || "").split("@")[0].replace(/[^a-z0-9]/g, "");
-  const leftKey = key(a);
-  const rightKey = key(b);
-  return Boolean(leftKey && leftKey === rightKey && leftKey.length >= 4);
+  const a = sameMailbox(left);
+  const b = sameMailbox(right);
+  return Boolean(a && b && a === b);
 }
 
 function isUuid(value) {
@@ -912,8 +949,16 @@ router.post("/api/counselor/auth/signup", async (req, res) => {
 
 
 router.get("/api/counselor/me", counselorAuth, async (req, res) => {
-  const found = await pool.query("SELECT * FROM counselor_users WHERE id = $1", [req.user.id]);
-  if (!found.rows[0]) return res.status(401).json({ error: "Account not found" });
+  let found = await pool.query("SELECT * FROM counselor_users WHERE id::text = $1", [String(req.user.id)]);
+  // Older counselor accounts have a different id in counselor_users than in
+  // the sign-in table; the email is the same.
+  if (!found.rows[0] && req.user.email) {
+    found = await pool.query("SELECT * FROM counselor_users WHERE lower(email) = lower($1)", [req.user.email]);
+  }
+  if (!found.rows[0]) {
+    // Signed in as a counselor but no counselor profile row yet: still a counselor.
+    return res.json({ user: { id: req.user.id, email: req.user.email, firstName: "", lastName: "", phone: "" } });
+  }
   await publishCounselorAccount(found.rows[0]).catch((error) => console.warn("Counselor publish failed:", error.message));
   res.json({ user: publicUser(found.rows[0]) });
 });
@@ -983,6 +1028,11 @@ router.get("/api/counselor/state", counselorAuth, async (req, res) => {
   ]);
 
   const extra = extras.rows[0];
+  // Only this counselor's assigned students — and their records — leave the server.
+  const mineSet = await myAssignedLeads(id);
+  const ownsStudent = (studentId, email) =>
+    mineSet.studentKeys.has(String(studentId || "")) ||
+    (email ? mineSet.emails.has(String(email).trim().toLowerCase()) : false);
   const jsonLeads = shared.leads || [];
   const directory = await studentDirectory().catch(() => []);
   await Promise.all(shortlists.rows.map((row) => {
@@ -1003,20 +1053,18 @@ router.get("/api/counselor/state", counselorAuth, async (req, res) => {
       student_email: (known && !emailsMatch(known.email, current?.student_email) ? known.email : null) || lead?.email || current?.student_email || "",
     }).catch(() => null);
   }));
-  const mergedLeads = mergeStudents(
-    leads.rows.map((row) => asLead(row, id, counselorAliases)),
-    (shared.leads || []).map((row) => asLead(row, id, counselorAliases)),
-  );
+  const mergedLeads = mineSet.leads;
   const mergedConversations = sortByCreated(mergeById(
     conversations.rows.map((row) => asConversation(row, id)),
     shared.conversations,
-  ));
+  )).filter((c) => ownsStudent(c.student_id));
   const mergedMessages = sortByCreated((() => {
     const sqlConversationIds = new Set(conversations.rows.map((row) => String(row.id)));
     const sqlOnly = messages.rows
       .filter((row) => sqlConversationIds.has(String(row.conversation_id)))
       .map((row) => asMessage(row, id));
-    return mergeById(sqlOnly, shared.messages);
+    const allowed = new Set(mergedConversations.map((c) => String(c.id)));
+    return mergeById(sqlOnly, shared.messages).filter((m) => allowed.has(String(m.conversation_id)));
   })());
 
   await syncChatNotifications(id, mergedConversations, mergedMessages, mergedLeads).catch(() => {});
@@ -1047,12 +1095,12 @@ router.get("/api/counselor/state", counselorAuth, async (req, res) => {
     documents: mergeById(
       documents.rows.map(asDocument),
       shared.documents,
-    ),
+    ).filter((d) => ownsStudent(d.user_id)),
     shortlists: mergeById(
       shortlists.rows.map((row) => asShortlist(row, id)),
       shared.shortlists,
-    ),
-    applications: shared.applications || [],
+    ).filter((sl) => ownsStudent(sl.student_id, sl.student_email)),
+    applications: (shared.applications || []).filter((a) => ownsStudent(a.user_id)),
     leave: leave.rows,
     attendance: attendance.rows.map((row) => ({
       ...row,
@@ -1191,6 +1239,9 @@ router.post("/api/counselor/shortlists", counselorAuth, async (req, res) => {
       return res.status(400).json({ error: "Student, university, and course are required." });
     }
     const resolvedId = await resolveStudentUserId(studentId, studentEmail);
+    if (!(await counselorOwnsStudent(req.user.id, resolvedId)) && !(await counselorOwnsStudent(req.user.id, studentId))) {
+      return res.status(403).json({ error: "This student is not assigned to you." });
+    }
     const directory = await studentDirectory();
     const portal = directory.find((person) => person.user_id === resolvedId)
       || directory.find((person) => emailsMatch(person.email, studentEmail));
@@ -1230,14 +1281,29 @@ router.post("/api/counselor/shortlists", counselorAuth, async (req, res) => {
   }
 });
 
+/** The document, if it belongs to one of this counselor's students; else null. */
+async function ownedDocument(counselorId, documentId) {
+  const docs = await jsonTable("documents");
+  let found = docs.find((row) => String(row.id) === String(documentId));
+  if (!found) {
+    const sql = await pool.query("SELECT * FROM documents WHERE id::text = $1", [String(documentId)]).catch(() => ({ rows: [] }));
+    found = sql.rows[0] || null;
+  }
+  if (!found) return { found: null, allowed: false };
+  return { found, allowed: await counselorOwnsStudent(counselorId, found.user_id) };
+}
+
 router.patch("/api/counselor/documents/:id", counselorAuth, async (req, res) => {
   const status = String(req.body.status || "").trim();
   const comments = req.body.comments == null ? undefined : String(req.body.comments);
   if (!["uploaded", "approved", "rejected", "pending"].includes(status)) {
     return res.status(400).json({ error: "Status must be approved or rejected." });
   }
+  const owned = await ownedDocument(req.user.id, req.params.id);
+  if (!owned.found) return res.status(404).json({ error: "Document not found." });
+  if (!owned.allowed) return res.status(403).json({ error: "This student is not assigned to you." });
   const now = new Date().toISOString();
-  await pool.query("UPDATE documents SET status = $2 WHERE id = $1", [req.params.id, status]).catch(() => {});
+  await pool.query("UPDATE documents SET status = $2 WHERE id::text = $1", [req.params.id, status]).catch(() => {});
   const docs = await jsonTable("documents");
   const found = docs.find((row) => String(row.id) === String(req.params.id));
   if (found) {
@@ -1281,9 +1347,9 @@ router.patch("/api/counselor/documents/:id", counselorAuth, async (req, res) => 
 });
 
 router.get("/api/counselor/documents/:id/file", counselorAuth, async (req, res) => {
-  const docs = await jsonTable("documents");
-  const found = docs.find((row) => String(row.id) === String(req.params.id));
+  const { found, allowed } = await ownedDocument(req.user.id, req.params.id);
   if (!found?.file_path) return res.status(404).json({ error: "File not found" });
+  if (!allowed) return res.status(403).json({ error: "This student is not assigned to you." });
   const file = await pool.query("SELECT data_url FROM app_storage WHERE path = $1", [found.file_path]);
   if (!file.rows[0]?.data_url) return res.status(404).json({ error: "File not found" });
   res.json({ fileName: found.file_name || "document", dataUrl: file.rows[0].data_url });
@@ -1299,6 +1365,9 @@ router.patch("/api/counselor/applications/:id", counselorAuth, async (req, res) 
   const apps = await jsonTable("applications");
   const found = apps.find((row) => String(row.id) === String(req.params.id));
   if (!found) return res.status(404).json({ error: "Application not found" });
+  if (!(await counselorOwnsStudent(req.user.id, found.user_id))) {
+    return res.status(403).json({ error: "This student is not assigned to you." });
+  }
   const next = {
     ...found,
     status,
@@ -1344,6 +1413,9 @@ router.post("/api/counselor/notifications/:id/read", counselorAuth, async (req, 
 
 router.post("/api/counselor/conversations", counselorAuth, async (req, res) => {
   const studentId = String(req.body.studentId || "");
+  if (!(await counselorOwnsStudent(req.user.id, studentId))) {
+    return res.status(403).json({ error: "This student is not assigned to you." });
+  }
   const jsonConversations = await jsonTable("private_conversations");
   const shared = jsonConversations.find((row) => String(row.student_id) === studentId);
   if (shared) return res.json(asConversation(shared, req.user.id));
@@ -1367,6 +1439,9 @@ router.post("/api/counselor/messages", counselorAuth, async (req, res) => {
   const text = String(req.body.message || "").trim();
   if (!conversationId || !receiverId || !text) {
     return res.status(400).json({ error: "Message, conversation, and student are required." });
+  }
+  if (!(await counselorOwnsStudent(req.user.id, receiverId))) {
+    return res.status(403).json({ error: "This student is not assigned to you." });
   }
 
   const now = new Date().toISOString();
@@ -1648,20 +1723,8 @@ function checklistApplies(item, countries, degree) {
 async function counselorOwnsStudent(counselorId, studentRef) {
   const ref = String(studentRef || "");
   if (!ref) return false;
-  const counselorAliases = await resolveCounselorAliases(counselorId);
-  const [sqlLeads, jsonLeads] = await Promise.all([
-    pool.query("SELECT * FROM student_leads").catch(() => ({ rows: [] })),
-    jsonTable("student_leads").catch(() => []),
-  ]);
-  const leads = mergeStudents(
-    sqlLeads.rows.map((row) => asLead(row, counselorId, counselorAliases)),
-    jsonLeads.map((row) => asLead(row, counselorId, counselorAliases)),
-  );
-  return leads.some(
-    (lead) =>
-      String(lead.assigned_counselor_id) === String(counselorId) &&
-      (String(lead.id) === ref || String(lead.user_id) === ref),
-  );
+  const { leadIds, userIds } = await myAssignedLeads(counselorId);
+  return leadIds.has(ref) || userIds.has(ref);
 }
 
 router.get("/api/counselor/university-catalog/countries", counselorAuth, async (_req, res) => {
@@ -1798,19 +1861,8 @@ router.get("/api/counselor/students/:id/checklist", counselorAuth, async (req, r
 });
 
 async function resolveAssignedStudent(counselorId, studentRef) {
-  const [sqlLeads, jsonLeads] = await Promise.all([
-    pool.query("SELECT * FROM student_leads").catch(() => ({ rows: [] })),
-    jsonTable("student_leads").catch(() => []),
-  ]);
-  const leads = mergeStudents(
-    sqlLeads.rows.map((row) => asLead(row, counselorId)),
-    jsonLeads,
-  );
-  return leads.find(
-    (row) =>
-      String(row.assigned_counselor_id) === String(counselorId) &&
-      (String(row.id) === String(studentRef) || String(row.user_id) === String(studentRef)),
-  );
+  const { leads } = await myAssignedLeads(counselorId);
+  return leads.find((row) => String(row.id) === String(studentRef) || String(row.user_id) === String(studentRef));
 }
 
 function needsDocumentRequest(status) {

@@ -107,6 +107,7 @@ const groups = [
       { to: "/knowledge", label: "AI FAQs & policies", icon: BookOpen, end: false, roles: ADMIN_ONLY },
       { to: "/automation", label: "Automation", icon: Workflow, end: false, roles: ADMIN_ONLY },
       { to: "/comms-log", label: "Delivery log", icon: ScrollText, end: false },
+      { to: "/student-chat", label: "Student chats", icon: Eye, end: false },
       { to: "/supervision", label: "Chat supervision", icon: Eye, end: false, roles: ADMIN_ONLY },
       { to: "/escalations", label: "Reported chats", icon: Flag, end: false, roles: ADMIN_ONLY },
     ],

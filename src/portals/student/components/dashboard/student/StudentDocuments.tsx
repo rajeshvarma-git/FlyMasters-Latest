@@ -143,28 +143,7 @@ export function StudentDocuments() {
 
       const rows = (Array.isArray(data) ? data : [])
         .filter((doc) => doc && typeof doc === 'object' && doc.archived !== true);
-      const now = new Date().toISOString();
-
-      await Promise.all(rows.map(async (doc) => {
-        try {
-          const match = validateDocumentFile(doc.document_type, doc.file_name);
-          if (!match.ok && doc.status !== 'rejected') {
-            await supabase
-              .from('documents')
-              .update({
-                status: 'rejected',
-                reviewed_at: now,
-                admin_comments: match.reason,
-              })
-              .eq('id', doc.id);
-            doc.status = 'rejected';
-            doc.admin_comments = match.reason;
-          }
-        } catch (validationError) {
-          console.error('Document validation skipped:', validationError);
-        }
-      }));
-
+      // Loading a page must not reject documents or write review decisions.
       setDocuments(rows);
     } catch (error: any) {
       console.error('Error fetching documents:', error);
@@ -296,7 +275,7 @@ export function StudentDocuments() {
     }
 
     const match = validateDocumentFile(documentType, file.name, file.type);
-    if (!match.ok) {
+    if (match.ok === false) {
       toast({
         title: 'Wrong document',
         description: match.reason,

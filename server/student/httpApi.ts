@@ -1,8 +1,9 @@
+import { isPublicMediaPath, allowedPublicMediaType } from "../../src/shared/publicMedia";
 import type { IncomingMessage, ServerResponse } from "http";
 import {
+  getPool,
   deleteStorageFiles,
   ensureSchema,
-  insertAuthUser,
   mutateAppState,
   pingPostgres,
   readAppState,
@@ -23,10 +24,14 @@ import {
   signInUser,
   signUpUser,
   updatePasswordForToken,
+  requestPasswordReset,
+  resetPasswordWithToken,
 } from "./studentAuth";
 import { handleWhatsAppRequest, isWhatsAppConfigured, isWhatsAppPath } from "./whatsapp";
+import { rowMatches } from "./postgres";
+import { canUseFile, checkMutation, rowsForFilters, viewerFromRequest, visibleRows } from "./dataPolicy";
 
-const API_PATHS = new Set(["/__local_db", "/__db_health", "/__auth", "/__session", "/__storage"]);
+const API_PATHS = new Set(["/__local_db", "/__db_health", "/__auth", "/__session", "/__storage", "/__public_media"]);
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 export function isApiPath(pathname: string) {
@@ -133,6 +138,21 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
   }
 
   try {
+    if (url === "/__public_media" && req.method === "GET") {
+      const path = parsed.searchParams.get("path") || "";
+      if (!isPublicMediaPath(path)) { sendJson(res, 404, { error: "Media not found." }); return; }
+      const dataUrl = await readStorageFile(path);
+      const match = dataUrl?.match(/^data:(image\/(?:png|jpeg|gif|webp|avif)|video\/(?:mp4|webm)|audio\/(?:mpeg|ogg|mp4)|application\/pdf);base64,([a-zA-Z0-9+/=\s]+)$/);
+      if (!match) { sendJson(res, 404, { error: "Media not found or unsupported format." }); return; }
+      res.statusCode = 200;
+      res.setHeader("Content-Type", match[1]);
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+      res.setHeader("Cache-Control", "public, max-age=3600");
+      res.end(Buffer.from(match[2], "base64"));
+      return;
+    }
+
     if (url === "/__db_health") {
       await ensureSchema();
       const info = await pingPostgres();
@@ -191,16 +211,23 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
         sendJson(res, 200, { ok: true, session: null });
         return;
       }
+      if (body.action === "reset_request") {
+        const result = await requestPasswordReset(body.email, String(req.headers.host || ""));
+        sendJson(res, result.error ? (result.status || 400) : 200, result.error ? { error: result.error } : { ok: true });
+        return;
+      }
+      if (body.action === "reset_confirm") {
+        const result = await resetPasswordWithToken(body.reset_token, body.password);
+        sendJson(res, result.error ? (result.status || 400) : 200, result.error ? { error: result.error } : { ok: true });
+        return;
+      }
       if (body.action === "password") {
         const result = await updatePasswordForToken(body.token || readBearerToken(req), body.password);
         sendJson(res, result.error ? (result.status || 400) : 200, result.error ? { error: result.error } : { user: result.user });
         return;
       }
-      if (body.action === "insert" && body.user) {
-        await insertAuthUser(body.user);
-        sendJson(res, 200, { ok: true });
-        return;
-      }
+      // (A raw "insert auth user" action used to be here, open to anyone.
+      // Accounts are created only through signup or Admin -> Users now.)
       sendJson(res, 400, { error: "Unknown auth action" });
       return;
     }
@@ -211,7 +238,24 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
     }
 
     if (url === "/__storage" && req.method === "GET") {
+      if (parsed.searchParams.get("action") === "list") {
+        const viewer = await viewerFromRequest(req);
+        if (!viewer) { sendJson(res, 401, { error: "Sign in required." }); return; }
+        const requested = parsed.searchParams.get("prefix") || "";
+        const prefix = viewer.admin ? requested : `${viewer.userId}/${requested}`;
+        const { rows } = await getPool().query(
+          "SELECT path, length(data_url) AS encoded_size FROM app_storage WHERE starts_with(path, $1) ORDER BY path LIMIT 200",
+          [prefix],
+        );
+        sendJson(res, 200, { files: rows.map((row) => ({ name: row.path, created_at: null, metadata: { size: Math.floor(Number(row.encoded_size) * 3 / 4) } })) });
+        return;
+      }
+
       const filePath = parsed.searchParams.get("path") || "";
+      if (!(await canUseFile(await viewerFromRequest(req), filePath, "read"))) {
+        sendJson(res, 403, { error: "You don't have access to this file." });
+        return;
+      }
       const dataUrl = await readStorageFile(filePath);
       if (!dataUrl) {
         sendJson(res, 404, { error: "File not found" });
@@ -223,8 +267,16 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 
     if (url === "/__storage" && req.method === "PUT") {
       const contentType = String(req.headers["content-type"] || "");
+      const viewer = await viewerFromRequest(req);
       if (contentType.includes("application/json")) {
         const body = JSON.parse((await readBody(req)) || "{}");
+        if (!(await canUseFile(viewer, String(body.path || ""), "write"))) {
+          sendJson(res, 403, { error: "You can only upload to your own folder." });
+          return;
+        }
+        if (isPublicMediaPath(String(body.path || "")) && !allowedPublicMediaType(String(body.dataUrl || "").match(/^data:([^;]+);base64,/)?.[1] || "")) {
+          sendJson(res, 415, { error: "Unsupported public media format. Use PNG, JPEG, WebP, GIF, AVIF, MP4, WebM, audio or PDF." }); return;
+        }
         await writeStorageFile(body.path, body.dataUrl);
         sendJson(res, 200, { ok: true, path: body.path });
         return;
@@ -235,9 +287,16 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
         sendJson(res, 400, { error: "path query parameter is required" });
         return;
       }
+      if (!(await canUseFile(viewer, filePath, "write"))) {
+        sendJson(res, 403, { error: "You can only upload to your own folder." });
+        return;
+      }
 
       const buffer = await readRawBody(req);
       const mime = contentType.split(";")[0]?.trim() || "application/octet-stream";
+      if (isPublicMediaPath(filePath) && !allowedPublicMediaType(mime)) {
+        sendJson(res, 415, { error: "Unsupported public media format." }); return;
+      }
       const dataUrl = `data:${mime};base64,${buffer.toString("base64")}`;
       await writeStorageFile(filePath, dataUrl);
       sendJson(res, 200, { ok: true, path: filePath });
@@ -246,29 +305,78 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 
     if (url === "/__storage" && req.method === "DELETE") {
       const body = JSON.parse((await readBody(req)) || "{}");
-      await deleteStorageFiles(body.paths || []);
+      const viewer = await viewerFromRequest(req);
+      const paths = (Array.isArray(body.paths) ? body.paths : []).map(String);
+      for (const p of paths) {
+        if (!(await canUseFile(viewer, p, "write"))) {
+          sendJson(res, 403, { error: "You can only delete your own files." });
+          return;
+        }
+      }
+      await deleteStorageFiles(paths);
       sendJson(res, 200, { ok: true });
       return;
     }
 
     if (url === "/__local_db" && req.method === "GET") {
       await ensureSchema();
+      const viewer = await viewerFromRequest(req);
       const table = parsed.searchParams.get("table") || undefined;
+      if (!table) {
+        // The whole database in one response (every table, every email):
+        // admins only. The portal itself never asks for it.
+        if (!viewer?.admin) {
+          sendJson(res, 403, { error: "Not allowed." });
+          return;
+        }
+        sendJson(res, 200, await readAppState({ includeStorage: false }));
+        return;
+      }
       const state = await readAppState({ table, includeStorage: false });
-      sendJson(res, 200, table ? { rows: state.tables[table] || [] } : state);
+      const rows = await visibleRows(viewer, table, state.tables[table] || []);
+      if (rows === null) {
+        sendJson(res, viewer ? 403 : 401, { error: viewer ? "Not allowed." : "Sign in required." });
+        return;
+      }
+      sendJson(res, 200, { rows });
       return;
     }
 
     if (url === "/__local_db" && req.method === "POST") {
-      const body = await readBody(req);
-      const result = await mutateAppState(JSON.parse(body || "{}"));
+      const mutation = JSON.parse((await readBody(req)) || "{}");
+      const viewer = await viewerFromRequest(req);
+      const table = String(mutation.table || "");
+      let matching: any[] = [];
+      if (mutation.action === "update" || mutation.action === "delete") {
+        matching = await rowsForFilters(table, mutation.filters, rowMatches);
+      } else if (mutation.action === "insert" || mutation.action === "upsert") {
+        // Inserts overwrite on an existing id, and upserts on their conflict
+        // key, so both are checked against the rows they would replace.
+        const key = mutation.action === "upsert" ? String(mutation.upsertConflict || "id") : "id";
+        const wanted = new Set((mutation.rows || []).map((r: any) => String(r?.[key] ?? "")).filter(Boolean));
+        if (wanted.size) {
+          matching = (await rowsForFilters(table, undefined, rowMatches)).filter((r) => wanted.has(String(r[key] ?? "")));
+        }
+      }
+      const denied = await checkMutation(viewer, mutation, matching);
+      if (denied) {
+        sendJson(res, viewer ? 403 : 401, { error: denied });
+        return;
+      }
+      const result = await mutateAppState(mutation);
       sendJson(res, 200, { ok: true, ...result });
       return;
     }
 
     if (url === "/__local_db" && req.method === "PUT") {
-      const body = await readBody(req);
-      await writeAppState(JSON.parse(body || "{}"));
+      // Replaces the entire database. Only a super admin may, and the
+      // portal never does.
+      const viewer = await viewerFromRequest(req);
+      if (viewer?.role !== "super_admin") {
+        sendJson(res, 403, { error: "Not allowed." });
+        return;
+      }
+      await writeAppState(JSON.parse((await readBody(req)) || "{}"));
       sendJson(res, 200, { ok: true });
       return;
     }

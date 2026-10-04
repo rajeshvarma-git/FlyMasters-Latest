@@ -1,3 +1,4 @@
+import { publicMediaPath, isPublicMediaPath } from '@shared/publicMedia';
 import { apiUrl } from '@student/lib/apiBase';
 
 export type Json =
@@ -63,11 +64,18 @@ async function fetchJson(url: string, init?: RequestInit, timeoutMs = 15000) {
     const ctrl = new AbortController();
     const timer = window.setTimeout(() => ctrl.abort(), timeoutMs);
     try {
+      // Every data/file request says who is asking; the server only returns
+      // and changes what that student (or an admin) is allowed to.
+      const token = readBrowserSession()?.access_token;
       const res = await fetch(url, {
         cache: "no-store",
         ...init,
         signal: ctrl.signal,
-        headers: { ...(init?.headers || {}), "Cache-Control": "no-store" },
+        headers: {
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(init?.headers || {}),
+          "Cache-Control": "no-store",
+        },
       });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -498,8 +506,32 @@ export const supabase = {
       authListeners.forEach((fn) => fn("SIGNED_OUT", null));
       return { error: null };
     },
-    async resetPasswordForEmail() {
-      return { data: {}, error: null };
+    async resetPasswordForEmail(email: string, _options?: { redirectTo?: string }) {
+      // Emails a single-use reset link (server/student/studentAuth.ts). An
+      // error here is shown to the student — never a pretend "email sent".
+      try {
+        await fetchJson(apiUrl("/__auth"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "reset_request", email }),
+        });
+        return { data: {}, error: null };
+      } catch (error: any) {
+        return { data: null, error: { message: error?.message || "Could not send the reset email." } };
+      }
+    },
+    /** Sets a new password from an emailed reset link. */
+    async resetPasswordWithToken(resetToken: string, password: string) {
+      try {
+        await fetchJson(apiUrl("/__auth"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "reset_confirm", reset_token: resetToken, password }),
+        });
+        return { error: null };
+      } catch (error: any) {
+        return { error: { message: error?.message || "Could not reset the password." } };
+      }
     },
     async updateUser({ password }: { password?: string }) {
       const local = readBrowserSession();
@@ -524,16 +556,23 @@ export const supabase = {
       return {
         data: {
           subscription: {
-            unsubscribe: () => authListeners.delete(callback),
+            unsubscribe: () => { authListeners.delete(callback); },
           },
         },
       };
     },
   },
   storage: {
-    from(_bucket: string) {
+    from(bucket: string) {
       return {
-        async upload(filePath: string, file: File | Blob) {
+        async list(prefix = "", _options?: { sortBy?: { column: string; order: string } }) {
+          try {
+            const payload = await fetchJson(`${apiUrl("/__storage")}?action=list&prefix=${encodeURIComponent(publicMediaPath(bucket, prefix))}`);
+            return { data: payload.files as { name: string; created_at: string | null; metadata: { size: number } }[], error: null };
+          } catch (error: any) { return { data: [], error: { message: error.message || "Could not list files." } }; }
+        },
+        async upload(filePath: string, file: File | Blob, _options?: { cacheControl?: string; upsert?: boolean; contentType?: string }) {
+          filePath = publicMediaPath(bucket, filePath);
           const mime = file.type || "application/octet-stream";
           const uploadUrl = `${apiUrl("/__storage")}?path=${encodeURIComponent(filePath)}`;
           await fetchJson(uploadUrl, {
@@ -544,6 +583,7 @@ export const supabase = {
           return { data: { path: filePath }, error: null };
         },
         async download(filePath: string) {
+          filePath = publicMediaPath(bucket, filePath);
           try {
             const payload = await fetchJson(`${apiUrl('/__storage')}?path=${encodeURIComponent(filePath)}`, undefined, 30000);
             if (!payload.dataUrl) return { data: null, error: { message: "File not found" } };
@@ -556,25 +596,65 @@ export const supabase = {
           await fetchJson(apiUrl("/__storage"), {
             method: "DELETE",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ paths }),
+            body: JSON.stringify({ paths: paths.map((path) => publicMediaPath(bucket, path)) }),
           });
           return { data: paths, error: null };
         },
         getPublicUrl(filePath: string) {
-          return { data: { publicUrl: filePath } };
+          const path = publicMediaPath(bucket, filePath);
+          return { data: { publicUrl: isPublicMediaPath(path) ? `${apiUrl("/__public_media")}?path=${encodeURIComponent(path)}` : filePath } };
         },
       };
     },
   },
   channel(_name: string) {
+    // This backend has no Supabase websocket. Poll authorised rows rather
+    // than silently pretending that a realtime subscription succeeded.
+    const subscriptions: { table: string; event?: string; filter?: string; callback: (payload: any) => void; previous?: Map<string, any> }[] = [];
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let busy = false;
+    let active = false;
+    const poll = async () => {
+      if (!active || busy || document.visibilityState === "hidden") return;
+      busy = true;
+      try {
+        for (const sub of subscriptions) {
+          const payload = await fetchJson(`${apiUrl("/__local_db")}?table=${encodeURIComponent(sub.table)}`);
+          if (!active) return;
+          let rows: any[] = payload.rows || [];
+          if (sub.filter) {
+            const match = sub.filter.match(/^([^=]+)=eq\.(.*)$/);
+            if (match) rows = rows.filter((row) => String(row[match[1]]) === match[2]);
+          }
+          const current = new Map<string, any>(rows.map((row) => [String(row.id), row]));
+          if (sub.previous) {
+            for (const [id, row] of current) {
+              const old = sub.previous.get(id);
+              const eventType = old ? "UPDATE" : "INSERT";
+              if ((!old || JSON.stringify(old) !== JSON.stringify(row)) && (!sub.event || sub.event === "*" || sub.event === eventType)) {
+                sub.callback({ eventType, new: row, old: old || {}, table: sub.table });
+              }
+            }
+            for (const [id, row] of sub.previous) {
+              if (!current.has(id) && (!sub.event || sub.event === "*" || sub.event === "DELETE"))
+                sub.callback({ eventType: "DELETE", old: row, new: {}, table: sub.table });
+            }
+          }
+          sub.previous = current;
+        }
+      } catch (error) { console.warn("Notification refresh failed", error); }
+      finally { busy = false; }
+    };
     return {
-      on() {
+      on(_event: string, config: { table: string; event?: string; filter?: string; schema?: string }, callback: (payload: any) => void) {
+        subscriptions.push({ ...config, callback });
         return this;
       },
       subscribe() {
+        if (!active) { active = true; void poll(); timer = setInterval(() => void poll(), 15000); }
         return this;
       },
-      unsubscribe() {},
+      unsubscribe() { active = false; if (timer) clearInterval(timer); },
     };
   },
   removeChannel(channel: { unsubscribe?: () => void }) {
@@ -582,7 +662,7 @@ export const supabase = {
   },
   functions: {
     async invoke(_name: string, _args?: { body?: any }) {
-      return { data: { ok: true }, error: null };
+      return { data: null as { content?: string; subject?: string; variables_used?: string[]; body?: string; variables?: string[] } | null, error: { message: "AI template generation is not configured on this backend." } };
     },
   },
 };

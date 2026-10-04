@@ -129,9 +129,12 @@ export default function ImageUploader({ images, onImagesChange, bucketName, fold
   const handleRemoveImage = async (imageUrl: string, index: number) => {
     try {
       // Extract file path from URL
-      const url = new URL(imageUrl);
+      const url = new URL(imageUrl, window.location.origin);
       const pathParts = url.pathname.split('/');
-      const filePath = pathParts.slice(pathParts.indexOf(bucketName) + 1).join('/');
+      const filePath = url.pathname.endsWith('/__public_media')
+        ? url.searchParams.get('path') || ''
+        : pathParts.slice(pathParts.indexOf(bucketName) + 1).join('/');
+      if (!filePath) throw new Error('Could not resolve image path.');
 
       // Delete both full and thumbnail from storage
       const thumbPath = filePath.replace('-full', '-thumb');

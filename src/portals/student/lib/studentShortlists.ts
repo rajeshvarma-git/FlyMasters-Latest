@@ -6,14 +6,24 @@ export function emailKey(value: unknown) {
     .replace(/[^a-z0-9]/g, "");
 }
 
+// Two addresses are the same person only if they are the same mailbox:
+// exact match, except Gmail ignores dots and "+tags". (Matching on the part
+// before "@" alone used to join different people across domains.)
+export function sameMailbox(value: unknown) {
+  const email = String(value || "").trim().toLowerCase();
+  const at = email.lastIndexOf("@");
+  if (at < 1) return "";
+  let local = email.slice(0, at);
+  let domain = email.slice(at + 1);
+  if (domain === "googlemail.com") domain = "gmail.com";
+  if (domain === "gmail.com") local = local.split("+")[0].replace(/\./g, "");
+  return `${local}@${domain}`;
+}
+
 export function emailsMatch(left: unknown, right: unknown) {
-  const a = String(left || "").trim().toLowerCase();
-  const b = String(right || "").trim().toLowerCase();
-  if (!a || !b) return false;
-  if (a === b) return true;
-  const keyA = emailKey(a);
-  const keyB = emailKey(b);
-  return Boolean(keyA && keyA === keyB && keyA.length >= 4);
+  const a = sameMailbox(left);
+  const b = sameMailbox(right);
+  return Boolean(a && b && a === b);
 }
 
 export function collectStudentShortlistKeys(

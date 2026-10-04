@@ -55,14 +55,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const boot = async () => {
-      const stored = readStoredUser<AppUser>();
-      if (stored) enter(stored);
+      // The stored user is shared by every staff portal: only a counselor's
+      // is shown here, and only until the server confirms it.
+      const stored = readStoredUser<AppUser & { role?: string }>();
+      const storedOk = Boolean(stored && (!stored.role || stored.role === "counselor"));
+      if (stored && storedOk) enter(stored);
       try {
         const data = await api<{ user: AppUser }>("/me");
         enter(data.user);
         await refreshStore();
-      } catch {
-        if (!stored) {
+      } catch (error) {
+        // Offline: keep the stored counselor. Anything else (not signed in,
+        // not a counselor) shows the sign-in page instead of the portal.
+        const offline = error instanceof Error && /Cannot reach/i.test(error.message);
+        if (!offline || !storedOk) {
           setUser(null);
           setRole(null);
         }

@@ -5,7 +5,7 @@ import { cn } from '@student/lib/utils';
 import { MobileHomeIndicator } from './MobileHomeIndicator';
 
 export interface MobileNavItem {
-  icon: React.ComponentType<{ className?: string }>;
+  icon: React.ComponentType<{ className?: string; strokeWidth?: string | number }>;
   label: string;
   path: string;
   end?: boolean;
@@ -137,7 +137,7 @@ export function MobileMoreSection({ children }: { children: ReactNode }) {
 }
 
 interface MobileMoreLinkProps {
-  icon: React.ComponentType<{ className?: string }>;
+  icon: React.ComponentType<{ className?: string; strokeWidth?: string | number }>;
   label: string;
   to: string;
   onClick?: () => void;
@@ -168,7 +168,7 @@ export function MobileMoreLink({ icon: Icon, label, to, onClick, badge, destruct
 }
 
 interface MobileMoreButtonProps {
-  icon: React.ComponentType<{ className?: string }>;
+  icon: React.ComponentType<{ className?: string; strokeWidth?: string | number }>;
   label: string;
   onClick: () => void;
   destructive?: boolean;

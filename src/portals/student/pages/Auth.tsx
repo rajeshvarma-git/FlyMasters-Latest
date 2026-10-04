@@ -138,7 +138,7 @@ const Auth = () => {
     if (error) {
       setError(error.message);
     } else {
-      setSuccess('Password reset email sent! Please check your inbox.');
+      setSuccess('If that email has an account, a reset link is on its way. It works once and expires in 30 minutes — check spam too.');
     }
     setIsLoading(false);
   };
@@ -162,6 +162,21 @@ const Auth = () => {
     if (newPassword.length < 6) {
       setError('Password must be at least 6 characters');
       setIsLoading(false);
+      return;
+    }
+
+    // Coming from an emailed reset link: the link itself proves who it is.
+    const resetToken = new URLSearchParams(window.location.search).get('reset_token');
+    if (resetToken) {
+      const { error: resetError } = await (supabase.auth as any).resetPasswordWithToken(resetToken, newPassword);
+      setIsLoading(false);
+      if (resetError) {
+        setError(resetError.message);
+      } else {
+        window.history.replaceState({}, document.title, '/auth');
+        setIsRecoveryMode(false);
+        setSuccess('Password changed. Sign in with your new password.');
+      }
       return;
     }
 

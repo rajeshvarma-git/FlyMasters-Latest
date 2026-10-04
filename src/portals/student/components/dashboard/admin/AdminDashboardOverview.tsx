@@ -31,13 +31,12 @@ export function AdminDashboardOverview() {
   useEffect(() => {
     const fetchSystemStats = async () => {
       try {
-        // Use the database function for better performance
-        const { data: functionData, error: functionError } = await supabase
-          .rpc('get_lead_stats');
-
-        if (functionError) {
-          console.error('Function error:', functionError);
-        }
+        const [{ count: totalLeads, error: leadError }, { count: totalUsers }, { count: totalCounselors }] = await Promise.all([
+          supabase.from('student_leads').select('*', { count: 'exact', head: true }),
+          supabase.from('profiles').select('*', { count: 'exact', head: true }),
+          supabase.from('counselors').select('*', { count: 'exact', head: true }),
+        ]);
+        if (leadError) throw leadError;
 
         // Fetch additional stats
         const [
@@ -53,9 +52,9 @@ export function AdminDashboardOverview() {
         ]);
 
         setStats({
-          totalLeads: functionData?.[0]?.total_leads || 0,
-          totalUsers: functionData?.[0]?.total_profiles || 0,
-          totalCounselors: functionData?.[0]?.total_counselors || 0,
+          totalLeads: totalLeads || 0,
+          totalUsers: totalUsers || 0,
+          totalCounselors: totalCounselors || 0,
           totalDocuments: documentsCount || 0,
           totalChatSessions: chatCount || 0,
           recentActivity: recentActivityCount || 0,

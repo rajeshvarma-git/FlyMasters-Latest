@@ -448,7 +448,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { Flame, Mail, Phone, PhoneCall, Shield } from "lucide-react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useAdminStore } from "@admin/lib/store";
 import { counselorLabel, displayName, formatWhen, isConvertedStudent, isWhatsAppLead, leadSourceLabel, telecallerLabel } from "@admin/lib/utils";
 import { Badge } from "@admin/components/ui/Badge";
@@ -577,7 +577,16 @@ export default function Leads() {
               <div>
                 <p className="flex items-center gap-2 text-lg font-semibold">
                   {lead.lead_status === "hot" && <Flame className="h-4 w-4 text-orange-500" />}
-                  {displayName(lead.first_name, lead.last_name, lead.email)}
+                  <Link to={`/leads/${lead.id}`} className="hover:text-sky-600 hover:underline">
+                    {displayName(lead.first_name, lead.last_name, lead.email)}
+                  </Link>
+                  <Link
+                    to={`/student-chat?lead=${encodeURIComponent(lead.id)}`}
+                    className="rounded-full border border-sky-200 px-2 py-0.5 text-xs font-medium text-sky-700 hover:bg-sky-50"
+                    title="The student's AI, telecaller, counselor and WhatsApp conversation with their answers"
+                  >
+                    Conversation
+                  </Link>
                 </p>
                 <div className="mt-1 flex flex-wrap gap-3 text-sm text-slate-500">
                   <span className="flex items-center gap-1"><Mail className="h-3 w-3" />{lead.email}</span>

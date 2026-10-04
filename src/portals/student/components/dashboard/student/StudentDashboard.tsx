@@ -92,6 +92,7 @@ function nextStep(rec: MyRecommendations | null, counts: Counts | null): Step | 
 function UniversityCard({ uni, onToggle }: { uni: RecommendedUniversity; onToggle: () => void }) {
   return (
     <div className="flex flex-col rounded-xl border border-border/60 bg-card p-4 shadow-sm">
+      {uni.imageUrl && <img src={uni.imageUrl} alt={`${uni.name} image`} loading="lazy" className="mb-3 h-32 w-full rounded-lg bg-muted object-contain" onError={(event) => { event.currentTarget.hidden = true; }} />}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <p className="font-semibold leading-snug">{uni.name}</p>
@@ -116,6 +117,7 @@ function UniversityCard({ uni, onToggle }: { uni: RecommendedUniversity; onToggl
           <GraduationCap className="h-3.5 w-3.5 shrink-0 text-primary" />
           <span className="text-foreground">{uni.programs[0]}</span> · {uni.duration}
         </p>
+        <p className="text-foreground">Tuition: {uni.tuitionFee}</p>
         <p className="flex items-center gap-1.5">
           <Plane className="h-3.5 w-3.5 shrink-0 text-primary" /> {uni.postStudyVisa}
         </p>
@@ -195,7 +197,6 @@ export function StudentDashboard() {
         known.country && { label: 'Destination', value: known.country },
         known.qualification && { label: 'Level', value: known.qualification },
         known.field && { label: 'Field', value: known.field },
-        known.budget && { label: 'Budget', value: known.budget },
       ].filter(Boolean) as { label: string; value: string }[]
     : [];
   const unis = rec?.universities || [];
@@ -295,6 +296,19 @@ export function StudentDashboard() {
             ))}
           </div>
         )}
+      </section>
+
+      <section className="rounded-xl border border-border/60 bg-card p-4 sm:p-5">
+        <h2 className="font-semibold">Study costs</h2>
+        <p className="mt-1 text-sm text-muted-foreground">Confirm these costs for your selected course and city before applying.</p>
+        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">
+          {['Course tuition', 'City living and housing', 'Application and visa fees', 'Health insurance', 'Travel', 'Scholarships'].map((label) => (
+            <div key={label} className="rounded-lg bg-muted/50 p-3 text-sm">
+              <p className="font-medium">{label}</p><p className="mt-1 text-xs text-muted-foreground">Awaiting verified details</p>
+            </div>
+          ))}
+        </div>
+        <Link to="/student/messages" className="mt-3 inline-flex text-sm font-medium text-primary hover:underline">Ask your advisor for a cost breakdown</Link>
       </section>
 
       {/* 4. Counters */}

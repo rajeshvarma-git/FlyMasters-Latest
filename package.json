@@ -16,7 +16,8 @@
     "start:prod": "NODE_ENV=production tsx server/index.mjs",
     "migrate": "tsx -e \"import('./server/lib/migrate.mjs').then(m=>m.migrate()).then(n=>{console.log('migrations applied:',n);process.exit(0)})\"",
     "preview": "vite preview",
-    "typecheck:staff": "tsc -p tsconfig.json --noEmit 2>&1 | grep -v \"src/portals/student/\" || true"
+    "typecheck:staff": "npm run typecheck",
+    "test": "node --import tsx --test tests/*.test.*"
   },
   "dependencies": {
     "@capacitor/app": "^7.1.2",

@@ -156,6 +156,12 @@ export async function anySession(req, res, next) {
     if (new Date(row.expires_at).getTime() <= Date.now()) {
       return res.status(401).json({ error: "Session expired. Sign in again." });
     }
+    const disabled = await pool.query(
+      `SELECT 1 FROM user_roles WHERE user_id = $1 AND is_active = false
+       UNION ALL SELECT 1 FROM app_records WHERE table_name = 'user_roles' AND data->>'user_id' = $1 AND data->>'is_active' = 'false' LIMIT 1`,
+      [String(row.user_id)],
+    ).catch(() => ({ rows: [] }));
+    if (disabled.rows.length) return res.status(403).json({ error: "Account is disabled." });
     req.user = {
       id: String(row.user_id),
       email: row.email,

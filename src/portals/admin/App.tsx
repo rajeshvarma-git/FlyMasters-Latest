@@ -1,4 +1,6 @@
 import { Component, type ReactNode } from "react";
+import { RequireAuth } from "@admin/components/RequireAuth";
+import CaseInbox from "@shared/components/CaseInbox";
 import RedirectToStaffSignIn from "@shared/RedirectToStaffSignIn";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { AuthProvider } from "@admin/context/AuthContext";
@@ -82,7 +84,11 @@ export default function App() {
             <Route path="/auth" element={<RedirectToStaffSignIn />} />
             <Route
               path="/"
-              element={<AdminLayout />}
+              element={
+                <RequireAuth>
+                  <AdminLayout />
+                </RequireAuth>
+              }
             >
               <Route index element={<Dashboard />} />
               <Route path="alerts" element={<LeadAlerts />} />
@@ -114,6 +120,7 @@ export default function App() {
               {/* CRM 2.7 — templates, automation, supervision */}
               <Route path="templates" element={<MessageTemplates />} />
               <Route path="knowledge" element={<KnowledgeBase />} />
+              <Route path="student-chat" element={<CaseInbox title="Student chats" />} />
               <Route path="automation" element={<Automation />} />
               <Route path="comms-log" element={<CommsLog />} />
               <Route path="supervision" element={<ChatSupervision />} />

@@ -3,7 +3,8 @@ import type { IncomingMessage, ServerResponse } from "http";
 import jwt from "jsonwebtoken";
 import { getPool, mutateAppState, readAppState } from "./postgres";
 import { getSessionByToken, readBearerToken, type PublicUser } from "./studentAuth";
-import { JWT_SECRET } from "../lib/env.mjs";
+import { deliveryStatusPatch, whatsappWindowOpen, latestWhatsAppInbound } from "../lib/waDelivery.mjs";
+import { JWT_SECRET, IS_PRODUCTION } from "../lib/env.mjs";
 
 const CODE_TTL_MS = 10 * 60 * 1000;
 const MAX_VERIFY_ATTEMPTS = 5;
@@ -194,7 +195,8 @@ async function findLeadForUserOrPhone(userId?: string | null, phone?: string | n
   }
   if (phone) {
     const byPhone = leads.find(
-      (lead) => phonesMatch(lead.whatsapp_number, phone) || phonesMatch(lead.phone, phone)
+      (lead) => (!lead.user_id || lead.whatsapp_verified === true) &&
+        (phonesMatch(lead.whatsapp_number, phone) || phonesMatch(lead.phone, phone))
     );
     if (byPhone) return byPhone;
   }
@@ -209,7 +211,7 @@ async function findProfileForUserOrPhone(userId?: string | null, phone?: string 
   }
   if (phone) {
     const byPhone = profiles.find(
-      (profile) => phonesMatch(profile.whatsapp_number, phone) || phonesMatch(profile.phone, phone)
+      (profile) => profile.whatsapp_verified === true && phonesMatch(profile.whatsapp_number, phone)
     );
     if (byPhone) return byPhone;
   }
@@ -224,6 +226,7 @@ async function graphPost(path: string, payload: Record<string, any>) {
   const token = getAccessToken();
   const response = await fetch(graphUrl(path), {
     method: "POST",
+    signal: AbortSignal.timeout(10000),
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
@@ -612,7 +615,10 @@ async function handleStatus(_req: IncomingMessage, res: ServerResponse) {
     ok: true,
     whatsappApiConfigured: configured,
     credentialsValid: configured,
-    webhookReady: Boolean(getVerifyToken()),
+    // Verifying the URL needs the verify token; accepting messages in
+    // production also needs the app secret (signature check).
+    webhookReady: Boolean(getVerifyToken()) && (Boolean(getAppSecret()) || !IS_PRODUCTION),
+    appSecretSet: Boolean(getAppSecret()),
     credentialError: configured ? null : "WHATSAPP_API_KEY/WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID are not set.",
     displayPhone: null,
   });
@@ -787,12 +793,7 @@ async function handleGetMessages(req: IncomingMessage, res: ServerResponse, conv
   const messages = (await loadTable("whatsapp_messages"))
     .filter((row) => String(row.conversation_id) === String(conversationId))
     .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
-  const lastInbound = messages
-    .filter((row) => row.direction === "inbound")
-    .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))[0];
-  const windowOpen = Boolean(
-    lastInbound?.created_at && Date.now() - new Date(lastInbound.created_at).getTime() < 24 * 3600 * 1000
-  );
+  const windowOpen = whatsappWindowOpen(latestWhatsAppInbound(messages, conversationId));
   sendJson(res, 200, {
     messages,
     windowStatus: {
@@ -819,6 +820,12 @@ async function handleSendReply(req: IncomingMessage, res: ServerResponse) {
     sendJson(res, 404, { error: "Conversation not found." });
     return;
   }
+
+  const lastInbound = latestWhatsAppInbound(await loadTable("whatsapp_messages"), conversationId);
+  if (!whatsappWindowOpen(lastInbound)) {
+    sendJson(res, 409, { error: "WhatsApp reply window closed. A student message or an approved template is required." });
+    return;
+  }
   // Checked after validating the request/access, not before (like
   // handleSendDocument below), so a bad id or a staff member without access
   // gets the real 404/403 instead of a generic "not configured" — and so
@@ -836,6 +843,7 @@ async function handleSendReply(req: IncomingMessage, res: ServerResponse) {
     direction: "outbound",
     body: text,
     wa_message_id: sent?.messages?.[0]?.id || null,
+    wa_status: "accepted",
     staff_id: user.id,
     is_read: true,
     created_at: now,
@@ -948,6 +956,12 @@ async function handleSendDocument(req: IncomingMessage, res: ServerResponse, con
     sendJson(res, 404, { error: "Conversation not found." });
     return;
   }
+
+  const lastInbound = latestWhatsAppInbound(await loadTable("whatsapp_messages"), conversationId);
+  if (!whatsappWindowOpen(lastInbound)) {
+    sendJson(res, 409, { error: "WhatsApp reply window closed. A student message or an approved template is required." });
+    return;
+  }
   const studentId = access.conversation.user_id || access.lead?.user_id;
   if (!studentId) {
     sendJson(res, 404, { error: "No student found for this conversation." });
@@ -1006,6 +1020,7 @@ async function handleSendDocument(req: IncomingMessage, res: ServerResponse, con
     direction: "outbound",
     body: label,
     wa_message_id: sent?.messages?.[0]?.id || null,
+    wa_status: "accepted",
     staff_id: user.id,
     is_read: true,
     created_at: now,
@@ -1059,7 +1074,7 @@ function verifyWebhookSignature(rawBody: Buffer, headerValue: string | string[] 
   const secret = getAppSecret();
   const provided = Array.isArray(headerValue) ? headerValue[0] : headerValue || "";
   if (!secret) {
-    if (process.env.NODE_ENV === "production") return false;
+    if (IS_PRODUCTION) return false;
     return true;
   }
   const expected = `sha256=${createHmac("sha256", secret).update(rawBody).digest("hex")}`;
@@ -1084,7 +1099,7 @@ async function handleWebhookVerify(parsed: URL, res: ServerResponse) {
   res.end("Forbidden");
 }
 
-async function storeInboundMessage(value: any) {
+async function storeInboundMessage(value: any, logEntry?: { result: string; detail?: string }) {
   const messages = Array.isArray(value?.messages) ? value.messages : [];
   if (!messages.length) return;
   const contacts = Array.isArray(value?.contacts) ? value.contacts : [];
@@ -1092,16 +1107,21 @@ async function storeInboundMessage(value: any) {
 
   for (const message of messages) {
     const waId = String(message.id || "");
-    if (waId && existingMessages.some((row) => row.wa_message_id === waId)) continue;
+    if (waId && existingMessages.some((row) => row.wa_message_id === waId)) {
+      if (logEntry) logEntry.result = "duplicate";
+      continue;
+    }
     const phone = normalizeWhatsAppPhone(message.from || contacts[0]?.wa_id || "");
     if (!phone) continue;
-    const contactName = contacts[0]?.profile?.name || null;
+    const contact = contacts.find((c: any) => String(c.wa_id || "") === String(message.from || ""));
+    const contactName = contact?.profile?.name || null;
     const conversation = await ensureConversation({ phone, contactName });
     const now = message.timestamp
       ? new Date(Number(message.timestamp) * 1000).toISOString()
       : new Date().toISOString();
     const body = extractInboundBody(message) || "";
     const stored = await insertRow("whatsapp_messages", {
+      id: waId ? `wa-in-${createHash("sha256").update(waId).digest("hex")}` : undefined,
       conversation_id: conversation.id,
       direction: "inbound",
       body,
@@ -1110,6 +1130,7 @@ async function storeInboundMessage(value: any) {
       is_read: false,
       created_at: now,
     });
+    if (stored) existingMessages.push(stored);
     await updateRow("whatsapp_conversations", conversation.id, {
       last_message_at: now,
       contact_name: contactName || conversation.contact_name,
@@ -1123,31 +1144,142 @@ async function storeInboundMessage(value: any) {
         .then(({ handleWhatsAppInbound }) =>
           handleWhatsAppInbound({ phone, contactName, body, sourceId: `whatsapp_messages:${stored.id}`, sentAt: now }),
         )
-        .then((leadId) =>
-          leadId && !conversation.lead_id ? updateRow("whatsapp_conversations", conversation.id, { lead_id: leadId }) : null,
-        )
-        .catch((error: any) => console.error("[whatsapp] case chat handling failed:", error?.message || error));
+        .then((outcome: any) => {
+          if (logEntry) {
+            logEntry.result = outcome?.leadId ? "answered" : "skipped";
+            logEntry.detail = outcome?.summary || "";
+          }
+          return outcome?.leadId && !conversation.lead_id
+            ? updateRow("whatsapp_conversations", conversation.id, { lead_id: outcome.leadId })
+            : null;
+        })
+        .catch((error: any) => {
+          console.error("[whatsapp] case chat handling failed:", error?.message || error);
+          if (logEntry) {
+            logEntry.result = "error";
+            logEntry.detail = String(error?.message || error).slice(0, 200);
+          }
+        });
     }
   }
 }
 
+// What the last webhook calls did — the admin WhatsApp page shows this so
+// "I messaged and got no reply" can be traced without server logs.
+type WebhookLogEntry = { at: string; result: string; messages: number; from?: string; detail?: string };
+const webhookLog: WebhookLogEntry[] = [];
+function logWebhook(entry: Omit<WebhookLogEntry, "at">) {
+  const row = { at: new Date().toISOString(), ...entry };
+  webhookLog.unshift(row);
+  webhookLog.length = Math.min(webhookLog.length, 30);
+  return row;
+}
+
 async function handleWebhookIncoming(req: IncomingMessage, res: ServerResponse) {
   const raw = await readRawBody(req);
+  let payload: any = {};
+  try {
+    payload = JSON.parse(raw.toString("utf8") || "{}");
+  } catch {
+    payload = {};
+  }
+  const values = (Array.isArray(payload.entry) ? payload.entry : [])
+    .flatMap((entry: any) => (Array.isArray(entry.changes) ? entry.changes : []))
+    .filter((change: any) => !change?.field || change.field === "messages")
+    .map((change: any) => change?.value || {});
+  const inbound = values.flatMap((v: any) => (Array.isArray(v.messages) ? v.messages : []));
+  const from = inbound[0]?.from ? `…${String(inbound[0].from).slice(-4)}` : undefined;
   if (!verifyWebhookSignature(raw, req.headers["x-hub-signature-256"])) {
+    logWebhook({
+      result: "rejected_signature",
+      messages: inbound.length,
+      from,
+      detail: getAppSecret()
+        ? "Signature did not match WHATSAPP_APP_SECRET — check it is the App Secret of the same Meta app."
+        : "WHATSAPP_APP_SECRET is not set on the server, so every webhook is rejected in production.",
+    });
     sendJson(res, 403, { error: "Invalid webhook signature." });
     return;
   }
-  const payload = JSON.parse(raw.toString("utf8") || "{}");
-  const entries = Array.isArray(payload.entry) ? payload.entry : [];
-  for (const entry of entries) {
-    const changes = Array.isArray(entry.changes) ? entry.changes : [];
-    for (const change of changes) {
-      if (change?.field && change.field !== "messages") continue;
-      await storeInboundMessage(change?.value || {});
+  const entry = logWebhook({
+    result: inbound.length ? "received" : "status_update",
+    messages: inbound.length,
+    from,
+  });
+  try {
+    for (const value of values) {
+      await storeDeliveryStatuses(value);
+      await storeInboundMessage(value, entry);
     }
+  } catch (error: any) {
+    entry.result = "error";
+    entry.detail = String(error?.message || error).slice(0, 200);
+    sendJson(res, 503, { error: "Webhook persistence failed. Retry required." });
+    return;
   }
   sendJson(res, 200, { ok: true });
 }
+
+async function storeDeliveryStatuses(value: any) {
+  const statuses = Array.isArray(value?.statuses) ? value.statuses : [];
+  for (const event of statuses) {
+    if (!event?.id) continue;
+    const pool = getPool();
+    // Serialise receipts for this message, including out-of-order webhook calls.
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [`wa-status:${event.id}`]);
+      const { rows } = await client.query(
+        "SELECT id, table_name, data FROM app_records WHERE table_name IN ('case_messages', 'whatsapp_messages') AND data->>'wa_message_id' = $1 FOR UPDATE",
+        [String(event.id)],
+      );
+      for (const row of rows) {
+        const patch = deliveryStatusPatch(row.data, event);
+        if (patch) await client.query(
+          "UPDATE app_records SET data = data || $1::jsonb WHERE table_name = $2 AND id = $3",
+          [JSON.stringify(patch), row.table_name, row.id],
+        );
+      }
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally { client.release(); }
+  }
+}
+
+async function handleDiagnostics(req: IncomingMessage, res: ServerResponse) {
+  const auth = await requireStaff(req);
+  if (auth.role !== "admin" && auth.role !== "super_admin") {
+    sendJson(res, 403, { error: "Admins only." });
+    return;
+  }
+  const { recentSends } = await import("../lib/waSend.mjs");
+  const config = {
+    access_token: Boolean(getAccessToken()),
+    phone_number_id: Boolean(getPhoneNumberId()),
+    verify_token: Boolean(getVerifyToken()),
+    app_secret: Boolean(getAppSecret()),
+    production: process.env.NODE_ENV === "production",
+    graph_version: getGraphVersion(),
+  };
+  const problems: string[] = [];
+  if (!config.access_token || !config.phone_number_id) problems.push("WHATSAPP_API_KEY (or WHATSAPP_ACCESS_TOKEN) and WHATSAPP_PHONE_NUMBER_ID must both be set, or no reply can be sent.");
+  if (!config.verify_token) problems.push("WHATSAPP_WEBHOOK_VERIFY_TOKEN is not set, so Meta cannot verify the webhook URL.");
+  if (!config.app_secret && config.production) problems.push("WHATSAPP_APP_SECRET is not set: in production every incoming message is rejected.");
+  if (!webhookLog.length) problems.push("No webhook call has reached this server since it last started. Check the Callback URL in Meta (WhatsApp → Configuration) points to /api/whatsapp/webhook on this site and that 'messages' is subscribed.");
+  sendJson(res, 200, {
+    config,
+    problems,
+    webhook_url: "/api/whatsapp/webhook",
+    recent_webhooks: webhookLog,
+    recent_sends: recentSends(),
+    since: SERVER_STARTED_AT,
+  });
+}
+
+const SERVER_STARTED_AT = new Date().toISOString();
 
 export async function handleWhatsAppRequest(req: IncomingMessage, res: ServerResponse) {
   const parsed = new URL(req.url || "/", "http://localhost");
@@ -1173,6 +1305,10 @@ export async function handleWhatsAppRequest(req: IncomingMessage, res: ServerRes
     }
     if (url === "/api/whatsapp/verification-status" && method === "GET") {
       await handleVerificationStatus(req, res);
+      return;
+    }
+    if (url === "/api/whatsapp/diagnostics" && method === "GET") {
+      await handleDiagnostics(req, res);
       return;
     }
     if (url === "/api/whatsapp/status" && method === "GET") {

@@ -145,15 +145,24 @@ async function ensureCounselorLogin(authId, passwordPlain) {
   return created.rows[0];
 }
 
+// Two addresses are the same person only if they are the same mailbox:
+// exact match, except Gmail ignores dots and "+tags". (Matching on the part
+// before "@" alone used to join different people across domains.)
+function sameMailbox(value) {
+  const email = String(value || "").trim().toLowerCase();
+  const at = email.lastIndexOf("@");
+  if (at < 1) return "";
+  let local = email.slice(0, at);
+  let domain = email.slice(at + 1);
+  if (domain === "googlemail.com") domain = "gmail.com";
+  if (domain === "gmail.com") local = local.split("+")[0].replace(/\./g, "");
+  return `${local}@${domain}`;
+}
+
 function emailsMatch(left, right) {
-  const a = String(left || "").trim().toLowerCase();
-  const b = String(right || "").trim().toLowerCase();
-  if (!a || !b) return false;
-  if (a === b) return true;
-  const key = (value) => String(value || "").split("@")[0].replace(/[^a-z0-9]/g, "");
-  const leftKey = key(a);
-  const rightKey = key(b);
-  return Boolean(leftKey && leftKey === rightKey && leftKey.length >= 4);
+  const a = sameMailbox(left);
+  const b = sameMailbox(right);
+  return Boolean(a && b && a === b);
 }
 
 function coalesceLeadRow(a, b) {
@@ -1647,15 +1656,40 @@ router.post("/api/auth/telecaller-signup", async (req, res) => {
   }
 });
 
+// Staff sign-in attempt limit: after 8 wrong passwords for one email, or 30
+// from one IP address, within 15 minutes, sign-in waits. A correct password
+// clears that email's count. (In memory: one server instance on Railway.)
+const SIGNIN_WINDOW_MS = 15 * 60 * 1000;
+const signinFailures = new Map();
+function tooManyFailures(key, limit) {
+  const hit = signinFailures.get(key);
+  if (!hit || Date.now() - hit.first > SIGNIN_WINDOW_MS) return false;
+  return hit.count >= limit;
+}
+function recordFailure(key) {
+  const hit = signinFailures.get(key);
+  if (!hit || Date.now() - hit.first > SIGNIN_WINDOW_MS) signinFailures.set(key, { first: Date.now(), count: 1 });
+  else hit.count += 1;
+  if (signinFailures.size > 5000) signinFailures.delete(signinFailures.keys().next().value);
+}
+
 router.post("/api/auth/signin", async (req, res) => {
   try {
     const email = String(req.body.email || "").trim().toLowerCase();
     const password = String(req.body.password || "");
+    const ipKey = `ip:${req.ip || "?"}`;
+    const emailKey = `email:${email}`;
+    if (tooManyFailures(emailKey, 8) || tooManyFailures(ipKey, 30)) {
+      return res.status(429).json({ error: "Too many sign-in attempts. Wait 15 minutes and try again, or ask an admin to reset your password." });
+    }
     const found = await pool.query("SELECT * FROM auth_users WHERE lower(email) = $1", [email]);
     const row = found.rows[0];
     if (!row || !verifyPassword(password, row.password)) {
+      recordFailure(emailKey);
+      recordFailure(ipKey);
       return res.status(401).json({ error: "Wrong email or password." });
     }
+    signinFailures.delete(emailKey);
     if (!String(row.password).startsWith("scrypt:")) {
       const next = hashPassword(password);
       await pool.query("UPDATE auth_users SET password = $2 WHERE id = $1", [row.id, next]);
@@ -2217,7 +2251,7 @@ router.get("/api/system/alerts", auth, (_req, res) => {
 router.post("/api/system/auto-assign", auth, async (_req, res) => {
   try {
     if (!TELECALLER_AUTO_ASSIGN) {
-      return res.status(400).json({ error: "Auto assignment is switched off. Set TELECALLER_AUTO_ASSIGN=true." });
+      return res.status(400).json({ error: "Automatic assignment is disabled. Admin must assign a telecaller." });
     }
     const count = await autoAssignTelecallers();
     res.json({ ok: true, count });
@@ -2498,6 +2532,21 @@ router.post("/api/leads/bulk-assign-telecaller", auth, async (req, res) => {
   res.json({ ok: true, count });
 });
 
+/**
+ * Branch heads share these admin routes but only see their own branches, so a
+ * student's documents/applications are reachable only when that student's
+ * lead is in one of their branches. Admins and super admins see all.
+ */
+async function studentInScope(req, studentUserId) {
+  if (!req.scope || req.scope.allBranches) return true;
+  const allowed = new Set((req.scope.branchIds || []).map(String));
+  const { rows } = await pool.query(
+    "SELECT branch_id, data->>'branch_id' AS json_branch FROM app_records WHERE table_name = 'student_leads' AND (data->>'user_id' = $1 OR id = $1)",
+    [String(studentUserId || "")],
+  ).catch(() => ({ rows: [] }));
+  return rows.some((r) => allowed.has(String(r.branch_id || r.json_branch || "")));
+}
+
 router.patch("/api/documents/:id", auth, async (req, res) => {
   const status = String(req.body.status || "").trim();
   const comments = req.body.comments == null ? undefined : String(req.body.comments);
@@ -2505,9 +2554,12 @@ router.patch("/api/documents/:id", auth, async (req, res) => {
     return res.status(400).json({ error: "Status must be approved or rejected." });
   }
   const now = new Date().toISOString();
-  if (isUuid(req.params.id)) await pool.query("UPDATE documents SET status = $2 WHERE id = $1", [req.params.id, status]).catch(() => {});
   const docs = await jsonTable("documents");
   const found = docs.find((row) => String(row.id) === String(req.params.id));
+  if (found && !(await studentInScope(req, found.user_id))) {
+    return res.status(403).json({ error: "This student is outside your branches." });
+  }
+  if (isUuid(req.params.id)) await pool.query("UPDATE documents SET status = $2 WHERE id = $1", [req.params.id, status]).catch(() => {});
   if (found) {
     await jsonUpsert("documents", {
       ...found,
@@ -2534,6 +2586,7 @@ router.get("/api/documents/:id/file", auth, async (req, res) => {
   const docs = await jsonTable("documents");
   const found = docs.find((row) => String(row.id) === String(req.params.id));
   if (!found?.file_path) return res.status(404).json({ error: "File not found" });
+  if (!(await studentInScope(req, found.user_id))) return res.status(403).json({ error: "This student is outside your branches." });
   const file = await pool.query("SELECT data_url FROM app_storage WHERE path = $1", [found.file_path]);
   if (!file.rows[0]?.data_url) return res.status(404).json({ error: "File not found" });
   res.json({ fileName: found.file_name || "document", dataUrl: file.rows[0].data_url });
@@ -2548,6 +2601,7 @@ router.patch("/api/applications/:id", auth, async (req, res) => {
   const apps = await jsonTable("applications");
   const found = apps.find((row) => String(row.id) === String(req.params.id));
   if (!found) return res.status(404).json({ error: "Application not found" });
+  if (!(await studentInScope(req, found.user_id))) return res.status(403).json({ error: "This student is outside your branches." });
   const now = new Date().toISOString();
   await jsonUpsert("applications", {
     ...found,
@@ -3215,56 +3269,8 @@ router.post("/api/whatsapp/sync-staff", auth, async (_req, res) => {
   }
 });
 
-// Meta WhatsApp Cloud API webhook — GET verifies the callback URL during setup.
-router.get("/api/whatsapp/webhook", (req, res) => {
-  const mode = String(req.query["hub.mode"] || "");
-  const token = String(req.query["hub.verify_token"] || "");
-  const challenge = String(req.query["hub.challenge"] || "");
-
-  if (mode === "subscribe" && WHATSAPP_VERIFY_TOKEN && token === WHATSAPP_VERIFY_TOKEN) {
-    return res.status(200).send(challenge);
-  }
-
-  if (!WHATSAPP_VERIFY_TOKEN) {
-    return res.status(503).json({ error: "WHATSAPP_VERIFY_TOKEN is not configured on the server." });
-  }
-
-  return res.status(403).json({ error: "Webhook verification failed." });
-});
-
-// Meta sends message/status events here after subscription is active.
-router.post("/api/whatsapp/webhook", async (req, res) => {
-  try {
-    const body = req.body || {};
-    if (body.object !== "whatsapp_business_account") {
-      return res.sendStatus(404);
-    }
-
-    for (const entry of body.entry || []) {
-      for (const change of entry.changes || []) {
-        const value = change.value || {};
-        const contacts = value.contacts || [];
-        for (const message of value.messages || []) {
-          if (message.type !== "text") continue;
-          const text = String(message.text?.body || "").trim();
-          if (!text) continue;
-          const contact = contacts.find((row) => String(row.wa_id || "") === String(message.from || ""));
-          await whatsapp.storeInboundMessage({
-            from: message.from,
-            text,
-            waMessageId: message.id,
-            profileName: contact?.profile?.name || "",
-          });
-        }
-      }
-    }
-
-    res.sendStatus(200);
-  } catch (error) {
-    console.error("WhatsApp webhook error:", error);
-    res.sendStatus(500);
-  }
-});
+// WhatsApp webhook ownership is exclusively in server/student/whatsapp.ts.
+// Do not mount an unsigned fallback when the student handler fails.
 
 // (API 404 + SPA fallback moved to server/index.mjs, after all routers mount)
 
@@ -3290,7 +3296,7 @@ const ALERT_TABLE = "lead_alerts";
 const COLD_AFTER_DAYS = Number(process.env.LEAD_COLD_AFTER_DAYS || 2);
 // Telecaller assignment is manual by default — an admin picks who gets each lead.
 // Set TELECALLER_AUTO_ASSIGN=true to hand unowned leads to the least-loaded telecaller.
-const TELECALLER_AUTO_ASSIGN = String(process.env.TELECALLER_AUTO_ASSIGN || "false") === "true";
+const TELECALLER_AUTO_ASSIGN = false; // Admin allocation is mandatory.
 
 const alertStatus = {
   enabled: ALERT_INTERVAL_HOURS > 0,

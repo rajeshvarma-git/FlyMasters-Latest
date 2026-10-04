@@ -137,6 +137,7 @@ export function StudentUniversities() {
     const matchesSearch = !searchTerm ||
       uni.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       uni.country.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (searchTerm.trim().length >= 2 && matchesAnyCountry(uni.country, [searchTerm])) ||
       (uni.city || '').toLowerCase().includes(searchTerm.toLowerCase());
 
     const matchesCountry =

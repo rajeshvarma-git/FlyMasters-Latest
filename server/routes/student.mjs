@@ -24,7 +24,7 @@ try {
   handler = mod.handleApiRequest;
   isApiPath = mod.isApiPath;
 } catch (error) {
-  console.warn("Student API not mounted:", error?.message || error);
+  throw new Error("Student API could not load; refusing to start without its access controls.", { cause: error });
 }
 
 router.use((req, res, next) => {

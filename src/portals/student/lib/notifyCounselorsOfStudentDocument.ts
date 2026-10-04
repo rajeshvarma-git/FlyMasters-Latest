@@ -1,6 +1,6 @@
 import type { User } from '@student/integrations/supabase/client';
 import { supabase } from '@student/integrations/supabase/client';
-import { ensureStudentCounselorLink } from '@student/lib/ensureStudentCounselorLink';
+import { apiUrl } from '@student/lib/apiBase';
 
 export async function notifyCounselorsOfStudentDocument(user: User, documentType: string, fileName: string) {
   return notifyAssignedCounselors(user, {
@@ -15,58 +15,17 @@ export async function notifyAssignedCounselors(
   user: User,
   input: { type: string; title: string; message: string; actionUrl?: string }
 ) {
-  await ensureStudentCounselorLink(user);
-
-  const counselorIds = new Set<string>();
-
-  const { data: lead } = await supabase
-    .from('student_leads')
-    .select('assigned_counselor_id')
-    .eq('user_id', user.id)
-    .maybeSingle();
-
-  if (lead?.assigned_counselor_id) {
-    counselorIds.add(lead.assigned_counselor_id);
+  const { data: { session } } = await supabase.auth.getSession();
+  const response = await fetch(apiUrl('/api/case/me/notifications'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token || ''}` },
+    body: JSON.stringify({ title: input.title, message: input.message }),
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error || 'Could not notify your advisor.');
   }
 
-  if (counselorIds.size === 0) {
-    const { data: counselors } = await supabase
-      .from('counselors')
-      .select('user_id')
-      .eq('is_active', true);
-
-    (counselors || []).forEach((row) => {
-      if (row.user_id) counselorIds.add(row.user_id);
-    });
-  }
-
-  if (counselorIds.size === 0) {
-    const { data: roles } = await supabase
-      .from('user_roles')
-      .select('user_id')
-      .eq('role', 'counselor');
-
-    (roles || []).forEach((row) => {
-      if (row.user_id) counselorIds.add(row.user_id);
-    });
-  }
-
-  const rows = [...counselorIds].map((counselorId) => ({
-    user_id: counselorId,
-    notification_type: input.type,
-    title: input.title,
-    message: input.message,
-    additional_data: {
-      action_url: input.actionUrl || '/counselor',
-      student_id: user.id,
-    },
-    is_read: false,
-    created_at: new Date().toISOString(),
-  }));
-
-  if (rows.length > 0) {
-    await supabase.from('document_notifications').insert(rows);
-  }
 }
 
 function studentName(user: User) {

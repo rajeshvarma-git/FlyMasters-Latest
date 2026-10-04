@@ -10,6 +10,7 @@ import { Card } from "@admin/components/ui/Card";
 import { Button } from "@admin/components/ui/Button";
 import type { Lead } from "@admin/lib/types";
 import TemplatePicker from "@shared/components/TemplatePicker";
+import WhatsAppHealth from "@admin/admin/WhatsAppHealth";
 
 function leadLabel(lead: Lead | null | undefined, phone?: string) {
   if (!lead) return phone ? `+${phone.slice(-10)}` : "Unknown contact";
@@ -101,6 +102,7 @@ export default function WhatsAppChat() {
 
   return (
     <div>
+      {isAdmin && <WhatsAppHealth />}
       <div className="mb-6 flex items-center gap-3">
         <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-100">
           <MessageCircle className="h-6 w-6 text-emerald-600" />

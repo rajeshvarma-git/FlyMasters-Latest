@@ -12,6 +12,7 @@ export interface UniversityRecommendation {
   postStudyVisa: string;
   ranking: string;
   website?: string;
+  imageUrl?: string | null;
 }
 
 const COUNTRY_ALIASES: Record<string, string> = {
@@ -34,6 +35,21 @@ const COUNTRY_ALIASES: Record<string, string> = {
   france: 'France',
   netherlands: 'Netherlands',
   holland: 'Netherlands',
+  'the netherlands': 'Netherlands',
+  'u.s.': 'USA',
+  'u.s.a.': 'USA',
+  'u.s.a': 'USA',
+  'united states (usa)': 'USA',
+  'great britain': 'UK',
+  scotland: 'UK',
+  wales: 'UK',
+  'northern ireland': 'UK',
+  'u.k.': 'UK',
+  uae: 'UAE',
+  'united arab emirates': 'UAE',
+  'south korea': 'South Korea',
+  korea: 'South Korea',
+  'republic of korea': 'South Korea',
 };
 
 export function normalizeCountry(input: string | undefined): string {
@@ -50,28 +66,18 @@ export function inferStudyLevel(qualification: string | undefined): 'UG' | 'PG' 
   return 'PG';
 }
 
-function programTitle(level: 'UG' | 'PG', stream: string) {
-  const field = (stream || 'your chosen field').trim();
-  return level === 'UG' ? `Bachelor in ${field}` : `Master in ${field}`;
-}
-
-function visaInfo(country: string) {
-  const map: Record<string, string> = {
-    Nepal: 'Study in Nepal — no overseas student visa required for Nepali citizens',
-    USA: '12 months OPT + 24 months STEM extension',
-    UK: '2 years Graduate visa',
-    Canada: '3 years Post-graduation work permit',
-    Australia: '2-4 years Temporary Graduate visa',
-    Germany: '18 months job search visa',
-    India: 'Domestic study — no student visa for Indian citizens',
-  };
-  return map[country] || 'Check local student visa rules for this destination';
-}
-
+/**
+ * True when both name the same country, whatever spelling each side uses
+ * ("USA" in a student's plan, "United States" in the university catalogue).
+ * Whole-word fallback only, so "UK" never matches "Ukraine".
+ */
 export function matchesCountry(universityCountry: string, wanted: string) {
-  const a = universityCountry.toLowerCase();
-  const b = wanted.toLowerCase();
-  return a === b || a.includes(b) || b.includes(a);
+  const a = normalizeCountry(universityCountry).toLowerCase();
+  const b = normalizeCountry(wanted).toLowerCase();
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const word = (hay: string, needle: string) => new RegExp(`\\b${needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(hay);
+  return word(a, b) || word(b, a);
 }
 
 export function matchesAnyCountry(universityCountry: string, wanted: string[]) {
@@ -80,8 +86,6 @@ export function matchesAnyCountry(universityCountry: string, wanted: string[]) {
 
 export async function getRecommendationsForProfile(conversationData: Record<string, any>): Promise<UniversityRecommendation[]> {
   const country = normalizeCountry(conversationData.country);
-  const level = inferStudyLevel(conversationData.qualification);
-  const stream = conversationData.streamOrProgram || 'your chosen field';
 
   const { data: rows } = await supabase
     .from('universities')
@@ -95,14 +99,15 @@ export async function getRecommendationsForProfile(conversationData: Record<stri
       id: uni.id,
       name: uni.name,
       location: [uni.city, uni.country].filter(Boolean).join(', '),
-      programs: [programTitle(level, stream)],
+      programs: ["Course availability needs confirmation"],
       tuitionFee: 'Contact for fees',
-      duration: level === 'UG' ? '3-4 years' : '1-2 years',
-      deadline: 'Rolling admissions',
-      languageReq: country === 'Nepal' || country === 'India' ? 'English or local language as required' : 'IELTS 6.5+ or TOEFL 80+',
-      postStudyVisa: visaInfo(country),
-      ranking: uni.ranking ? `Ranked #${uni.ranking}` : 'Partner university',
+      duration: 'Duration to be confirmed',
+      deadline: 'Deadline to be confirmed',
+      languageReq: 'Entry requirements to be confirmed',
+      postStudyVisa: 'Check official visa guidance for your nationality and course',
+      ranking: uni.ranking ? `Ranked #${uni.ranking}` : 'University catalogue',
       website: uni.website_url || undefined,
+      imageUrl: uni.campus_image_url || uni.logo_url || null,
     }));
   }
 

@@ -93,6 +93,35 @@ export function UniversityShortlists() {
   const [loading, setLoading] = useState(true);
   const [newNote, setNewNote] = useState<{ [key: string]: string }>({});
   const [activeTab, setActiveTab] = useState<{ [key: string]: string }>({});
+  // Universities the student saved themselves (heart on Dashboard/Universities),
+  // shown here too so "Saved" and "My Shortlists" never disagree.
+  const [saved, setSaved] = useState<{ id: string; name: string; country: string; city: string | null }[]>([]);
+
+  const loadSaved = async () => {
+    if (!user) return;
+    const [{ data: favs }, { data: unis }] = await Promise.all([
+      supabase.from('user_favorites').select('university_id').eq('user_id', user.id),
+      supabase.from('universities').select('id, name, country, city'),
+    ]);
+    const ids = new Set((favs || []).map((f: any) => String(f.university_id)));
+    setSaved(((unis || []) as any[]).filter((u) => ids.has(String(u.id))).map((u) => ({
+      id: String(u.id), name: u.name, country: u.country || '', city: u.city || null,
+    })));
+  };
+
+  const unsave = async (id: string) => {
+    if (!user) return;
+    setSaved((list) => list.filter((u) => u.id !== id));
+    const { error } = await supabase.from('user_favorites').delete().eq('user_id', user.id).eq('university_id', id);
+    if (error) {
+      toast({ title: 'Could not remove it', variant: 'destructive' });
+      loadSaved();
+    }
+  };
+
+  useEffect(() => {
+    if (user) loadSaved().catch(() => {});
+  }, [user]);
 
   useEffect(() => {
     if (user) {
@@ -143,7 +172,7 @@ export function UniversityShortlists() {
             .from('profiles')
             .select('user_id, first_name, last_name')
             .in('user_id', counselorIds);
-          const counselorMap = new Map((counselors || []).map((profile: any) => [profile.user_id, profile]));
+          const counselorMap = new Map<string, any>((counselors || []).map((profile: any) => [profile.user_id, profile]));
           setShortlists((current) =>
             current.map((item) => {
               const counselor = counselorMap.get(item.counselor_id);
@@ -293,21 +322,48 @@ export function UniversityShortlists() {
           <GraduationCap className="w-6 h-6 text-white" />
         </div>
         <div>
-          <h1 className="text-3xl font-bold">University Shortlists</h1>
-          <p className="text-muted-foreground">Universities recommended by your counselor</p>
+          <h1 className="text-3xl font-bold">My Shortlists</h1>
+          <p className="text-muted-foreground">Universities you saved, and the ones your counselor recommends</p>
         </div>
       </div>
 
+      <section className="space-y-3">
+        <h2 className="text-lg font-semibold">Saved by you ({saved.length})</h2>
+        {saved.length === 0 ? (
+          <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
+            Tap <span className="font-medium">Save</span> on a university on your Dashboard or the Universities page and it appears here.
+          </p>
+        ) : (
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {saved.map((u) => (
+              <div key={u.id} className="flex flex-col rounded-xl border border-border/60 bg-card p-4 shadow-sm">
+                <p className="font-semibold leading-snug">{u.name}</p>
+                <p className="text-xs text-muted-foreground">{[u.city, u.country].filter(Boolean).join(', ')}</p>
+                <div className="mt-3 flex items-center justify-between gap-2">
+                  <Button asChild size="sm">
+                    <Link to={`/student/applications?university=${encodeURIComponent(u.id)}`}>Start application</Link>
+                  </Button>
+                  <button type="button" onClick={() => unsave(u.id)} className="text-xs text-muted-foreground hover:text-destructive">
+                    Remove
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <h2 className="text-lg font-semibold">Recommended by your counselor ({shortlists.length})</h2>
       {shortlists.length === 0 ? (
         <Card className="glass-card">
           <CardContent className="text-center py-12">
             <GraduationCap className="w-16 h-16 mx-auto mb-4 text-muted-foreground opacity-50" />
-            <h3 className="text-lg font-semibold mb-2">No University Shortlists Yet</h3>
+            <h3 className="text-lg font-semibold mb-2">Nothing from your counselor yet</h3>
             <p className="text-muted-foreground mb-4">
-              When your counselor adds universities on their Shortlists page, they show up here.
+              Once a counselor is assigned to you, the universities they recommend show up here.
             </p>
             <Button asChild>
-              <Link to="/student/chat">Message counselor</Link>
+              <Link to="/student/messages">Message your advisor</Link>
             </Button>
           </CardContent>
         </Card>

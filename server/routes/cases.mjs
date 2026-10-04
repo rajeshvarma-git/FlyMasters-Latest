@@ -30,6 +30,7 @@
  * source_id, so nothing earlier is lost.
  */
 import express from "express";
+import { whatsappWindowOpen } from "../lib/waDelivery.mjs";
 import crypto from "crypto";
 import { pool, jsonTable, jsonFind, jsonUpsert } from "../lib/db.mjs";
 import { anySession, branchScope, ROLES } from "../lib/auth.mjs";
@@ -70,8 +71,21 @@ const COUNTRY_ALIASES = {
   nepal: "Nepal", usa: "USA", us: "USA", america: "USA", "united states": "USA", "united states of america": "USA",
   uk: "UK", britain: "UK", england: "UK", "united kingdom": "UK", canada: "Canada", australia: "Australia",
   germany: "Germany", ireland: "Ireland", "new zealand": "New Zealand", india: "India", france: "France",
-  netherlands: "Netherlands", holland: "Netherlands",
+  netherlands: "Netherlands", holland: "Netherlands", "the netherlands": "Netherlands",
+  "u.s.": "USA", "u.s.a.": "USA", "u.s.a": "USA", "united states (usa)": "USA",
+  "great britain": "UK", scotland: "UK", wales: "UK", "northern ireland": "UK", "u.k.": "UK",
+  uae: "UAE", "united arab emirates": "UAE", "south korea": "South Korea", korea: "South Korea", "republic of korea": "South Korea",
 };
+
+/** Same country however each side spells it ("USA" vs the catalogue's "United States"). */
+function sameCountry(a, b) {
+  const x = normalizeCountry(a).toLowerCase();
+  const y = normalizeCountry(b).toLowerCase();
+  if (!x || !y) return false;
+  if (x === y) return true;
+  const word = (hay, needle) => new RegExp(`\\b${needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`).test(hay);
+  return word(x, y) || word(y, x);
+}
 const GIBBERISH = /^[bcdfghjklmnpqrstvwxyz\d]{5,}$/i;
 
 function normalizeCountry(input) {
@@ -101,14 +115,45 @@ function validateStep(key, value) {
   if (key === "field" && (t.length < 3 || !/[a-zA-Z]{3,}/.test(t) || GIBBERISH.test(t.replace(/\s/g, "")))) {
     return { error: "Please enter a real field of study (for example Computer Science, Business, or Nursing)." };
   }
-  if (key === "score" && !/\d/.test(t)) {
-    return { error: "Please enter your score with numbers (for example 85%, 3.5 GPA, or 8.2 CGPA)." };
-  }
-  if (key === "budget" && !/\d/.test(t)) {
-    return { error: "Please enter your budget with an amount (for example 20 lakhs, $25,000, or ₹15,00,000)." };
-  }
+  if (key === "score") return validateScore(t);
+  if (key === "budget") return validateBudget(t);
   return { value: t };
 }
+
+/**
+ * Scores and budgets become lead facts staff act on, so a bare "7" or "32"
+ * is not accepted as-is: the AI asks what it means instead of guessing.
+ */
+function firstNumber(t) {
+  const m = String(t).replace(/,/g, "").match(/\d+(\.\d+)?/);
+  return m ? Number(m[0]) : NaN;
+}
+
+function validateScore(t) {
+  const n = firstNumber(t);
+  const example = "for example 78%, 8.2 CGPA, or 3.4 GPA";
+  if (!Number.isFinite(n) || n <= 0) return { error: `Please enter your score with numbers (${example}).` };
+  if (/%|percent/i.test(t)) return n <= 100 ? { value: t } : { error: `A percentage can't be above 100 — please check it (${example}).` };
+  if (/cgpa|\/\s*10\b|out of 10/i.test(t)) return n <= 10 ? { value: t } : { error: `A CGPA is out of 10 — please check it (${example}).` };
+  if (/gpa|\/\s*4\b|out of 4/i.test(t)) return n <= 5 ? { value: t } : { error: `A GPA is usually out of 4 — please check it (${example}).` };
+  if (/^\d+(\.\d+)?$/.test(t.trim())) {
+    if (n >= 35 && n <= 100) return { value: `${n}%` };
+    if (n <= 10 && /\./.test(t)) return { value: `${n} CGPA` };
+    return { error: `Is ${t.trim()} a CGPA (out of 10) or a percentage? Please write it like "${n <= 10 ? `${n} CGPA` : `${n}%`}" (${example}).` };
+  }
+  return n <= 100 ? { value: t } : { error: `Please check your score (${example}).` };
+}
+
+function validateBudget(t) {
+  const n = firstNumber(t);
+  const example = "for example 20 lakhs, ₹15,00,000, or $25,000";
+  if (!Number.isFinite(n) || n <= 0) return { error: `Please enter your budget with an amount (${example}).` };
+  if (/lakh|lac|crore|\bcr\b|\bk\b|thousand|\$|usd|₹|inr|\brs\.?|rupee|€|eur|£|gbp|aud|cad|nzd|\d\s*[lk]\b/i.test(t)) return { value: t };
+  if (n >= 10000) return { value: t };
+  return { error: `Is that ${n} lakhs? Please add the unit, like "${n} lakhs" or "$${n},000" (${example}).` };
+}
+
+const GREETING = /^(hi+|hello+|hey+|hii+|good (morning|afternoon|evening)|namaste|hai)\b[\s!.,]*(there|team|sir|madam|mam)?[\s!.,]*$/i;
 
 function looksLikeQuestion(text) {
   const t = String(text || "").trim().toLowerCase();
@@ -165,8 +210,8 @@ function studentNameFromLead(lead, fallback = "Student") {
 
 async function ownerOf(lead) {
   const counselorId = lead?.assigned_counselor_id ? String(lead.assigned_counselor_id) : "";
-  if (counselorId) {
-    const name = counselorId === SHARED_COUNSELOR_ID ? "Your counselor" : await personName(counselorId, "Your counselor");
+  if (counselorId && counselorId !== SHARED_COUNSELOR_ID) {
+    const name = await personName(counselorId, "Your counselor");
     return { role: "counselor", id: counselorId, name };
   }
   const telecallerId = lead?.assigned_telecaller_id ? String(lead.assigned_telecaller_id) : "";
@@ -452,16 +497,6 @@ async function saveAnswer(studentUserId, lead, key, value, known) {
 
 // ------------------------------------------------------- recommendations
 
-const VISA = {
-  Nepal: "Study in Nepal — no overseas student visa required for Nepali citizens",
-  USA: "12 months OPT + 24 months STEM extension",
-  UK: "2 years Graduate visa",
-  Canada: "3 years Post-graduation work permit",
-  Australia: "2-4 years Temporary Graduate visa",
-  Germany: "18 months job search visa",
-  India: "Domestic study — no student visa for Indian citizens",
-};
-
 function studyLevel(qualification) {
   return /(12|twelfth|high school|\+2|plus two|intermediate|a[- ]?level|bachelor|b\.?tech|b\.?sc|undergraduate|ug\b)/i.test(qualification || "") ? "UG" : "PG";
 }
@@ -470,17 +505,10 @@ function studyLevel(qualification) {
 async function recommendations(known) {
   const country = normalizeCountry(known.country);
   if (!country) return [];
-  const level = studyLevel(known.qualification);
-  const phd = /phd|doctor/i.test(known.qualification || "");
-  const field = (known.field || "your chosen field").trim();
   const rows = await jsonTable("universities").catch(() => []);
-  const wanted = country.toLowerCase();
   return rows
     .filter((u) => u.is_active !== false)
-    .filter((u) => {
-      const c = String(u.country || "").toLowerCase();
-      return c && (c === wanted || c.includes(wanted) || wanted.includes(c));
-    })
+    .filter((u) => sameCountry(u.country, country))
     // Best-ranked first; unranked partners after them.
     .sort((a, b) => (Number(a.ranking) || 9999) - (Number(b.ranking) || 9999))
     .slice(0, 6)
@@ -488,14 +516,15 @@ async function recommendations(known) {
       id: String(u.id),
       name: u.name,
       location: [u.city, u.country].filter(Boolean).join(", "),
-      programs: [phd ? `PhD in ${field}` : level === "UG" ? `Bachelor in ${field}` : `Master in ${field}`],
+      programs: ["Course availability needs confirmation"],
       tuitionFee: "Contact for fees",
-      duration: phd ? "3-5 years" : level === "UG" ? "3-4 years" : "1-2 years",
-      deadline: "Rolling admissions",
-      languageReq: country === "Nepal" || country === "India" ? "English or local language as required" : "IELTS 6.5+ or TOEFL 80+",
-      postStudyVisa: VISA[country] || "Check local student visa rules for this destination",
-      ranking: u.ranking ? `Ranked #${u.ranking}` : "Partner university",
+      duration: "Duration to be confirmed",
+      deadline: "Deadline to be confirmed",
+      languageReq: "Entry requirements to be confirmed",
+      postStudyVisa: "Check official visa guidance for your nationality and course",
+      ranking: u.ranking ? `Ranked #${u.ranking}` : "University catalogue",
       website: u.website_url || undefined,
+      imageUrl: u.campus_image_url || u.logo_url || null,
     }));
 }
 
@@ -665,7 +694,7 @@ async function prepareThread(studentUserId, lead) {
 // Meta only accepts free-form replies within 24 hours of the student's last
 // WhatsApp message; outside it a pre-approved template is required. We stop
 // a few minutes early so a reply isn't rejected mid-flight.
-const WA_WINDOW_MS = 24 * 60 * 60 * 1000 - 5 * 60 * 1000;
+
 
 function whatsappText(row) {
   if (row.kind === "recommendations") {
@@ -688,8 +717,7 @@ function whatsappText(row) {
 async function deliverToWhatsApp(conversation, rows) {
   const to = conversation.whatsapp_phone;
   if (!to || !rows.length) return;
-  const last = Date.parse(conversation.whatsapp_last_inbound_at || "");
-  const windowOpen = Number.isFinite(last) && Date.now() - last < WA_WINDOW_MS;
+  const windowOpen = whatsappWindowOpen(conversation.whatsapp_last_inbound_at);
   for (const row of rows) {
     if (!row || row.sender_role === "student" || !String(row.body || "").trim()) continue;
     let patch;
@@ -697,42 +725,60 @@ async function deliverToWhatsApp(conversation, rows) {
     else if (!windowOpen) patch = { wa_status: "window_closed" };
     else {
       try {
-        patch = { wa_status: "sent", wa_message_id: await sendWhatsAppText(to, whatsappText(row)) };
+        patch = { wa_status: "accepted", wa_message_id: await sendWhatsAppText(to, whatsappText(row)) };
       } catch (error) {
         console.error("[case-wa] send failed:", error.message || error);
         patch = { wa_status: "failed", wa_error: String(error.message || error).slice(0, 200) };
       }
     }
+    patch.wa_attempted_at = new Date().toISOString();
     Object.assign(row, patch);
     await jsonUpsert("case_messages", { id: row.id, ...patch });
   }
 }
 
+// The same phone number, not just the same last ten digits: a stored number
+// with its country code must equal the WhatsApp number exactly; a stored
+// 10-digit number (no code, as Indian numbers are usually typed) matches
+// only an Indian (+91) WhatsApp number.
+const PHONE_MATCH = (col) => `(
+  regexp_replace(coalesce(data->>'${col}',''), '[^0-9]', '', 'g') = $1
+  OR (length(regexp_replace(coalesce(data->>'${col}',''), '[^0-9]', '', 'g')) = 10
+      AND $1 = '91' || regexp_replace(coalesce(data->>'${col}',''), '[^0-9]', '', 'g'))
+  OR (length(regexp_replace(coalesce(data->>'${col}',''), '[^0-9]', '', 'g')) = 11
+      AND left(regexp_replace(coalesce(data->>'${col}',''), '[^0-9]', '', 'g'), 1) = '0'
+      AND $1 = '91' || right(regexp_replace(coalesce(data->>'${col}',''), '[^0-9]', '', 'g'), 10))
+)`;
+
 async function leadByPhone(phone) {
-  const last10 = String(phone || "").replace(/\D/g, "").slice(-10);
-  if (last10.length < 10) return null;
+  const digits = normalizeWaPhone(phone);
+  if (!digits) return null;
   const { rows } = await pool.query(
     `SELECT id, data, branch_id FROM app_records
       WHERE table_name = 'student_leads'
-        AND (right(regexp_replace(coalesce(data->>'whatsapp_number',''), '[^0-9]', '', 'g'), 10) = $1
-          OR right(regexp_replace(coalesce(data->>'phone',''), '[^0-9]', '', 'g'), 10) = $1)
+        AND (${PHONE_MATCH("whatsapp_number")} OR ${PHONE_MATCH("phone")})
+        AND (coalesce(data->>'user_id', '') = '' OR data->>'whatsapp_verified' = 'true'
+          OR data->>'user_id' IN (
+            SELECT data->>'user_id' FROM app_records WHERE table_name = 'profiles'
+              AND data->>'whatsapp_verified' = 'true' AND ${PHONE_MATCH("whatsapp_number")}
+          ))
       ORDER BY (data->>'user_id' IS NOT NULL) DESC, coalesce(data->>'updated_at','') DESC
       LIMIT 1`,
-    [last10],
+    [digits],
   );
   return rows[0] ? { ...rows[0].data, id: rows[0].id, branch_id: rows[0].branch_id } : null;
 }
 
 async function userIdByPhone(phone) {
-  const last10 = String(phone || "").replace(/\D/g, "").slice(-10);
-  if (last10.length < 10) return null;
+  const digits = normalizeWaPhone(phone);
+  if (!digits) return null;
   const { rows } = await pool.query(
     `SELECT data->>'user_id' AS user_id FROM app_records
       WHERE table_name = 'profiles' AND data->>'user_id' IS NOT NULL
-        AND (right(regexp_replace(coalesce(data->>'whatsapp_number',''), '[^0-9]', '', 'g'), 10) = $1
-          OR right(regexp_replace(coalesce(data->>'phone',''), '[^0-9]', '', 'g'), 10) = $1)
+        AND data->>'whatsapp_verified' = 'true'
+        AND (${PHONE_MATCH("whatsapp_number")} OR ${PHONE_MATCH("phone")})
       LIMIT 1`,
-    [last10],
+    [digits],
   );
   return rows[0]?.user_id || null;
 }
@@ -781,7 +827,7 @@ const inboundQueues = new Map();
 export function handleWhatsAppInbound(input) {
   // One number's messages are handled one after another, so two quick
   // messages can't both answer the same intake question.
-  const key = String(input?.phone || "").replace(/\D/g, "").slice(-10);
+  const key = normalizeWaPhone(input?.phone) || "invalid";
   const run = (inboundQueues.get(key) || Promise.resolve()).then(() => processWhatsAppInbound(input));
   const tail = run.catch(() => {});
   inboundQueues.set(key, tail);
@@ -792,18 +838,19 @@ export function handleWhatsAppInbound(input) {
 async function processWhatsAppInbound({ phone: rawPhone, contactName, body, sourceId, sentAt }) {
   const phone = normalizeWaPhone(rawPhone);
   const text = cleanText(body);
-  if (!phone || !text) return null;
+  if (!phone || !text) return { leadId: null, summary: "empty message or unusable number" };
 
   const messageId = `cm-${crypto.createHash("sha1").update(sourceId).digest("hex")}`;
   const { rows: dup } = await pool.query(
     "SELECT 1 FROM app_records WHERE table_name = 'case_messages' AND id = $1",
     [messageId],
   );
-  if (dup.length) return null; // Meta retried a message we already handled.
+  if (dup.length) return { leadId: null, summary: "already handled (Meta retry)" }; // Meta retried a message we already handled.
 
   let lead = await leadByPhone(phone);
   let userId = lead?.user_id || (await userIdByPhone(phone));
   if (!lead && userId) lead = await leadForStudent(userId);
+  const isNewLead = !lead;
   if (!lead) lead = await createWhatsAppLead(phone, contactName, userId);
   if (lead.user_id) userId = lead.user_id;
   if (!lead.whatsapp_number) {
@@ -824,7 +871,12 @@ async function processWhatsAppInbound({ phone: rawPhone, contactName, body, sour
   });
   await patchConversation(conversation, {
     whatsapp_phone: phone,
-    whatsapp_last_inbound_at: new Date().toISOString(),
+    whatsapp_last_inbound_at: (() => {
+      const at = Date.parse(sentAt || "");
+      const prior = Date.parse(conversation.whatsapp_last_inbound_at || "");
+      const valid = Number.isFinite(at) ? Math.min(at, Date.now()) : Date.now();
+      return new Date(Math.max(valid, Number.isFinite(prior) ? prior : 0)).toISOString();
+    })(),
   });
 
   // A brand-new conversation's reply is the intake greeting and first question.
@@ -833,8 +885,16 @@ async function processWhatsAppInbound({ phone: rawPhone, contactName, body, sour
   if (!fresh || owner.role !== "ai") await handleStudentMessage(thread, userId || null, lead, owner, text);
 
   const created = (await rawMessages(thread.id)).filter((m) => !before.has(m.id));
-  await deliverToWhatsApp(thread, created.filter((m) => m.sender_role !== "system"));
-  return String(lead.id);
+  const replies = created.filter((m) => m.sender_role !== "system" && m.sender_role !== "student");
+  await deliverToWhatsApp(thread, replies);
+  const counts = replies.reduce((acc, m) => ({ ...acc, [m.wa_status || "?"]: (acc[m.wa_status || "?"] || 0) + 1 }), {});
+  const summary = [
+    isNewLead ? "new lead created" : `existing ${userId ? "student" : "lead"}`,
+    replies.length
+      ? `replies: ${Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(", ")}`
+      : `no reply needed (now with ${owner.role === "ai" ? "AI" : owner.name})`,
+  ].join(" · ");
+  return { leadId: String(lead.id), summary };
 }
 
 /** Called when admin assigns a telecaller or counselor: the notice appears (and reaches WhatsApp) right away. */
@@ -872,7 +932,6 @@ async function canStaffAccess(req, lead) {
   if (role === ROLES.COUNSELOR) {
     const assigned = String(lead.assigned_counselor_id || "");
     if (!assigned) return false;
-    if (assigned === SHARED_COUNSELOR_ID) return true;
     return (await counselorAliases(req.user)).has(assigned);
   }
   return false;
@@ -1007,10 +1066,56 @@ async function handleStudentMessage(conversation, studentUserId, lead, owner, te
     await aiSay(conversation, answer.reply, { extra: { source: "faq", sources: answer.sources, review_status: "pending" } });
     return;
   }
-  // "ok", "thanks", "hi" — nothing to hand over, so no reply.
+  // A greeting gets a short hello (on WhatsApp silence looks broken);
+  // "ok" / "thanks" need nothing, so no reply.
+  if (GREETING.test(text)) {
+    const who = owner.role === "ai"
+      ? "Ask me about universities, visas, documents or fees"
+      : `Ask me anything — ${owner.name}, your ${owner.role}, will also reply here`;
+    await aiSay(conversation, `Hi! 👋 ${who}.`);
+    return;
+  }
   if (!looksLikeQuestion(text) && text.split(/\s+/).length < 4) return;
   await routeToStaff(conversation, owner, messages);
 }
+
+// Student events go to the assigned advisor, or Admin's allocation queue.
+// Recipient selection is server-side; an unassigned case is never broadcast.
+router.post("/api/case/me/notifications", anySession, requireStudent, async (req, res) => {
+  try {
+    const lead = await leadForStudent(req.user.id);
+    if (!lead) return res.status(404).json({ error: "Student case not found." });
+    const counselorId = String(lead.assigned_counselor_id || "");
+    let targets = [];
+    if (counselorId && counselorId !== SHARED_COUNSELOR_ID) {
+      const directory = await jsonTable("counselors");
+      const counselor = directory.find((c) => String(c.id) === counselorId || String(c.auth_user_id || c.user_id) === counselorId);
+      const targetId = counselor?.auth_user_id || counselor?.user_id || counselorId;
+      const { rows } = await pool.query("SELECT user_id FROM user_roles WHERE user_id = $1 AND role = 'counselor' AND is_active IS DISTINCT FROM false", [targetId]);
+      targets = rows.map((r) => String(r.user_id));
+    }
+    const queuedForAdmin = !targets.length;
+    if (queuedForAdmin) {
+      const { rows } = await pool.query("SELECT user_id FROM user_roles WHERE role IN ('admin', 'super_admin') AND is_active IS DISTINCT FROM false");
+      targets = rows.map((r) => String(r.user_id));
+    }
+    const title = cleanText(req.body?.title).slice(0, 160) || "Student case needs attention";
+    const message = cleanText(req.body?.message);
+    if (!message) return res.status(400).json({ error: "Notification message required." });
+    const now = new Date().toISOString();
+    for (const userId of targets) {
+      await jsonUpsert("notifications", { id: crypto.randomUUID(), user_id: userId, title, message, type: "info",
+        action_url: queuedForAdmin ? `/admin/leads/${lead.id}` : "/counselor/student-chat", is_read: false,
+        additional_data: { student_id: req.user.id, lead_id: lead.id }, created_at: now });
+      await jsonUpsert("document_notifications", { id: crypto.randomUUID(), user_id: userId, title, message,
+        notification_type: "info", is_read: false, additional_data: { student_id: req.user.id, lead_id: lead.id }, created_at: now });
+    }
+    res.json({ ok: true, queued_for_admin: queuedForAdmin });
+  } catch (error) {
+    console.error("[case] event notification failed:", error);
+    res.status(500).json({ error: "Could not notify the assigned staff." });
+  }
+});
 
 router.post("/api/case/me/messages", anySession, requireStudent, async (req, res) => {
   const text = cleanText(req.body?.message ?? req.body?.text);
@@ -1022,7 +1127,9 @@ router.post("/api/case/me/messages", anySession, requireStudent, async (req, res
     await addMessage(conversation, { senderRole: "student", senderId: req.user.id, body: text });
     await handleStudentMessage(conversation, req.user.id, lead, owner, text);
     await patchConversation(conversation, { student_last_read_at: new Date().toISOString() });
-    const created = (await rawMessages(conversation.id)).filter((m) => !before.has(m.id)).map((m) => publicMessage(m));
+    const newMessages = (await rawMessages(conversation.id)).filter((m) => !before.has(m.id));
+    await deliverToWhatsApp(conversation, newMessages);
+    const created = newMessages.map((m) => publicMessage(m));
     res.json({ owner, intake_complete: Boolean(conversation.intake_complete), messages: created });
   } catch (error) {
     console.error("[case] send failed:", error);
@@ -1039,7 +1146,7 @@ router.get("/api/case/inbox", anySession, requireStaff, scopeBranchHead, async (
     if (role === ROLES.TELECALLER) {
       leads = await rowsWhere("student_leads", "assigned_telecaller_id", req.user.id);
     } else if (role === ROLES.COUNSELOR) {
-      leads = await rowsWhere("student_leads", "assigned_counselor_id", [...(await counselorAliases(req.user)), SHARED_COUNSELOR_ID]);
+      leads = await rowsWhere("student_leads", "assigned_counselor_id", [...(await counselorAliases(req.user))]);
     } else {
       const all = await jsonTable("case_conversations");
       const byUser = await rowsWhere("student_leads", "user_id", all.map((c) => c.student_user_id));
@@ -1119,6 +1226,15 @@ router.get("/api/case/lead/:leadId", anySession, requireStaff, scopeBranchHead, 
         : null,
       student: { lead_id: String(lead.id), user_id: lead.user_id ? String(lead.user_id) : null, name: studentNameFromLead(lead), email: lead.email || "", phone: lead.phone || "" },
       known: knownProfile(profile, lead),
+      // Answers that wouldn't pass today's checks (e.g. a bare "32" budget
+      // from before): shown to staff as "check this" instead of fact.
+      unclear: (() => {
+        const k = knownProfile(profile, lead);
+        const out = {};
+        if (k.score && validateScore(k.score).error) out.score = true;
+        if (k.budget && validateBudget(k.budget).error) out.budget = true;
+        return out;
+      })(),
       messages: (await rawMessages(conversation.id)).map((m) => publicMessage(m, { staff: true })),
     });
   } catch (error) {

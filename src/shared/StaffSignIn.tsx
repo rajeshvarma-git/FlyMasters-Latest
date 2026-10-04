@@ -42,12 +42,12 @@ export default function StaffSignIn() {
 
       const role = String(data.user?.role || "") as PortalRole;
 
-      // A student account is not refused here — it just belongs somewhere else.
+      // A student account has no staff portal. Say so plainly instead of
+      // silently landing on the homepage (which looked like a failed sign-in).
       if (role === "student") {
-        setToken(data.token);
-        setStoredUser(data.user);
-        window.location.href = "/";
-        return;
+        throw new Error(
+          "This is a student account, not a staff account. Students sign in on the homepage. If this person should be an admin, a super admin must give them a role in Admin → Users.",
+        );
       }
       if (NOT_BUILT_YET[role]) {
         throw new Error(NOT_BUILT_YET[role]);

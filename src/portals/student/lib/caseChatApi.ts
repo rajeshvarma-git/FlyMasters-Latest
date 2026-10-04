@@ -85,6 +85,7 @@ export interface RecommendedUniversity {
   postStudyVisa: string;
   ranking: string;
   website?: string;
+  imageUrl?: string | null;
   saved: boolean;
 }
 

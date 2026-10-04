@@ -14,6 +14,17 @@ const phoneNumberId = () => clean(process.env.WHATSAPP_PHONE_NUMBER_ID);
 const version = () => clean(process.env.WHATSAPP_API_VERSION) || "v21.0";
 const base = () => String(process.env.WHATSAPP_GRAPH_BASE || "https://graph.facebook.com").replace(/\/$/, "");
 
+// Last outbound attempts, newest first — shown on the admin WhatsApp page.
+const sendLog = [];
+const mask = (to) => (to ? `…${String(to).slice(-4)}` : "");
+export function recentSends() {
+  return sendLog.slice();
+}
+function logSend(entry) {
+  sendLog.unshift({ at: new Date().toISOString(), ...entry });
+  sendLog.length = Math.min(sendLog.length, 30);
+}
+
 export function whatsappSendConfigured() {
   return Boolean(token() && phoneNumberId());
 }
@@ -50,7 +61,13 @@ export async function sendWhatsAppText(to, text) {
       error.code = body?.error?.code;
       throw error;
     }
-    return body?.messages?.[0]?.id || "";
+    const messageId = body?.messages?.[0]?.id;
+    if (!messageId) throw new Error("WhatsApp API did not return a message id");
+    logSend({ to: mask(to), ok: true });
+    return messageId;
+  } catch (error) {
+    if (!error?.logged) logSend({ to: mask(to), ok: false, error: String(error?.message || error).slice(0, 200) });
+    throw error;
   } finally {
     clearTimeout(timer);
   }

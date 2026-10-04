@@ -43,7 +43,23 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 
-const INTAKE_OPTIONS = ['Fall 2026', 'Spring 2027', 'Fall 2027', 'Winter 2027', 'Rolling'];
+/**
+ * The next four intakes that haven't started yet (Spring = Jan, Summer = May,
+ * Fall = Sep), soonest first, plus Rolling. Computed from today's date so the
+ * form never offers — or defaults to — an intake that has already begun.
+ */
+function upcomingIntakes(today = new Date()): string[] {
+  const seasons: [string, number][] = [['Spring', 0], ['Summer', 4], ['Fall', 8]];
+  const out: string[] = [];
+  for (let year = today.getFullYear(); out.length < 4; year += 1) {
+    for (const [name, month] of seasons) {
+      if (new Date(year, month, 1) > today && out.length < 4) out.push(`${name} ${year}`);
+    }
+  }
+  return [...out, 'Rolling'];
+}
+const INTAKE_OPTIONS = upcomingIntakes();
+const DEFAULT_INTAKE = INTAKE_OPTIONS[0];
 const PRIORITY_OPTIONS = ['high', 'medium', 'low'];
 const OPEN_STATUSES = new Set(['draft', 'in_progress', 'pending_counselor', 'counselor_approved', 'returned', 'submitted', 'waitlisted']);
 
@@ -134,7 +150,7 @@ export function StudentApplications() {
 
   const [universityId, setUniversityId] = useState('');
   const [courseName, setCourseName] = useState('');
-  const [intakeTerm, setIntakeTerm] = useState('Fall 2026');
+  const [intakeTerm, setIntakeTerm] = useState(DEFAULT_INTAKE);
   const [priorityLevel, setPriorityLevel] = useState('medium');
   const [deadline, setDeadline] = useState('');
   const [notes, setNotes] = useState('');
@@ -240,7 +256,7 @@ export function StudentApplications() {
 
     setUniversityId(selected?.id || '');
     setCourseName(shortlist?.course_name || '');
-    setIntakeTerm('Fall 2026');
+    setIntakeTerm(DEFAULT_INTAKE);
     setPriorityLevel(shortlist?.priority_level || 'medium');
     setDeadline(shortlist?.application_deadline ? shortlist.application_deadline.slice(0, 10) : '');
     setNotes(shortlist?.counselor_notes || '');
@@ -369,10 +385,10 @@ export function StudentApplications() {
       }
 
       toast({
-        title: status === 'pending_counselor' ? 'Sent to your counselor' : 'Application withdrawn',
+        title: status === 'pending_counselor' ? 'Review requested' : 'Application withdrawn',
         description:
           status === 'pending_counselor'
-            ? `${uniName} will be reviewed by your counselor. It is not sent to the university yet.`
+            ? `${uniName} is queued for review. Admin must assign a counselor if you do not have one. It has not been sent to the university.`
             : uniName,
       });
     } catch (error: any) {
@@ -445,7 +461,7 @@ export function StudentApplications() {
   const statusLabel = (status: string) => {
     switch (status) {
       case 'pending_counselor':
-        return 'with counselor';
+        return 'review requested';
       case 'counselor_approved':
         return 'counselor approved';
       case 'returned':

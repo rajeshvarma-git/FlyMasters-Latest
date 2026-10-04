@@ -230,20 +230,12 @@ export function UserManagement() {
     try {
       setPasswordLoading(true);
       
-      const dbRes = await fetch('/__local_db');
-      const db = await dbRes.json();
-      const found = (db.authUsers || []).find((user: any) => user.id === selectedUser.user_id);
-      if (!found) throw new Error('User not found');
-      found.password = newPassword;
-      await fetch('/__local_db', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(db),
-      });
-
+      // This used to download the entire database and write it all back
+      // (which also wiped every stored password). Password resets now live
+      // in the Admin portal only.
       toast({
-        title: "Success",
-        description: "Password has been reset successfully.",
+        title: "Use the Admin portal",
+        description: "Reset passwords in the Admin portal → Users → the person → Reset password.",
       });
 
       setIsPasswordDialogOpen(false);

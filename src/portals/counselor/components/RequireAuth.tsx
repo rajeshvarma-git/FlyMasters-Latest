@@ -25,6 +25,6 @@ export function RequireAuth({
   }
 
   if (!user) return <RedirectToStaffSignIn />;
-  if (roles && role && !roles.includes(role) && role !== "student") return <RedirectToStaffSignIn />;
+  if (roles && (!role || !roles.includes(role))) return <RedirectToStaffSignIn />;
   return <>{children}</>;
 }

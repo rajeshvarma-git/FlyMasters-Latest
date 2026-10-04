@@ -242,7 +242,7 @@ async function sendViaGmailSmtp(input: { to: string; subject: string; text: stri
   throw lastError || new Error("Could not connect to Gmail SMTP.");
 }
 
-async function sendVerificationEmail(input: { to: string; subject: string; text: string; html: string }) {
+export async function sendVerificationEmail(input: { to: string; subject: string; text: string; html: string }) {
   const provider = getEmailProvider();
   if (provider === "resend") {
     await sendViaResend(input);

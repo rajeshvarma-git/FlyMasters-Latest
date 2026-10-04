@@ -41,12 +41,15 @@ type Message = {
   reviewed_by_name: string | null;
   original_body: string | null;
   /** Whether this reply reached the student's WhatsApp */
-  wa_status?: "sent" | "failed" | "window_closed" | "not_configured" | null;
+  wa_status?: "accepted" | "sent" | "delivered" | "read" | "failed" | "window_closed" | "not_configured" | null;
   created_at: string;
 };
 
 const WA_STATUS: Record<string, string> = {
-  sent: " · sent to WhatsApp",
+  accepted: " · accepted by WhatsApp",
+  sent: " · sent by WhatsApp",
+  delivered: " · delivered on WhatsApp",
+  read: " · read on WhatsApp",
   failed: " · WhatsApp send failed",
   window_closed: " · app only (WhatsApp 24h window closed)",
   not_configured: " · app only (WhatsApp not set up)",
@@ -57,6 +60,8 @@ type Thread = {
   whatsapp: { phone: string; last_inbound_at: string | null } | null;
   student: { lead_id: string; name: string; email: string; phone: string };
   known: Record<string, string>;
+  /** Answers that look wrong (e.g. a bare "32" budget) and should be confirmed */
+  unclear?: Record<string, boolean>;
   messages: Message[];
 };
 
@@ -323,11 +328,19 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
                   )}
                   {knownFacts.length > 0 && (
                     <p className="mt-1 flex flex-wrap gap-1">
-                      {knownFacts.map(([k, v]) => (
-                        <span key={k} className="rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-600">
-                          {k}: {v}
-                        </span>
-                      ))}
+                      {knownFacts.map(([k, v]) => {
+                        const unclear = Boolean(thread?.unclear?.[k]);
+                        return (
+                          <span
+                            key={k}
+                            title={unclear ? "This answer is unclear — confirm it with the student" : undefined}
+                            className={`rounded px-1.5 py-0.5 text-[11px] ${unclear ? "bg-amber-100 text-amber-800" : "bg-slate-100 text-slate-600"}`}
+                          >
+                            {k}: {v}
+                            {unclear ? " ⚠ check" : ""}
+                          </span>
+                        );
+                      })}
                     </p>
                   )}
                 </div>

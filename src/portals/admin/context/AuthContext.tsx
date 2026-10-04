@@ -20,20 +20,28 @@ interface AuthValue {
 
 const AuthContext = createContext<AuthValue | null>(null);
 
+/** Roles whose home is the admin portal (see HOME_FOR_ROLE in shared/lib/session.ts). */
+const ADMIN_PORTAL_ROLES = ["super_admin", "admin", "branch_head", "accountant"];
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AppUser | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const boot = async () => {
+      // The stored user is shared by every staff portal: only admin-portal
+      // roles are let in, and only until the server confirms the role.
       const stored = readStoredUser<AppUser>();
-      if (stored) setUser(stored);
+      const storedOk = Boolean(stored && ADMIN_PORTAL_ROLES.includes(String(stored.role)));
+      if (storedOk) setUser(stored);
       try {
         const data = await api<{ user: AppUser }>("/me");
-        setUser(data.user);
-        await refreshStore();
-      } catch {
-        if (!stored) setUser(null);
+        const allowed = ADMIN_PORTAL_ROLES.includes(String(data.user?.role));
+        setUser(allowed ? data.user : null);
+        if (allowed) await refreshStore();
+      } catch (error) {
+        const offline = error instanceof Error && /Cannot reach/i.test(error.message);
+        if (!offline || !storedOk) setUser(null);
       } finally {
         setLoading(false);
       }

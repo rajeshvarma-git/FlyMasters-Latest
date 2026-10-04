@@ -124,7 +124,7 @@ export function StudentNotifications() {
           </div>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={fetchNotifications}>
+          <Button variant="outline" size="sm" onClick={() => void fetchNotifications()}>
             <RefreshCw className="w-4 h-4 mr-1" />
             Refresh
           </Button>

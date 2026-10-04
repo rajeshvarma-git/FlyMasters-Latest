@@ -133,9 +133,17 @@ export default function LeadDetail() {
 
   return (
     <div>
-      <Link to={backTo} className="mb-4 inline-flex items-center gap-2 text-sm text-slate-600 hover:text-sky-600">
-        <ArrowLeft className="h-4 w-4" /> {backLabel}
-      </Link>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <Link to={backTo} className="inline-flex items-center gap-2 text-sm text-slate-600 hover:text-sky-600">
+          <ArrowLeft className="h-4 w-4" /> {backLabel}
+        </Link>
+        <Link
+          to={`/student-chat?lead=${encodeURIComponent(lead.id)}`}
+          className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-white px-3 py-1.5 text-sm font-medium text-sky-700 hover:bg-sky-50"
+        >
+          <MessageCircle className="h-4 w-4" /> Open conversation & AI answers
+        </Link>
+      </div>
 
       <Card className="p-5">
         <div className="flex flex-wrap items-start gap-4">
