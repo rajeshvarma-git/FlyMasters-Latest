@@ -1090,6 +1090,7 @@ router.get("/api/case/me", anySession, requireStudent, async (req, res) => {
     await patchConversation(conversation, { student_last_read_at: new Date().toISOString() });
     res.json({
       conversation_id: conversation.id,
+      can_reply: !telecallerLocked(req, lead),
       owner,
       intake_complete: Boolean(conversation.intake_complete),
       messages: (await rawMessages(conversation.id)).map((m) => publicMessage(m)),
@@ -1367,6 +1368,11 @@ router.get("/api/case/lead/:leadId", anySession, requireStaff, scopeBranchHead, 
   }
 });
 
+/** Once a lead is converted the chat belongs to the counselor and admin; the telecaller can read it but not reply. */
+function telecallerLocked(req, lead) {
+  return req.user.role === ROLES.TELECALLER && (lead.entity_type === "student" || lead.lead_status === "converted");
+}
+
 function staffSenderRole(role) {
   return role === ROLES.COUNSELOR || role === ROLES.TELECALLER ? role : "admin";
 }
@@ -1377,6 +1383,9 @@ router.post("/api/case/lead/:leadId/messages", anySession, requireStaff, scopeBr
   try {
     const lead = await staffLead(req, res);
     if (!lead) return;
+    if (telecallerLocked(req, lead)) {
+      return res.status(403).json({ error: "This student has been converted, so the chat now belongs to the counselor and admin." });
+    }
     const conversation = await conversationFor(lead.user_id || null, lead.id);
     const senderRole = staffSenderRole(req.user.role);
     const message = await addMessage(conversation, {

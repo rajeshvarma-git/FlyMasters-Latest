@@ -211,7 +211,8 @@ export default function WhatsAppChat() {
     return msgs[msgs.length - 1]?.body || "No messages yet";
   };
 
-  const canSend = hasSendableWhatsAppNumber(selectedLead);
+  const converted = Boolean(selectedLead && (selectedLead.entity_type === "student" || selectedLead.lead_status === "converted"));
+  const canSend = hasSendableWhatsAppNumber(selectedLead) && !converted;
   const hasAnyPhone = Boolean(selectedLead && leadPhone(selectedLead));
 
   const send = async (e: FormEvent) => {
@@ -331,7 +332,9 @@ export default function WhatsAppChat() {
               {error && <p className="px-5 pb-2 text-sm text-rose-600">{error}</p>}
               {!canSend && (
                 <p className="px-5 pb-2 text-sm text-amber-700">
-                  {!selectedLead
+                  {converted
+                    ? "This student has been converted. The counselor and admin handle this chat now, so you can read it but not reply."
+                    : !selectedLead
                     ? "This chat is not linked to a lead assigned to you yet, so you can read it but not reply. Ask your admin to assign the lead to you."
                     : hasAnyPhone
                       ? "This number is incomplete. WhatsApp needs a 10-digit Indian number (or country code + number) before you can send."

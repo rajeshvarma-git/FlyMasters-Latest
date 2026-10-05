@@ -4,6 +4,7 @@ import jwt from "jsonwebtoken";
 import { getPool, mutateAppState, readAppState } from "./postgres";
 import { getSessionByToken, readBearerToken, type PublicUser } from "./studentAuth";
 import { deliveryStatusPatch, whatsappWindowOpen, latestWhatsAppInbound } from "../lib/waDelivery.mjs";
+import { sendWhatsAppOutreach, outreachTemplateName } from "../lib/waSend.mjs";
 import { JWT_SECRET, IS_PRODUCTION } from "../lib/env.mjs";
 
 const CODE_TTL_MS = 10 * 60 * 1000;
@@ -802,7 +803,7 @@ async function handleGetMessages(req: IncomingMessage, res: ServerResponse, conv
     messages,
     windowStatus: {
       open: windowOpen,
-      reason: windowOpen ? undefined : "WhatsApp only allows a free reply within 24 hours of the student's last message.",
+      reason: windowOpen ? undefined : "WhatsApp only allows a free reply within 24 hours of the student's last message. Your message will go out as an approved template; once the student taps Continue chat or replies, normal chat is open again.",
     },
   });
 }
@@ -826,8 +827,12 @@ async function handleSendReply(req: IncomingMessage, res: ServerResponse) {
   }
 
   const lastInbound = latestWhatsAppInbound(await loadTable("whatsapp_messages"), conversationId);
-  if (!whatsappWindowOpen(lastInbound)) {
-    sendJson(res, 409, { error: "WhatsApp reply window closed. A student message or an approved template is required." });
+  // Window closed (24 hours since the student's last message): WhatsApp only lets us send an
+  // approved template. Send the follow-up template carrying this message; once the student
+  // taps "Continue chat" or replies, free chat is open again.
+  const viaTemplate = !whatsappWindowOpen(lastInbound);
+  if (viaTemplate && !outreachTemplateName()) {
+    sendJson(res, 409, { error: "WhatsApp reply window closed, and no follow-up template is set up on the server yet. Ask an admin to set WHATSAPP_OUTREACH_TEMPLATE_NAME." });
     return;
   }
   // Checked after validating the request/access, not before (like
@@ -840,14 +845,26 @@ async function handleSendReply(req: IncomingMessage, res: ServerResponse) {
     return;
   }
 
-  const sent = await sendWhatsAppText(access.conversation.phone_number, text);
+  let waMessageId: string | null;
+  if (viaTemplate) {
+    try {
+      waMessageId = await sendWhatsAppOutreach(access.conversation.phone_number, access.lead?.first_name || "", text);
+    } catch (error: any) {
+      sendJson(res, 502, { error: `Could not send the follow-up template: ${String(error?.message || error).slice(0, 160)}` });
+      return;
+    }
+  } else {
+    const sent = await sendWhatsAppText(access.conversation.phone_number, text);
+    waMessageId = sent?.messages?.[0]?.id || null;
+  }
   const now = new Date().toISOString();
   const message = await insertRow("whatsapp_messages", {
     conversation_id: conversationId,
     direction: "outbound",
     body: text,
-    wa_message_id: sent?.messages?.[0]?.id || null,
+    wa_message_id: waMessageId,
     wa_status: "accepted",
+    ...(viaTemplate ? { wa_via: "template" } : {}),
     staff_id: user.id,
     is_read: true,
     created_at: now,

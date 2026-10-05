@@ -57,6 +57,7 @@ const WA_STATUS: Record<string, string> = {
 };
 
 type Thread = {
+  can_reply?: boolean;
   owner: Owner;
   whatsapp: { phone: string; last_inbound_at: string | null } | null;
   student: { lead_id: string; name: string; email: string; phone: string };
@@ -443,6 +444,11 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
                 <div ref={endRef} />
               </div>
 
+              {thread && thread.can_reply === false ? (
+                <p className="border-t bg-slate-50 p-3 text-center text-sm text-slate-500">
+                  This student has been converted. The counselor and admin handle this chat now, so you can read it but not reply.
+                </p>
+              ) : (
               <form
                 className="flex gap-2 border-t p-3"
                 onSubmit={(e) => {
@@ -466,6 +472,7 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
                   <Send className="h-4 w-4" /> Send
                 </button>
               </form>
+              )}
             </>
           )}
         </section>
