@@ -56,6 +56,9 @@ const STEPS = [
   { key: "field", ask: "Which field or program are you most interested in? (for example Computer Science, Business, or Nursing)" },
   { key: "score", ask: "What is your academic score — percentage or GPA?" },
   { key: "budget", ask: "What is your estimated study budget? (for example 20 lakhs or $25,000)" },
+  // Only asked when we don't already have a number (a chat that started on the web app).
+  // Chats that start on WhatsApp already have one, so they never see this question.
+  { key: "phone", ask: "Last one: what is your mobile number? Your Fly Masters advisor will call or WhatsApp you on it. (10 digits, or with country code)" },
 ];
 
 const ACK = {
@@ -64,6 +67,7 @@ const ACK = {
   field: (v) => `${v} is a strong path.`,
   score: (v) => `Thanks, ${v} noted.`,
   budget: (v) => `Budget noted: ${v}.`,
+  phone: () => "Thanks, I've saved your number.",
 };
 
 const SUPPORTED_COUNTRIES = ["USA", "UK", "Canada", "Australia", "Germany", "Ireland", "New Zealand", "India", "Nepal", "France", "Netherlands"];
@@ -117,6 +121,7 @@ function validateStep(key, value) {
   }
   if (key === "score") return validateScore(t);
   if (key === "budget") return validateBudget(t);
+  if (key === "phone") return validatePhone(t);
   return { value: t };
 }
 
@@ -142,6 +147,17 @@ function validateScore(t) {
     return { error: `Is ${t.trim()} a CGPA (out of 10) or a percentage? Please write it like "${n <= 10 ? `${n} CGPA` : `${n}%`}" (${example}).` };
   }
   return n <= 100 ? { value: t } : { error: `Please check your score (${example}).` };
+}
+
+function validatePhone(t) {
+  const digits = String(t).replace(/\D/g, "");
+  const example = "for example 9876543210 or +91 98765 43210";
+  const bad = { error: `Please enter a valid mobile number (${example}).` };
+  if (/^(\d)\1+$/.test(digits)) return bad;
+  if (digits.length === 10) return /^[6-9]/.test(digits) ? { value: digits } : bad;
+  if (digits.length === 12 && digits.startsWith("91")) return /^[6-9]/.test(digits.slice(2)) ? { value: digits } : bad;
+  if (digits.length >= 11 && digits.length <= 15) return { value: digits };
+  return bad;
 }
 
 function validateBudget(t) {
@@ -428,6 +444,8 @@ function knownProfile(profile, lead) {
       profile?.masters_score?.trim() || profile?.bachelors_score?.trim() || profile?.twelfth_grade_score?.trim() ||
       profile?.tenth_grade_score?.trim() || lead?.academic_score || "",
     budget: profile?.study_budget || prefs.study_budget || budgetFromNotes(profile?.student_notes) || budgetFromNotes(lead?.notes),
+    phone: [profile?.whatsapp_number, profile?.phone, lead?.whatsapp_number, lead?.phone]
+      .map((v) => String(v || "").replace(/\D/g, "")).find((d) => d.length >= 10) || "",
   };
 }
 
@@ -470,6 +488,7 @@ async function saveAnswer(studentUserId, lead, key, value, known) {
     if (key === "field") p.course_preferences = value;
     if (key === "score") p[scoreField(known.qualification)] = value;
     if (key === "budget") p.study_budget = value;
+    if (key === "phone") p.phone = value;
     await jsonUpsert("profiles", p);
   }
 
@@ -490,6 +509,7 @@ async function saveAnswer(studentUserId, lead, key, value, known) {
     }
     if (key === "score") l.academic_score = value;
     if (key === "budget") prefs.study_budget = value;
+    if (key === "phone") l.phone = value;
     l.preferences = prefs;
     Object.assign(lead, l);
     await jsonUpsert("student_leads", l);
@@ -645,8 +665,12 @@ async function announceOwner(conversation, owner) {
   const key = ownerKey(owner);
   if (conversation.announced_owner === key) return;
   if (owner.role !== "ai") {
+    // Only promise a call when we actually hold a number for this student.
+    const lead = conversation.lead_id ? await leadById(conversation.lead_id).catch(() => null) : null;
+    const profile = conversation.student_user_id ? await jsonFind("profiles", "user_id", conversation.student_user_id).catch(() => null) : null;
+    const hasNumber = Boolean(knownProfile(profile, lead).phone);
     const body = owner.role === "telecaller"
-      ? `📞 ${owner.name} from Fly Masters has been assigned to you and will assist you further. They may call you on your registered number.`
+      ? `📞 ${owner.name} from Fly Masters has been assigned to you and will assist you further.${hasNumber ? " They may call you on your registered number." : " Please share your mobile number here so they can reach you."}`
       : `🎓 ${owner.name} is now your Fly Masters counselor and will assist you further with universities, applications and documents.`;
     const notice = await addMessage(conversation, {
       senderRole: "system",
@@ -767,6 +791,7 @@ async function leadByPhone(phone) {
   const { rows } = await pool.query(
     `SELECT id, data, branch_id FROM app_records
       WHERE table_name = 'student_leads'
+        AND coalesce(data->>'merged_into','') = ''
         AND (${PHONE_MATCH("whatsapp_number")} OR ${PHONE_MATCH("phone")})
         AND (coalesce(data->>'user_id', '') = '' OR data->>'whatsapp_verified' = 'true'
           OR data->>'user_id' IN (
@@ -908,6 +933,73 @@ async function processWhatsAppInbound({ phone: rawPhone, contactName, body, sour
   return { leadId: String(lead.id), summary };
 }
 
+/**
+ * One person, one record. When a web-app student verifies their WhatsApp number,
+ * any lead that started on WhatsApp from that same number is folded into the
+ * student's own lead: answers, chat history and the WhatsApp thread move over,
+ * and the WhatsApp-only lead is hidden (kept, marked `merged_into`, never deleted).
+ * Only runs after the number is verified, so typing someone else's number can't
+ * pull their chat into your account.
+ */
+export async function linkWhatsAppLeads(studentUserId, rawPhone) {
+  const phone = normalizeWaPhone(rawPhone);
+  if (!studentUserId || !phone) return { merged: 0 };
+  const keep = await leadForStudent(studentUserId);
+  if (!keep) return { merged: 0 };
+  const { rows } = await pool.query(
+    `SELECT id, data FROM app_records
+      WHERE table_name = 'student_leads' AND id <> $2
+        AND coalesce(data->>'merged_into','') = ''
+        AND (coalesce(data->>'user_id','') = '' OR data->>'user_id' = id)
+        AND (${PHONE_MATCH("whatsapp_number")} OR ${PHONE_MATCH("phone")})`,
+    [phone, String(keep.id)],
+  );
+  if (!rows.length) return { merged: 0 };
+
+  const now = new Date().toISOString();
+  const keepConv = await conversationFor(studentUserId, keep.id);
+  for (const row of rows) {
+    const dup = { ...row.data, id: row.id };
+    // Fill only what the student's own record is missing.
+    const fill = { id: keep.id, updated_at: now };
+    for (const f of ["preferred_countries", "current_qualification", "qualification_level", "field_of_interest", "stream_or_program", "academic_score"]) {
+      const empty = keep[f] == null || keep[f] === "" || (Array.isArray(keep[f]) && !keep[f].length);
+      if (empty && dup[f]) fill[f] = dup[f];
+    }
+    fill.preferences = { ...(dup.preferences || {}), ...(keep.preferences || {}) };
+    fill.whatsapp_number = phone;
+    await jsonUpsert("student_leads", fill);
+    Object.assign(keep, fill);
+
+    // Move the WhatsApp chat into the student's one conversation.
+    const dupConvs = await rowsWhere("case_conversations", "lead_id", dup.id);
+    for (const dc of dupConvs) {
+      if (String(dc.id) === String(keepConv.id)) continue;
+      await pool.query(
+        `UPDATE app_records SET data = jsonb_set(data, '{conversation_id}', to_jsonb($2::text))
+          WHERE table_name = 'case_messages' AND data->>'conversation_id' = $1`,
+        [String(dc.id), String(keepConv.id)],
+      );
+      const later = (a, b) => (String(a || "") > String(b || "") ? a : b);
+      await patchConversation(keepConv, {
+        whatsapp_phone: phone,
+        whatsapp_last_inbound_at: later(dc.whatsapp_last_inbound_at, keepConv.whatsapp_last_inbound_at) || null,
+        ...(dc.intake_complete && !keepConv.intake_complete ? { intake_complete: true, intake_field: null } : {}),
+      });
+      await jsonUpsert("case_conversations", { id: dc.id, merged_into: String(keepConv.id) });
+    }
+    // The older staff WhatsApp screens follow the same lead.
+    await pool.query(
+      `UPDATE app_records SET data = jsonb_set(data, '{lead_id}', to_jsonb($2::text))
+        WHERE table_name = 'whatsapp_conversations' AND data->>'lead_id' = $1`,
+      [String(dup.id), String(keep.id)],
+    );
+    await jsonUpsert("student_leads", { id: dup.id, merged_into: String(keep.id), merged_at: now, lead_status: "merged", updated_at: now });
+    await pool.query("UPDATE student_leads SET lead_status = 'merged' WHERE id = $1", [String(dup.id)]).catch(() => {});
+  }
+  return { merged: rows.length };
+}
+
 /** Called when admin assigns a telecaller or counselor: the notice appears (and reaches WhatsApp) right away. */
 export async function announceCaseOwner(leadId) {
   const lead = await leadById(leadId);
@@ -1023,7 +1115,7 @@ router.get("/api/case/me/recommendations", anySession, requireStudent, async (re
     ]);
     const known = knownProfile(profile, lead);
     const saved = new Set(favorites.map((f) => String(f.university_id)));
-    const missing = STEPS.filter((s) => !String(known[s.key] || "").trim()).map((s) => LABELS[s.key]);
+    const missing = STEPS.filter((s) => !String(known[s.key] || "").trim()).map((s) => LABELS[s.key] || s.key);
     const universities = (await recommendations(known)).map((u) => ({ ...u, saved: saved.has(u.id) }));
     res.json({
       known,

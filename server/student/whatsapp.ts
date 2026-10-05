@@ -600,6 +600,10 @@ async function handleVerifyOtp(req: IncomingMessage, res: ServerResponse) {
     verified_at: new Date().toISOString(),
   });
   await markVerified(user, phone);
+  // Same person on the web app and WhatsApp: fold the WhatsApp-only lead into this account.
+  await import("../routes/cases.mjs")
+    .then(({ linkWhatsAppLeads }) => linkWhatsAppLeads(user.id, phone))
+    .catch((error: any) => console.error("[whatsapp] linking WhatsApp lead failed:", error?.message || error));
   sendJson(res, 200, { ok: true, verified: true, phone_number: formatDisplayPhone(phone) });
 }
 

@@ -1346,7 +1346,7 @@ async function loadState(scope = null) {
       email: lead.email || person.email,
       phone: lead.phone || person.phone,
     };
-  });
+  }).filter((lead) => !lead.merged_into);
 
   const studentIds = new Set(users.filter((row) => row.role === "student").map((row) => row.id));
   // Portal signups with no lead row of their own enter as HOT LEADS, not students.
