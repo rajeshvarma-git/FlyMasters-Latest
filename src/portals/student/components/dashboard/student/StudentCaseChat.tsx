@@ -7,6 +7,7 @@ import UniversityResults from '@student/components/chat/UniversityResults';
 import ExpertHelpSection from '@student/components/chat/ExpertHelpSection';
 import ChatInput from '@student/components/chat/ChatInput';
 import type { UniversityRecommendation } from '@student/lib/universityRecommendations';
+import { WhatsAppVerifyBanner } from '@student/components/whatsapp/WhatsAppVerifyBanner';
 import { getMyCase, sendCaseMessage, type CaseMessage, type CaseOwner } from '@student/lib/caseChatApi';
 
 /**
@@ -104,6 +105,7 @@ export function StudentCaseChat({ compact = false, onOpenFull, onOwnerChange }: 
   const [owner, setOwner] = useState<CaseOwner | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
+  const [intakeDone, setIntakeDone] = useState(false);
   const [sending, setSending] = useState(false);
   const endRef = useRef<HTMLDivElement>(null);
   const lastCount = useRef(0);
@@ -112,6 +114,7 @@ export function StudentCaseChat({ compact = false, onOpenFull, onOwnerChange }: 
     const data = await getMyCase();
     setMessages(data.messages);
     setOwner(data.owner);
+    setIntakeDone(Boolean((data as { intake_complete?: boolean }).intake_complete));
     setLoadError('');
   }, []);
 
@@ -159,6 +162,7 @@ export function StudentCaseChat({ compact = false, onOpenFull, onOwnerChange }: 
     try {
       const result = await sendCaseMessage(body);
       setOwner(result.owner);
+      setIntakeDone(Boolean(result.intake_complete));
       setMessages((prev) => [...prev.filter((m) => m.id !== temp.id), ...result.messages]);
     } catch (error) {
       setMessages((prev) => prev.filter((m) => m.id !== temp.id));
@@ -188,6 +192,7 @@ export function StudentCaseChat({ compact = false, onOpenFull, onOwnerChange }: 
 
   const body = (
     <>
+          {!compact && intakeDone && <WhatsAppVerifyBanner onVerified={() => { void load(); }} />}
           {!compact && owner && owner.role !== 'ai' && (
             <div className="flex items-center gap-2 border-b px-4 py-2 text-xs text-muted-foreground">
               {owner.role === 'telecaller' ? <Headphones className="w-4 h-4" /> : <GraduationCap className="w-4 h-4" />}
