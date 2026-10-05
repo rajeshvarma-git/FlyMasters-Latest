@@ -536,11 +536,17 @@ async function handleSendOtp(req: IncomingMessage, res: ServerResponse) {
       sent_at: new Date().toISOString(),
     });
   } catch (error: any) {
+    const metaCode = error?.details?.error?.code;
+    const metaDetail = error?.details?.error?.error_data?.details;
+    console.error("[whatsapp] OTP send failed:", error?.message, metaCode ? `(Meta code ${metaCode})` : "", metaDetail || "");
     if (verification?.id) {
-      await updateRow("whatsapp_verifications", verification.id, { status: "failed" }).catch(() => null);
+      await updateRow("whatsapp_verifications", verification.id, {
+        status: "failed",
+        error: String(error?.message || "").slice(0, 300),
+      }).catch(() => null);
     }
     sendJson(res, error.status && error.status < 500 ? 400 : 502, {
-      error: error.message || "Could not send the WhatsApp OTP template.",
+      error: `${error.message || "Could not send the WhatsApp OTP template."}${metaCode ? ` (Meta code ${metaCode})` : ""}`,
     });
     return;
   } finally {
