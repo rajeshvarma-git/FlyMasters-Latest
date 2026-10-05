@@ -169,7 +169,7 @@ export async function verifyOtpForUser(pool, userId, phoneInput, codeInput) {
   const leads = await jsonTable(pool, "student_leads");
   for (const lead of leads.filter((row) => String(row.user_id) === String(userId))) {
     await jsonUpsert(pool, "student_leads", {
-      ...lead,
+      id: lead.id,
       phone: phoneDigits(phoneInput),
       whatsapp_number: phone,
       whatsapp_verified: true,
@@ -754,7 +754,7 @@ export async function handleIncomingWhatsApp(pool, { from, body, waMessageId, no
     createdLead = true;
   } else {
     await jsonUpsert(pool, "student_leads", {
-      ...lead,
+      id: lead.id,
       whatsapp_number: lead.whatsapp_number || phone,
       last_channel: "whatsapp",
       last_message_preview: preview,

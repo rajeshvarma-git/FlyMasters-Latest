@@ -21,8 +21,8 @@ export default function StudentChecklist() {
   const selected = params.get("student") || "";
 
   useEffect(() => {
-    api<{ students?: Student[]; leads?: Student[] }>("/counselor/students")
-      .then((data) => setStudents(data.students || data.leads || []))
+    api<{ leads?: (Student & { entity_type?: string })[] }>("/state")
+      .then((data) => setStudents((data.leads || []).filter((lead) => lead.entity_type === "student")))
       .catch((err) => setError(err instanceof Error ? err.message : "Could not load your students"));
   }, []);
 

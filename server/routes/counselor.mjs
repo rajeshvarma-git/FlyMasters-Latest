@@ -89,6 +89,9 @@ function mergeStudents(...lists) {
   const byUser = new Map();
   const byEmail = new Map();
   const byEmailKey = new Map();
+  // WhatsApp-only students have no portal account and no email. They used to be dropped
+  // here, so a counselor was assigned a student and never saw them in their list.
+  const byId = new Map();
 
   const attach = (row) => {
     const uid = row.user_id ? String(row.user_id) : "";
@@ -96,6 +99,7 @@ function mergeStudents(...lists) {
     const key = emailLocalKey(email);
     const current = (uid && byUser.get(uid))
       || (email && byEmail.get(email))
+      || (!uid && !email && row.id ? byId.get(String(row.id)) : null)
       || null;
     const converted = isLeadConverted(row) || isLeadConverted(current);
     const convertedRow = isLeadConverted(current) ? current : isLeadConverted(row) ? row : null;
@@ -124,6 +128,7 @@ function mergeStudents(...lists) {
         }
       : row;
     if (merged.user_id) byUser.set(String(merged.user_id), merged);
+    if (!merged.user_id && !String(merged.email || "").trim() && merged.id) byId.set(String(merged.id), merged);
     const nextEmail = String(merged.email || "").trim().toLowerCase();
     if (nextEmail) byEmail.set(nextEmail, merged);
     const nextKey = emailLocalKey(nextEmail);
@@ -135,8 +140,8 @@ function mergeStudents(...lists) {
 
   const seen = new Set();
   const out = [];
-  for (const row of [...byUser.values(), ...byEmail.values()]) {
-    const key = row.user_id ? `u:${row.user_id}` : `e:${String(row.email || "").trim().toLowerCase()}`;
+  for (const row of [...byUser.values(), ...byEmail.values(), ...byId.values()]) {
+    const key = row.user_id ? `u:${row.user_id}` : (String(row.email || "").trim() ? `e:${String(row.email).trim().toLowerCase()}` : `i:${row.id}`);
     if (!key.endsWith(":") && seen.has(key)) continue;
     if (seen.has(key)) continue;
     seen.add(key);

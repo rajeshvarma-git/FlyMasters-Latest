@@ -378,14 +378,21 @@ async function mergeCounselorSqlShortlists(
         created_at: asIso(row.created_at),
         updated_at: asIso(row.updated_at || row.created_at),
       };
+      // The main (JSON) record is the live one: the app saves chat answers, notes and
+      // assignments there. The SQL row is only a mirror. This used to replace the JSON
+      // record with the mirror, which wiped those fields for every lead each time the
+      // student portal read its data (once any counselor shortlist existed). Now the
+      // mirror only fills in what the main record doesn't have.
+      const mirrorOnly = Object.fromEntries(Object.entries(mappedLead).filter(([, value]) => value !== null && value !== undefined));
       const leadIndex = tables.student_leads.findIndex((item) => String(item.id) === mappedLead.id);
-      if (leadIndex >= 0) tables.student_leads[leadIndex] = { ...tables.student_leads[leadIndex], ...mappedLead };
+      if (leadIndex >= 0) tables.student_leads[leadIndex] = { ...mirrorOnly, ...tables.student_leads[leadIndex] };
       else tables.student_leads.push(mappedLead);
       await pool.query(
-        `INSERT INTO app_records (id, table_name, data)
-         VALUES ($1, 'student_leads', $2::jsonb)
-         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, table_name = EXCLUDED.table_name, updated_at = now()`,
-        [mappedLead.id, JSON.stringify(mappedLead)]
+        `INSERT INTO app_records (id, table_name, data, branch_id)
+         VALUES ($1, 'student_leads', $2::jsonb, $3::uuid)
+         ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data || app_records.data,
+           branch_id = COALESCE(app_records.branch_id, EXCLUDED.branch_id)`,
+        [mappedLead.id, JSON.stringify(mirrorOnly), row.branch_id || null]
       ).catch(() => null);
     }
   } catch {

@@ -76,6 +76,23 @@ export function createWhatsAppService(deps) {
     return convertedAssigned || matches[0];
   }
 
+  /**
+   * Save only the fields this module owns onto a lead. The old code re-saved the whole lead
+   * it had read a moment earlier (SQL columns included), so a message arriving while the AI
+   * chat was saving the student's answers could wipe them (country, field, score) back to
+   * empty. A lead that exists only in the SQL table is copied across once, without its empty
+   * columns, so the JSON record the rest of the app reads is complete.
+   */
+  async function patchLead(lead, patch) {
+    const id = String(lead.id);
+    const rows = await jsonTable("student_leads");
+    if (rows.some((row) => String(row.id) === id)) {
+      return jsonUpsert("student_leads", { id, ...patch });
+    }
+    const filled = Object.fromEntries(Object.entries(lead).filter(([, value]) => value !== null && value !== undefined));
+    return jsonUpsert("student_leads", { ...filled, ...patch, id });
+  }
+
   async function findLeadByPhone(phone) {
     const leads = await allLeads();
     return pickBestLeadForPhone(leads.filter((row) => leadPhoneMatches(row, phone)));
@@ -324,7 +341,11 @@ export function createWhatsAppService(deps) {
       phone: lead.phone || phoneNumber.slice(-10),
       lead_source: lead.lead_source || "whatsapp",
     };
-    await jsonUpsert("student_leads", freshLead);
+    await patchLead(lead, {
+      whatsapp_number: phoneNumber,
+      phone: freshLead.phone,
+      lead_source: freshLead.lead_source,
+    });
 
     let conversation = await getOrCreateConversation(freshLead, from);
     conversation = await syncConversationStaff(conversation, freshLead);
@@ -470,7 +491,7 @@ export function createWhatsAppService(deps) {
       whatsapp_number: phone,
       phone: lead.phone || phone.slice(-10),
     };
-    await jsonUpsert("student_leads", freshLead);
+    await patchLead(lead, { whatsapp_number: phone, phone: freshLead.phone });
     const conversation = await getOrCreateConversation(freshLead, phone);
 
     let waMessageId = "";
@@ -557,10 +578,7 @@ export function createWhatsAppService(deps) {
 
     await sendOtpMessage(normalized, code);
 
-    await jsonUpsert("student_leads", {
-      ...lead,
-      whatsapp_number: normalized,
-    });
+    await patchLead(lead, { whatsapp_number: normalized });
 
     return { ok: true, phone: normalized.slice(-10), expiresInMinutes: OTP_EXPIRY_MINUTES };
   }
@@ -600,8 +618,7 @@ export function createWhatsAppService(deps) {
 
     const lead = await findLeadForUser(userId);
     if (lead) {
-      await jsonUpsert("student_leads", {
-        ...lead,
+      await patchLead(lead, {
         whatsapp_number: normalized,
         whatsapp_verified: true,
         whatsapp_verified_at: now,
