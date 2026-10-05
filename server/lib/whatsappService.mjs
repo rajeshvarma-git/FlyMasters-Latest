@@ -405,7 +405,7 @@ export function createWhatsAppService(deps) {
           type: "template",
           template: {
             name: templateName,
-            language: { code: "en" },
+            language: { code: String(process.env.WHATSAPP_OUTREACH_TEMPLATE_LANGUAGE || "en").trim() || "en" },
             ...((templateParams || []).length
               ? {
                   components: [

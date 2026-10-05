@@ -35,7 +35,7 @@ import crypto from "crypto";
 import { pool, jsonTable, jsonFind, jsonUpsert } from "../lib/db.mjs";
 import { anySession, branchScope, ROLES } from "../lib/auth.mjs";
 import { geminiJson, geminiConfigured } from "../lib/gemini.mjs";
-import { sendWhatsAppText, whatsappSendConfigured, normalizeWaPhone } from "../lib/waSend.mjs";
+import { sendWhatsAppText, sendWhatsAppOutreach, outreachTemplateName, whatsappSendConfigured, normalizeWaPhone } from "../lib/waSend.mjs";
 
 const router = express.Router();
 
@@ -296,6 +296,7 @@ function publicMessage(row, { staff = false } = {}) {
   if (staff) {
     msg.original_body = row.original_body || null;
     msg.wa_status = row.wa_status || null;
+    msg.wa_via = row.wa_via || null;
   }
   return msg;
 }
@@ -722,8 +723,18 @@ async function deliverToWhatsApp(conversation, rows) {
     if (!row || row.sender_role === "student" || !String(row.body || "").trim()) continue;
     let patch;
     if (!whatsappSendConfigured()) patch = { wa_status: "not_configured" };
-    else if (!windowOpen) patch = { wa_status: "window_closed" };
-    else {
+    else if (!windowOpen && !outreachTemplateName()) patch = { wa_status: "window_closed" };
+    else if (!windowOpen) {
+      // Window closed: reach the student with the approved template instead.
+      try {
+        const lead = conversation.lead_id ? await leadById(conversation.lead_id) : null;
+        const first = String(lead?.first_name || "").trim();
+        patch = { wa_status: "accepted", wa_via: "template", wa_message_id: await sendWhatsAppOutreach(to, first, whatsappText(row)) };
+      } catch (error) {
+        console.error("[case-wa] template send failed:", error.message || error);
+        patch = { wa_status: "window_closed", wa_error: String(error.message || error).slice(0, 200) };
+      }
+    } else {
       try {
         patch = { wa_status: "accepted", wa_message_id: await sendWhatsAppText(to, whatsappText(row)) };
       } catch (error) {

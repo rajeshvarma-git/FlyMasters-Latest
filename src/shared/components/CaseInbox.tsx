@@ -41,6 +41,7 @@ type Message = {
   reviewed_by_name: string | null;
   original_body: string | null;
   /** Whether this reply reached the student's WhatsApp */
+  wa_via?: string | null;
   wa_status?: "accepted" | "sent" | "delivered" | "read" | "failed" | "window_closed" | "not_configured" | null;
   created_at: string;
 };
@@ -51,7 +52,7 @@ const WA_STATUS: Record<string, string> = {
   delivered: " · delivered on WhatsApp",
   read: " · read on WhatsApp",
   failed: " · WhatsApp send failed",
-  window_closed: " · app only (WhatsApp 24h window closed)",
+  window_closed: " · app only (WhatsApp 24h window closed, no template set up)",
   not_configured: " · app only (WhatsApp not set up)",
 };
 
@@ -433,7 +434,7 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
                         <p className={`mt-1 text-[10px] ${student || ai ? "text-slate-400" : "text-emerald-100"}`}>
                           {when(m.created_at)}
                           {m.channel === "whatsapp" ? " · WhatsApp" : ""}
-                          {m.sender_role !== "student" && m.wa_status ? WA_STATUS[m.wa_status] || "" : ""}
+                          {m.sender_role !== "student" && m.wa_status ? (WA_STATUS[m.wa_status] || "") + (m.wa_via === "template" ? " (template message)" : "") : ""}
                         </p>
                       </div>
                     </div>
