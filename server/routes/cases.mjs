@@ -1071,16 +1071,20 @@ async function handleStudentMessage(conversation, studentUserId, lead, owner, te
       return;
     }
     const profile = studentUserId ? await jsonFind("profiles", "user_id", studentUserId).catch(() => null) : null;
-    const before = knownProfile(profile, lead);
+    // The chat keeps its own copy of the answers it has collected. If saving to the
+    // profile or lead is delayed or fails, the AI still never re-asks a question.
+    const before = { ...knownProfile(profile, lead), ...(conversation.intake_answers || {}) };
     await saveAnswer(studentUserId, lead, step.key, checked.value, before);
+    const answers = { ...(conversation.intake_answers || {}), [step.key]: checked.value };
     const known = { ...before, [step.key]: checked.value };
     const next = nextMissing(known);
     if (next) {
       await aiSay(conversation, `${ACK[step.key](checked.value)} ${next.ask}`);
-      await patchConversation(conversation, { intake_field: next.key });
+      await patchConversation(conversation, { intake_field: next.key, intake_answers: answers });
     } else {
       await aiSay(conversation, ACK[step.key](checked.value));
       await finishIntake(conversation, known);
+      await patchConversation(conversation, { intake_answers: null });
     }
     return;
   }
