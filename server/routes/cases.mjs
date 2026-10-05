@@ -948,6 +948,21 @@ export async function linkWhatsAppLeads(studentUserId, rawPhone) {
   if (!studentUserId || !phone) return { merged: 0 };
   const keep = await leadForStudent(studentUserId);
   if (!keep) return { merged: 0 };
+  // A verified number is where this student's chat can reach WhatsApp from now on, and the
+  // student hears about it there once (the follow-up template when the 24-hour window is closed).
+  try {
+    const own = await conversationFor(studentUserId, keep.id);
+    if (own.whatsapp_phone !== phone) await patchConversation(own, { whatsapp_phone: phone });
+    const notice = await addMessage(own, {
+      senderRole: "system",
+      kind: "system",
+      body: "✅ WhatsApp verified. Your advisor's replies and updates will reach you on WhatsApp too — reply here any time.",
+      sourceId: `wa-verified:${own.id}:${phone}`,
+    });
+    await deliverToWhatsApp(own, [notice]);
+  } catch (error) {
+    console.error("[case] verified-number notice failed:", error?.message || error);
+  }
   const { rows } = await pool.query(
     `SELECT id, data FROM app_records
       WHERE table_name = 'student_leads' AND id <> $2
