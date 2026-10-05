@@ -169,6 +169,8 @@ function validateBudget(t) {
   return { error: `Is that ${n} lakhs? Please add the unit, like "${n} lakhs" or "$${n},000" (${example}).` };
 }
 
+const UNI_INTENT = /\b(universit(y|ies)|colleges?|courses?|programs?|programmes?|shortlist|options)\b/i;
+const ACK_ONLY = /^(ok+(ay)?|k+|thanks?( you)?|thank u|thx|ty|yes|yeah|yep|no|nope|fine|cool|great|sure|got it|👍|🙏|😊|👌)[\s!.]*$/i;
 const GREETING = /^(hi+|hello+|hey+|hii+|good (morning|afternoon|evening)|namaste|hai)\b[\s!.,]*(there|team|sir|madam|mam)?[\s!.,]*$/i;
 
 function looksLikeQuestion(text) {
@@ -1200,8 +1202,25 @@ async function handleStudentMessage(conversation, studentUserId, lead, owner, te
     await aiSay(conversation, `Hi! 👋 ${who}.`);
     return;
   }
-  if (!looksLikeQuestion(text) && text.split(/\s+/).length < 4) return;
-  await routeToStaff(conversation, owner, messages);
+  // Asking for universities / courses: show real matches right here (a country in the message wins).
+  if (UNI_INTENT.test(text)) {
+    const profile = studentUserId ? await jsonFind("profiles", "user_id", studentUserId).catch(() => null) : null;
+    const known = { ...knownProfile(profile, lead), ...(conversation.intake_answers || {}) };
+    const named = text.toLowerCase().split(/[^a-z]+/).map((w) => COUNTRY_ALIASES[w]).find(Boolean);
+    const country = named || known.country;
+    const unis = country ? (await recommendations({ ...known, country })).slice(0, 4) : [];
+    if (unis.length) {
+      const list = unis.map((u, i) => `${i + 1}. ${u.name}${u.location ? ` (${u.location})` : ""}${u.ranking && u.ranking !== "University catalogue" ? ` — ${u.ranking}` : ""}`).join("\n");
+      await aiSay(conversation, `🎓 Top matches in ${country}:\n${list}\n\nWant fees, intakes or help applying? Tell me which one, and your advisor will confirm the details.`);
+      return;
+    }
+  }
+  // Only a bare "ok" / "thanks" / emoji needs no reply — on WhatsApp silence looks like a broken bot.
+  if (ACK_ONLY.test(text.trim())) return;
+  const routed = await routeToStaff(conversation, owner, messages);
+  if (!routed && owner.role === "ai" && text.split(/\s+/).length >= 2) {
+    await aiSay(conversation, "Noted 👍 An advisor will reply here soon. Meanwhile, ask me about universities, visas, documents or fees.");
+  }
 }
 
 // Student events go to the assigned advisor, or Admin's allocation queue.
