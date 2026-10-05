@@ -1355,7 +1355,7 @@ async function loadState(scope = null) {
     loadUsers(),
   ]);
 
-  const leads = mergeLeadSources(
+  const allLeads = mergeLeadSources(
     sqlLeads.rows.map(asLead),
     jsonLeads.map(asLead),
   ).map((lead) => {
@@ -1368,7 +1368,10 @@ async function loadState(scope = null) {
       email: lead.email || person.email,
       phone: lead.phone || person.phone,
     };
-  }).filter((lead) => !lead.merged_into);
+  });
+  // Hidden only while the record it was folded into still exists (a deleted student must not hide the lead).
+  const leadIds = new Set(allLeads.map((lead) => String(lead.id)));
+  const leads = allLeads.filter((lead) => !lead.merged_into || !leadIds.has(String(lead.merged_into)));
 
   const studentIds = new Set(users.filter((row) => row.role === "student").map((row) => row.id));
   // Portal signups with no lead row of their own enter as HOT LEADS, not students.

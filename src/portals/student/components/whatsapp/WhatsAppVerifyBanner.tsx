@@ -31,7 +31,6 @@ export function WhatsAppVerifyBanner({ onVerified, checkKey }: { onVerified?: ()
   const [message, setMessage] = useState('');
   const [wait, setWait] = useState(0);
   const verifiedRef = useRef(false);
-  const dismissedRef = useRef(false);
   const autoSentFor = useRef('');
   const busyRef = useRef(false);
 
@@ -74,7 +73,7 @@ export function WhatsAppVerifyBanner({ onVerified, checkKey }: { onVerified?: ()
   // Look at the verification status whenever the chat changes; open the popup when a number exists
   // but isn't verified, and send the code once for that number.
   useEffect(() => {
-    if (verifiedRef.current || dismissedRef.current || open) return;
+    if (verifiedRef.current || open) return;
     let cancelled = false;
     getWhatsAppVerificationStatus()
       .then((result) => {
@@ -209,18 +208,6 @@ export function WhatsAppVerifyBanner({ onVerified, checkKey }: { onVerified?: ()
 
         {message && step !== 'verified' ? <p className="mt-3 text-xs text-muted-foreground">{message}</p> : null}
 
-        {step !== 'verified' ? (
-          <button
-            type="button"
-            className="mt-4 w-full text-center text-xs text-muted-foreground/70 hover:text-muted-foreground"
-            onClick={() => {
-              dismissedRef.current = true;
-              setOpen(false);
-            }}
-          >
-            Skip for now
-          </button>
-        ) : null}
       </div>
     </div>
   );
