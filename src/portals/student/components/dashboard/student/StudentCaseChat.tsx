@@ -192,7 +192,7 @@ export function StudentCaseChat({ compact = false, onOpenFull, onOwnerChange }: 
 
   const body = (
     <>
-          {!compact && <WhatsAppVerifyBanner onVerified={() => { void load(); }} />}
+          <WhatsAppVerifyBanner checkKey={messages.length} onVerified={() => { void load(); }} />
           {!compact && owner && owner.role !== 'ai' && (
             <div className="flex items-center gap-2 border-b px-4 py-2 text-xs text-muted-foreground">
               {owner.role === 'telecaller' ? <Headphones className="w-4 h-4" /> : <GraduationCap className="w-4 h-4" />}
