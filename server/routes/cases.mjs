@@ -35,7 +35,7 @@ import crypto from "crypto";
 import { pool, jsonTable, jsonFind, jsonUpsert } from "../lib/db.mjs";
 import { anySession, branchScope, ROLES } from "../lib/auth.mjs";
 import { geminiJson, geminiConfigured } from "../lib/gemini.mjs";
-import { sendWhatsAppText, sendWhatsAppOutreach, outreachTemplateName, whatsappSendConfigured, normalizeWaPhone } from "../lib/waSend.mjs";
+import { sendWhatsAppText, sendWhatsAppOutreach, outreachTemplateName, outreachButtonText, whatsappSendConfigured, normalizeWaPhone } from "../lib/waSend.mjs";
 
 const router = express.Router();
 
@@ -1039,6 +1039,23 @@ router.get("/api/case/me/recommendations", anySession, requireStudent, async (re
 });
 
 async function handleStudentMessage(conversation, studentUserId, lead, owner, text) {
+  // Not an answer: the tap on the follow-up template's button, or a photo/file/voice note.
+  const resumeTap = text.trim().toLowerCase() === outreachButtonText().toLowerCase();
+  const attachment = /^\[[^\]]+\]/.test(text.trim());
+  if (resumeTap || attachment) {
+    const step = !conversation.intake_complete && conversation.intake_field ? STEPS.find((s) => s.key === conversation.intake_field) : null;
+    const who = owner.role === "ai"
+      ? "Ask me about universities, visas, documents or fees"
+      : `${owner.name}, your ${owner.role}, will reply here`;
+    if (resumeTap) {
+      await aiSay(conversation, step ? `Welcome back! 👋 Let's continue.\n\n${step.ask}` : `Welcome back! 👋 ${who}.`);
+    } else {
+      const note = "I can only read text messages on WhatsApp. To share documents, please upload them in the Documents section of your Fly Masters student portal.";
+      await aiSay(conversation, step ? `${note}\n\n${step.ask}` : `${note} ${owner.role === "ai" ? "" : `${owner.name} can see your message.`}`.trim());
+      if (owner.role !== "ai") await routeToStaff(conversation, owner, await rawMessages(conversation.id));
+    }
+    return;
+  }
   // 1. Still in the guided questions.
   if (!conversation.intake_complete && conversation.intake_field) {
     const step = STEPS.find((s) => s.key === conversation.intake_field) || STEPS[0];

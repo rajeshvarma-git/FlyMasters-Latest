@@ -1063,7 +1063,7 @@ function extractInboundBody(message: any) {
   }
   if (message.image) return message.image.caption || "[Image]";
   if (message.video) return message.video.caption || "[Video]";
-  if (message.document) return message.document.caption || message.document.filename || "[Document]";
+  if (message.document) return message.document.caption || (message.document.filename ? `[Document: ${message.document.filename}]` : "[Document]");
   if (message.audio) return "[Audio]";
   if (message.sticker) return "[Sticker]";
   if (message.location) return "[Location]";
@@ -1255,12 +1255,13 @@ async function handleDiagnostics(req: IncomingMessage, res: ServerResponse) {
     sendJson(res, 403, { error: "Admins only." });
     return;
   }
-  const { recentSends } = await import("../lib/waSend.mjs");
+  const { recentSends, outreachTemplateName } = await import("../lib/waSend.mjs");
   const config = {
     access_token: Boolean(getAccessToken()),
     phone_number_id: Boolean(getPhoneNumberId()),
     verify_token: Boolean(getVerifyToken()),
     app_secret: Boolean(getAppSecret()),
+    followup_template: Boolean(outreachTemplateName()),
     production: process.env.NODE_ENV === "production",
     graph_version: getGraphVersion(),
   };
@@ -1268,6 +1269,7 @@ async function handleDiagnostics(req: IncomingMessage, res: ServerResponse) {
   if (!config.access_token || !config.phone_number_id) problems.push("WHATSAPP_API_KEY (or WHATSAPP_ACCESS_TOKEN) and WHATSAPP_PHONE_NUMBER_ID must both be set, or no reply can be sent.");
   if (!config.verify_token) problems.push("WHATSAPP_WEBHOOK_VERIFY_TOKEN is not set, so Meta cannot verify the webhook URL.");
   if (!config.app_secret && config.production) problems.push("WHATSAPP_APP_SECRET is not set: in production every incoming message is rejected.");
+  if (!config.followup_template) problems.push("No follow-up template is set (WHATSAPP_OUTREACH_TEMPLATE_NAME). Staff can only reply to students who messaged in the last 24 hours; after that replies stay in the app.");
   if (!webhookLog.length) problems.push("No webhook call has reached this server since it last started. Check the Callback URL in Meta (WhatsApp → Configuration) points to /api/whatsapp/webhook on this site and that 'messages' is subscribed.");
   sendJson(res, 200, {
     config,

@@ -23,6 +23,7 @@ const CONFIG_LABELS: [string, string][] = [
   ["phone_number_id", "Phone number ID"],
   ["verify_token", "Webhook verify token"],
   ["app_secret", "App secret (signature check)"],
+  ["followup_template", "Follow-up template (after 24h)"],
 ];
 
 const RESULT_TEXT: Record<string, string> = {

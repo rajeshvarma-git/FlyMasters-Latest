@@ -47,10 +47,15 @@ const outreachLanguage = () => clean(process.env.WHATSAPP_OUTREACH_TEMPLATE_LANG
 const templateParam = (value) =>
   String(value ?? "").replace(/[\r\n\t]+/g, " ").replace(/ {4,}/g, "   ").trim().slice(0, 900) || "-";
 
-/** Sends the approved outreach template ({{1}} = first name, {{2}} = message). Returns the message id. */
-export async function sendWhatsAppOutreach(to, firstName, text) {
-  const name = outreachTemplateName();
-  if (!name) throw new Error("No outreach template configured");
+/** Label of the template's quick-reply button; a tap arrives as an inbound message with this text. */
+export const outreachButtonText = () => String(process.env.WHATSAPP_OUTREACH_BUTTON_TEXT || "Continue chat").trim();
+const outreachHasButton = () => String(process.env.WHATSAPP_OUTREACH_TEMPLATE_BUTTON || "true").toLowerCase() !== "false";
+
+async function postTemplate(to, name, parameters, withButton) {
+  const components = [{ type: "body", parameters }];
+  if (withButton) {
+    components.push({ type: "button", sub_type: "quick_reply", index: "0", parameters: [{ type: "payload", payload: "CONTINUE_CHAT" }] });
+  }
   const res = await fetch(`${base()}/${version()}/${phoneNumberId()}/messages`, {
     method: "POST",
     signal: AbortSignal.timeout(10000),
@@ -59,11 +64,7 @@ export async function sendWhatsAppOutreach(to, firstName, text) {
       messaging_product: "whatsapp",
       to,
       type: "template",
-      template: {
-        name,
-        language: { code: outreachLanguage() },
-        components: [{ type: "body", parameters: [templateParam(firstName || "there"), templateParam(text)].map((t) => ({ type: "text", text: t })) }],
-      },
+      template: { name, language: { code: outreachLanguage() }, components },
     }),
   });
   const body = await res.json().catch(() => ({}));
@@ -71,11 +72,37 @@ export async function sendWhatsAppOutreach(to, firstName, text) {
   if (!res.ok || !messageId) {
     const error = new Error(body?.error?.message || `WhatsApp template failed (${res.status})`);
     error.code = body?.error?.code;
+    throw error;
+  }
+  return messageId;
+}
+
+/**
+ * Sends the approved follow-up template: {{1}} = first name, {{2}} = the message,
+ * plus a "Continue chat" quick-reply button. Used for every staff message once
+ * Meta's 24-hour reply window is closed; the student's tap (or any reply)
+ * reopens free chat. Returns the message id.
+ */
+export async function sendWhatsAppOutreach(to, firstName, text) {
+  const name = outreachTemplateName();
+  if (!name) throw new Error("No outreach template configured");
+  const parameters = [templateParam(firstName || "there"), templateParam(text)].map((t) => ({ type: "text", text: t }));
+  try {
+    let id;
+    try {
+      id = await postTemplate(to, name, parameters, outreachHasButton());
+    } catch (error) {
+      // 132000 / 132012: the approved template's shape differs (e.g. created without the button).
+      if (outreachHasButton() && [132000, 132012, 132005].includes(Number(error.code))) {
+        id = await postTemplate(to, name, parameters, false);
+      } else throw error;
+    }
+    logSend({ to: mask(to), ok: true, template: true });
+    return id;
+  } catch (error) {
     logSend({ to: mask(to), ok: false, template: true, error: String(error.message).slice(0, 200) });
     throw error;
   }
-  logSend({ to: mask(to), ok: true, template: true });
-  return messageId;
 }
 
 /** Sends a plain text message. Returns the WhatsApp message id; throws on failure. */

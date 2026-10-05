@@ -1,4 +1,5 @@
 import crypto, { randomBytes, scryptSync, timingSafeEqual } from "crypto";
+import { sendWhatsAppOutreach } from "./waSend.mjs";
 
 const OTP_EXPIRY_MINUTES = 10;
 const OTP_RATE_LIMIT_MS = 60_000;
@@ -479,11 +480,7 @@ export function createWhatsAppService(deps) {
     } catch (error) {
       const templateName = config.outreachTemplateName;
       if (isOutsideWindowError(error) && templateName) {
-        waMessageId = await sendViaMeta({
-          to: phone,
-          templateName,
-          templateParams: [freshLead.first_name || "there", body].filter(Boolean).slice(0, 2),
-        });
+        waMessageId = await sendWhatsAppOutreach(phone, freshLead.first_name, body);
         usedTemplate = true;
       } else if (isOutsideWindowError(error)) {
         throw Object.assign(
