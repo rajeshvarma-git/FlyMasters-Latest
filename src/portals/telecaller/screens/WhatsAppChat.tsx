@@ -331,9 +331,11 @@ export default function WhatsAppChat() {
               {error && <p className="px-5 pb-2 text-sm text-rose-600">{error}</p>}
               {!canSend && (
                 <p className="px-5 pb-2 text-sm text-amber-700">
-                  {hasAnyPhone
-                    ? "This number is incomplete. WhatsApp needs a 10-digit Indian number (or country code + number) before you can send."
-                    : "Add a 10-digit phone number on this lead before you can send WhatsApp."}
+                  {!selectedLead
+                    ? "This chat is not linked to a lead assigned to you yet, so you can read it but not reply. Ask your admin to assign the lead to you."
+                    : hasAnyPhone
+                      ? "This number is incomplete. WhatsApp needs a 10-digit Indian number (or country code + number) before you can send."
+                      : "Add a 10-digit phone number on this lead before you can send WhatsApp."}
                 </p>
               )}
 

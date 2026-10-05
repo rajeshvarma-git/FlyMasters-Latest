@@ -89,3 +89,32 @@ export async function setUserBranches(userId, branchIds, assignedBy = null) {
   );
   return unique;
 }
+
+/**
+ * One-time-safe repair, run at start-up: a lead assigned to a telecaller who is not in the
+ * lead's branch is invisible to that telecaller. Move such leads into the telecaller's
+ * first branch. Idempotent (does nothing once leads and owners agree).
+ */
+export async function alignAssignedLeadBranches() {
+  const { rows } = await pool.query(
+    `SELECT r.id, ub.branch_id AS target
+       FROM app_records r
+       JOIN LATERAL (
+         SELECT branch_id FROM user_branches WHERE user_id = r.data->>'assigned_telecaller_id'
+          ORDER BY created_at ASC LIMIT 1
+       ) ub ON true
+      WHERE r.table_name = 'student_leads'
+        AND coalesce(r.data->>'assigned_telecaller_id','') <> ''
+        AND coalesce(r.data->>'merged_into','') = ''
+        AND coalesce(r.data->>'entity_type','') <> 'student'
+        AND NOT EXISTS (
+          SELECT 1 FROM user_branches x
+           WHERE x.user_id = r.data->>'assigned_telecaller_id' AND x.branch_id IS NOT DISTINCT FROM r.branch_id
+        )`,
+  ).catch(() => ({ rows: [] }));
+  for (const row of rows) {
+    await pool.query("UPDATE app_records SET branch_id = $2, updated_at = now() WHERE id = $1", [row.id, row.target]).catch(() => {});
+    await pool.query("UPDATE student_leads SET branch_id = $2 WHERE id = $1", [row.id, row.target]).catch(() => {});
+  }
+  return rows.length;
+}

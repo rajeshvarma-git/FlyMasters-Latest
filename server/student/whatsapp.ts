@@ -1071,6 +1071,7 @@ function extractInboundBody(message: any) {
   if (message.audio) return "[Audio]";
   if (message.sticker) return "[Sticker]";
   if (message.location) return "[Location]";
+  if (message.type === "unsupported") return "[Unsupported message]";
   return `[${message.type || "message"}]`;
 }
 
@@ -1110,6 +1111,9 @@ async function storeInboundMessage(value: any, logEntry?: { result: string; deta
   const existingMessages = await loadTable("whatsapp_messages");
 
   for (const message of messages) {
+    // Events, not messages from a student: someone opening the chat, a reaction, a system
+    // notice. They must not create a lead or trigger the AI.
+    if (["request_welcome", "reaction", "system", "ephemeral"].includes(String(message.type || ""))) continue;
     const waId = String(message.id || "");
     if (waId && existingMessages.some((row) => row.wa_message_id === waId)) {
       if (logEntry) logEntry.result = "duplicate";

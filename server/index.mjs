@@ -23,6 +23,7 @@ import { existsSync } from "fs";
 import { ROOT, PORT, IS_PRODUCTION, assertBootConfig } from "./lib/env.mjs";
 import { migrate } from "./lib/migrate.mjs";
 import { preflight } from "./lib/preflight.mjs";
+import { alignAssignedLeadBranches } from "./lib/branches.mjs";
 import { pool } from "./lib/db.mjs";
 import coreRoutes, { startUnassignedWatcher } from "./routes/core.mjs";
 import counselorRoutes from "./routes/counselor.mjs";
@@ -126,6 +127,13 @@ async function start() {
     await preflight();
   } catch (error) {
     console.error("Preflight failed:", error.message || error);
+  }
+
+  try {
+    const moved = await alignAssignedLeadBranches();
+    if (moved) console.log(`Moved ${moved} assigned lead(s) into their telecaller's branch`);
+  } catch (error) {
+    console.error("Lead branch repair failed:", error.message || error);
   }
 
   try {

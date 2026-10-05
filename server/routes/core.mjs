@@ -1222,7 +1222,29 @@ async function applyLeadPatch(id, patch) {
 
   const storeId = String(shared.id || id);
   const merged = { ...shared, ...patch, id: storeId, updated_at: now };
-  await jsonUpsert("student_leads", merged);
+
+  // A telecaller only sees leads in their own branches. WhatsApp leads start in Head
+  // Office, so assigning one to a telecaller in another branch used to leave the lead
+  // invisible to them (chat listed, lead missing, "add a phone number"). The lead
+  // follows its new owner instead.
+  let moveToBranch = null;
+  if (patch.assigned_telecaller_id) {
+    const { rows: branches } = await pool
+      .query("SELECT branch_id FROM user_branches WHERE user_id = $1 ORDER BY created_at ASC", [String(patch.assigned_telecaller_id)])
+      .catch(() => ({ rows: [] }));
+    const owned = branches.map((row) => String(row.branch_id));
+    const current = shared.branch_id ? String(shared.branch_id) : "";
+    if (owned.length && !owned.includes(current)) moveToBranch = owned[0];
+  }
+  await jsonUpsert("student_leads", merged, moveToBranch ? { branchId: moveToBranch } : undefined);
+  if (moveToBranch) {
+    merged.branch_id = moveToBranch;
+    await pool.query("UPDATE student_leads SET branch_id = $2 WHERE id = $1", [storeId, moveToBranch]).catch(() => {});
+    await pool.query(
+      "UPDATE app_records SET branch_id = $2 WHERE table_name = 'student_leads' AND id = $1",
+      [storeId, moveToBranch],
+    ).catch(() => {});
+  }
 
   // CRM 2.6.1 / 2.7 events that depend on what the status changed TO.
   const becameHot = patch.lead_status === "hot" && shared.lead_status !== "hot";
