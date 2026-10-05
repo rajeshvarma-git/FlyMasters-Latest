@@ -21,11 +21,11 @@ import { useAuth } from "@student/hooks/useAuth";
 import { Card, CardContent, CardHeader, CardTitle } from "@student/components/ui/card";
 import { Button } from "@student/components/ui/button";
 import { Link } from "react-router-dom";
-import { Shield, ArrowRight, User } from "lucide-react";
+import { Shield, ArrowRight } from "lucide-react";
 import SEOHead from "@student/components/SEOHead";
 
 const Index = () => {
-  const { user, isAdmin, userRole, userProfile } = useAuth();
+  const { user, isAdmin } = useAuth();
 
   return (
     <div className="min-h-screen w-full overflow-x-hidden">
@@ -37,38 +37,6 @@ const Index = () => {
       <Header />
 
       <div className="pt-16">
-      {user && userRole && (
-        <div className="bg-gradient-primary/95 border-b border-white/20 shadow-lg">
-          <div className="container mx-auto px-4 md:px-6 py-3 md:py-4">
-            <div className="flex items-center justify-between flex-wrap gap-3 md:gap-4">
-              <div className="flex items-center gap-3 md:gap-4">
-                <div className="w-8 h-8 md:w-10 md:h-10 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0">
-                  <User className="w-4 h-4 md:w-5 md:h-5 text-white" />
-                </div>
-                <div>
-                  <p className="text-white font-semibold text-sm md:text-lg">
-                    Welcome back{userProfile?.first_name ? `, ${userProfile.first_name}` : ''}!
-                  </p>
-                  <p className="text-white/80 text-xs md:text-sm capitalize">Access your {userRole} dashboard</p>
-                </div>
-              </div>
-              <Button 
-                variant="secondary" 
-                size="sm"
-                className="shadow-xl ring-1 md:ring-2 ring-white/50 ring-offset-1 md:ring-offset-2 ring-offset-primary font-bold text-xs md:text-base"
-                asChild
-              >
-                <Link to={userRole === 'student' ? '/student' : userRole === 'counselor' ? '/counselor' : '/dashboard'} className="flex items-center gap-2">
-                  <ArrowRight className="w-4 h-4 md:w-5 md:h-5" />
-                  <span className="hidden sm:inline">Go to My Dashboard</span>
-                  <span className="sm:hidden">Dashboard</span>
-                </Link>
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-      
       <main className="w-full">
         <Enhanced3DHero />
         
