@@ -296,17 +296,26 @@ async function sendWhatsAppOtpTemplate(to: string, code: string) {
       template,
     });
   } catch (error: any) {
-    if (!includeButton) throw error;
+    // Retry without the button ONLY when Meta says the components don't match the template
+    // (param count / format). Never retry on timeouts, auth, or recipient errors — that can
+    // double-send, and it hides the real first error. If the retry also fails, report the first.
+    const metaCode = Number(error?.details?.error?.code);
+    const componentMismatch = [132000, 132001, 132012, 132015, 132016, 100].includes(metaCode) && Number(error?.status) >= 400 && Number(error?.status) < 500;
+    if (!includeButton || !componentMismatch) throw error;
     const fallbackTemplate = {
       ...template,
       components: template.components.filter((component: any) => component.type !== "button"),
     };
-    return graphPost(`${phoneNumberId}/messages`, {
-      messaging_product: "whatsapp",
-      to,
-      type: "template",
-      template: fallbackTemplate,
-    });
+    try {
+      return await graphPost(`${phoneNumberId}/messages`, {
+        messaging_product: "whatsapp",
+        to,
+        type: "template",
+        template: fallbackTemplate,
+      });
+    } catch {
+      throw error;
+    }
   }
 }
 
