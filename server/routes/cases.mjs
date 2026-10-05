@@ -793,7 +793,8 @@ async function leadByPhone(phone) {
   const { rows } = await pool.query(
     `SELECT id, data, branch_id FROM app_records
       WHERE table_name = 'student_leads'
-        AND coalesce(data->>'merged_into','') = ''
+        AND (coalesce(data->>'merged_into','') = ''
+          OR NOT EXISTS (SELECT 1 FROM app_records t WHERE t.table_name = 'student_leads' AND t.id = app_records.data->>'merged_into'))
         AND (${PHONE_MATCH("whatsapp_number")} OR ${PHONE_MATCH("phone")})
         AND (coalesce(data->>'user_id', '') = '' OR data->>'whatsapp_verified' = 'true'
           OR data->>'user_id' IN (
@@ -1017,6 +1018,33 @@ export async function linkWhatsAppLeads(studentUserId, rawPhone) {
   return { merged: rows.length };
 }
 
+/**
+ * A short message from the system into the student's one chat. It shows in the web chat and,
+ * when the student's number is verified or they came from WhatsApp, goes to WhatsApp too
+ * (the approved template when the 24-hour window is closed). `studentRef` is the portal
+ * user id, or the lead id for a WhatsApp-only student. `key` makes it send once.
+ */
+export async function notifyStudentChat(studentRef, body, key) {
+  try {
+    let lead = await leadForStudent(studentRef);
+    let userId = lead ? String(studentRef) : null;
+    if (!lead) {
+      lead = await leadById(studentRef);
+      userId = lead?.user_id && String(lead.user_id) !== String(lead.id) ? String(lead.user_id) : null;
+    }
+    if (!lead) return false;
+    const conversation = userId
+      ? await conversationFor(userId, lead.id)
+      : (await rowsWhere("case_conversations", "lead_id", lead.id))[0] || (await conversationFor(null, lead.id));
+    const message = await addMessage(conversation, { senderRole: "system", kind: "system", body, sourceId: key });
+    await deliverToWhatsApp(conversation, [message]);
+    return true;
+  } catch (error) {
+    console.error("[case] student chat notice failed:", error?.message || error);
+    return false;
+  }
+}
+
 /** Called when admin assigns a telecaller or counselor: the notice appears (and reaches WhatsApp) right away. */
 export async function announceCaseOwner(leadId) {
   const lead = await leadById(leadId);
@@ -1158,7 +1186,7 @@ async function handleStudentMessage(conversation, studentUserId, lead, owner, te
       ? "Ask me about universities, visas, documents or fees"
       : `${owner.name}, your ${owner.role}, will reply here`;
     if (resumeTap) {
-      await aiSay(conversation, step ? `Welcome back! 👋 Let's continue.\n\n${step.ask}` : `Welcome back! 👋 ${who}.`);
+      await aiSay(conversation, step ? `Hi! 👋 I'm your Fly Masters AI assistant. Let's continue.\n\n${step.ask}` : `Hi! 👋 I'm your Fly Masters AI assistant. ${who}.`);
     } else {
       const note = "I can only read text messages on WhatsApp. To share documents, please upload them in the Documents section of your Fly Masters student portal.";
       await aiSay(conversation, step ? `${note}\n\n${step.ask}` : `${note} ${owner.role === "ai" ? "" : `${owner.name} can see your message.`}`.trim());
@@ -1214,7 +1242,7 @@ async function handleStudentMessage(conversation, studentUserId, lead, owner, te
     const who = owner.role === "ai"
       ? "Ask me about universities, visas, documents or fees"
       : `Ask me anything — ${owner.name}, your ${owner.role}, will also reply here`;
-    await aiSay(conversation, `Hi! 👋 ${who}.`);
+    await aiSay(conversation, `Hi! 👋 I'm your Fly Masters AI assistant. ${who}.`);
     return;
   }
   // Asking for universities / courses: show real matches right here (a country in the message wins).

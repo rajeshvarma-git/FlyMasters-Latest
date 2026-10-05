@@ -83,8 +83,7 @@
 //       <div className="mt-4 grid gap-3">
 //         {students.map((student) => {
 //           const checked = selected.includes(student.id);
-//           const suggested = suggestCounselorForCountries(store.counselors, student.preferred_countries || []);
-//           return (
+// //           return (
 //             <Card key={student.id} className="flex flex-wrap items-center justify-between gap-3 p-4">
 //               <label className="flex min-w-0 flex-1 items-center gap-3">
 //                 <input
@@ -138,7 +137,7 @@ import { useMemo, useState } from "react";
 import { Globe } from "lucide-react";
 import { api } from "@admin/lib/api";
 import { refreshStore, useAdminStore } from "@admin/lib/store";
-import { displayName, isConvertedStudent, suggestCounselorForCountries, telecallerLabel } from "@admin/lib/utils";
+import { displayName, isConvertedStudent, telecallerLabel } from "@admin/lib/utils";
 import { Badge } from "@admin/components/ui/Badge";
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
@@ -245,7 +244,6 @@ export default function Unassigned({ hideHeader = false }: { hideHeader?: boolea
       <div className="mt-4 grid gap-3">
         {students.map((student) => {
           const checked = selected.includes(student.id);
-          const suggested = suggestCounselorForCountries(store.counselors, student.preferred_countries || []);
           const days = daysWaiting(student);
           return (
             <Card key={student.id} className="flex flex-wrap items-center justify-between gap-3 p-4">
@@ -269,13 +267,6 @@ export default function Unassigned({ hideHeader = false }: { hideHeader?: boolea
                   </span>
                   <span className="mt-0.5 block text-xs text-slate-400">
                     Converted by {telecallerLabel(store.telecallers, student.assigned_telecaller_id)}
-                    {suggested && (
-                      <>
-                        {" "}· Country match:{" "}
-                        {displayName(suggested.first_name, suggested.last_name, suggested.email || "counselor")} (
-                        {load(suggested.id)} students)
-                      </>
-                    )}
                   </span>
                 </span>
               </label>
@@ -287,11 +278,6 @@ export default function Unassigned({ hideHeader = false }: { hideHeader?: boolea
                 <span className={`text-xs ${days >= SLA_DAYS ? "font-medium text-rose-700" : "text-slate-500"}`}>
                   {waitingLabel(days)}
                 </span>
-                {suggested && (
-                  <Button size="sm" variant="secondary" disabled={busy} onClick={() => void assign([student.id], suggested.id)}>
-                    Assign {displayName(suggested.first_name, suggested.last_name, "match")}
-                  </Button>
-                )}
                 <Button size="sm" disabled={busy || !counselorId} onClick={() => void assign([student.id], counselorId)}>
                   Assign chosen
                 </Button>

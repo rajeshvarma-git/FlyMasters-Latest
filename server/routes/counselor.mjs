@@ -1985,6 +1985,16 @@ router.post("/api/counselor/students/:id/document-requests", counselorAuth, asyn
       is_read: false,
     });
 
+    // Also tell the student in their chat — it reaches WhatsApp (template if the 24h window is closed).
+    const portalUrl = String(process.env.PUBLIC_APP_URL || "").trim().replace(/\/$/, "");
+    await import("./cases.mjs")
+      .then(({ notifyStudentChat }) => notifyStudentChat(
+        studentUserId,
+        `📄 ${created.length === 1 ? "Document requested" : "Documents requested"}: ${names}. Please upload ${created.length === 1 ? "it" : "them"} in the Documents section of your Fly Masters student portal${portalUrl ? ` (${portalUrl}/student/documents)` : ""}.`,
+        `doc-request:${studentUserId}:${created.map((row) => row.id).join(",")}`,
+      ))
+      .catch(() => null);
+
     res.json({ ok: true, requests: created, skipped });
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not send document request." });
