@@ -437,7 +437,7 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
                         <p className={`mt-1 text-[10px] ${student || ai ? "text-slate-400" : "text-emerald-100"}`}>
                           {when(m.created_at)}
                           {m.channel === "whatsapp" ? " · WhatsApp" : ""}
-                          {m.sender_role !== "student" && m.wa_status ? ((m.wa_status === "window_closed" && m.wa_error ? WA_STATUS.failed : WA_STATUS[m.wa_status]) || "") + (m.wa_via === "template" ? " (template message)" : "") : ""}
+                          {m.sender_role !== "student" && m.wa_status ? ((m.wa_status === "window_closed" && m.wa_error ? WA_STATUS.failed : m.wa_status === "waiting" && m.wa_error === "monthly_budget" ? " · held — monthly WhatsApp budget reached (sent free when the student replies)" : m.wa_status === "waiting" && m.wa_error === "hourly_rate" ? " · held — hourly WhatsApp send limit reached (sent free when the student replies)" : WA_STATUS[m.wa_status]) || "") + (m.wa_via === "template" ? " (template message)" : "") : ""}
                         </p>
                         {m.sender_role !== "student" && m.wa_error && ["failed", "window_closed"].includes(String(m.wa_status)) ? (
                           <p className="mt-0.5 text-[10px] text-rose-100">WhatsApp said: {m.wa_error}</p>

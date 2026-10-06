@@ -31,7 +31,7 @@
  */
 import express from "express";
 import { whatsappWindowOpen } from "../lib/waDelivery.mjs";
-import { getReminderSettings, reminderHoursOpen } from "../lib/reminders.mjs";
+import { getReminderSettings, reminderHoursOpen, templateAllowance } from "../lib/reminders.mjs";
 import crypto from "crypto";
 import { pool, jsonTable, jsonFind, jsonUpsert } from "../lib/db.mjs";
 import { anySession, branchScope, ROLES } from "../lib/auth.mjs";
@@ -846,11 +846,11 @@ function whatsappText(row) {
   return row.body;
 }
 
-const TEMPLATE_HOLD_HOURS = 72;
 /** True when a paid template already went out recently and the student hasn't written back since. */
 async function templateSentSinceReply(conversation) {
   const lastIn = Date.parse(conversation.whatsapp_last_inbound_at || "") || 0;
-  const cutoff = Math.max(lastIn, Date.now() - TEMPLATE_HOLD_HOURS * 3600000);
+  const holdHours = (await getReminderSettings()).whatsapp.holdHours;
+  const cutoff = Math.max(lastIn, Date.now() - holdHours * 3600000);
   return (await rawMessages(conversation.id)).some(
     (m) => m.wa_via === "template" && ["accepted", "sent", "delivered", "read"].includes(String(m.wa_status)) && (Date.parse(m.wa_attempted_at || "") || 0) > cutoff,
   );
@@ -874,6 +874,7 @@ async function deliverToWhatsApp(conversation, rows) {
   const windowOpen = whatsappWindowOpen(conversation.whatsapp_last_inbound_at);
   // Cost guard: each template message is paid. While the student hasn't replied, only ONE goes out
   // (per 72 hours); everything after it waits in the chat and is sent free as soon as they reply or tap the button.
+  let allowance = null;
   let templateOut = !windowOpen && outreachTemplateName() ? await templateSentSinceReply(conversation) : false;
   for (const row of rows) {
     if (!row || row.sender_role === "student" || !String(row.body || "").trim()) continue;
@@ -881,12 +882,13 @@ async function deliverToWhatsApp(conversation, rows) {
     if (!whatsappSendConfigured()) patch = { wa_status: "not_configured" };
     else if (!windowOpen && !outreachTemplateName()) patch = { wa_status: "window_closed" };
     else if (!windowOpen && templateOut) patch = { wa_status: "waiting" };
+    else if (!windowOpen && !(allowance = await templateAllowance()).ok) patch = { wa_status: "waiting", wa_error: allowance.reason };
     else if (!windowOpen) {
       // Window closed: reach the student with the approved template instead.
       try {
         const lead = conversation.lead_id ? await leadById(conversation.lead_id) : null;
         const first = String(lead?.first_name || "").trim();
-        patch = { wa_status: "accepted", wa_via: "template", wa_message_id: await sendWhatsAppOutreach(to, first, whatsappText(row)) };
+        patch = { wa_status: "accepted", wa_error: null, wa_via: "template", wa_message_id: await sendWhatsAppOutreach(to, first, whatsappText(row)) };
         templateOut = true;
       } catch (error) {
         console.error("[case-wa] template send failed:", error.message || error);
@@ -894,7 +896,7 @@ async function deliverToWhatsApp(conversation, rows) {
       }
     } else {
       try {
-        patch = { wa_status: "accepted", wa_message_id: await sendWhatsAppText(to, whatsappText(row)) };
+        patch = { wa_status: "accepted", wa_error: null, wa_message_id: await sendWhatsAppText(to, whatsappText(row)) };
       } catch (error) {
         console.error("[case-wa] send failed:", error.message || error);
         patch = { wa_status: "failed", wa_error: String(error.message || error).slice(0, 200) };
@@ -1232,7 +1234,7 @@ export async function sweepVerifiedMerges() {
 export async function nudgeStalledIntakes(now = new Date(), { settings = null, ignoreHours = false } = {}) {
   const cfg = (settings || (await getReminderSettings())).intake;
   if (!cfg.enabled || String(process.env.INTAKE_NUDGE || "").toLowerCase() === "off") return 0;
-  if (!ignoreHours && !reminderHoursOpen(now)) return 0;
+  if (!ignoreHours && !reminderHoursOpen(now, (settings || (await getReminderSettings())).whatsapp)) return 0;
   const NUDGE_AFTER_HOURS = [cfg.firstHours, cfg.secondHours];
   const convs = (await jsonTable("case_conversations")).filter(
     (c) => c.whatsapp_phone && c.intake_field && !c.intake_complete && !c.merged_into && Number(c.intake_nudges || 0) < NUDGE_AFTER_HOURS.length,

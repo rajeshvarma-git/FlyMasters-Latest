@@ -16,7 +16,7 @@
  * that was sent last March can still be traced back to the exact wording that
  * was live at the time.
  */
-import { getReminderSettings, saveReminderSettings, runAllReminders } from "../lib/reminders.mjs";
+import { getReminderSettings, saveReminderSettings, runAllReminders, templateUsage } from "../lib/reminders.mjs";
 import { Router } from "express";
 import { pool } from "../lib/db.mjs";
 import {
@@ -413,13 +413,18 @@ router.post("/api/comms/send", staffAuth, async (req, res) => {
 // Automation rules
 // ===========================================================================
 
+async function withUsage(settings) {
+  const used = await templateUsage();
+  return { ...settings, usage: { ...used, spentInr: Math.round(used.month * settings.whatsapp.costPerTemplateInr * 100) / 100 } };
+}
+
 // Automatic reminders (document requests still missing, stopped-halfway intake) — see lib/reminders.mjs.
 router.get("/api/comms/reminders", commsAdmin, async (_req, res) => {
-  try { res.json(await getReminderSettings()); } catch (error) { fail(res, error); }
+  try { res.json(await withUsage(await getReminderSettings())); } catch (error) { fail(res, error); }
 });
 
 router.put("/api/comms/reminders", commsAdmin, async (req, res) => {
-  try { res.json(await saveReminderSettings(req.body || {})); } catch (error) { fail(res, error); }
+  try { res.json(await withUsage(await saveReminderSettings(req.body || {}))); } catch (error) { fail(res, error); }
 });
 
 router.post("/api/comms/reminders/run", commsAdmin, async (_req, res) => {
