@@ -43,7 +43,7 @@ type Message = {
   /** Whether this reply reached the student's WhatsApp */
   wa_via?: string | null;
   wa_error?: string | null;
-  wa_status?: "accepted" | "sent" | "delivered" | "read" | "failed" | "window_closed" | "not_configured" | null;
+  wa_status?: "accepted" | "sent" | "delivered" | "read" | "failed" | "window_closed" | "waiting" | "not_configured" | null;
   created_at: string;
 };
 
@@ -53,6 +53,7 @@ const WA_STATUS: Record<string, string> = {
   delivered: " · delivered on WhatsApp",
   read: " · read on WhatsApp",
   failed: " · WhatsApp send failed",
+  waiting: " · held — sent free when the student replies (a paid reminder already went out)",
   window_closed: " · app only (WhatsApp 24h window closed, no template set up)",
   not_configured: " · app only (WhatsApp not set up)",
 };

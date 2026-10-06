@@ -846,6 +846,23 @@ function whatsappText(row) {
   return row.body;
 }
 
+const TEMPLATE_HOLD_HOURS = 72;
+/** True when a paid template already went out recently and the student hasn't written back since. */
+async function templateSentSinceReply(conversation) {
+  const lastIn = Date.parse(conversation.whatsapp_last_inbound_at || "") || 0;
+  const cutoff = Math.max(lastIn, Date.now() - TEMPLATE_HOLD_HOURS * 3600000);
+  return (await rawMessages(conversation.id)).some(
+    (m) => m.wa_via === "template" && ["accepted", "sent", "delivered", "read"].includes(String(m.wa_status)) && (Date.parse(m.wa_attempted_at || "") || 0) > cutoff,
+  );
+}
+
+/** The student wrote back (window open again): send what was held for them, newest few only. */
+async function releaseWaiting(conversation) {
+  const held = (await rawMessages(conversation.id)).filter((m) => m.wa_status === "waiting").slice(-5);
+  if (held.length) await deliverToWhatsApp(conversation, held);
+  return held.length;
+}
+
 /**
  * Sends the non-student messages among `rows` to the student's WhatsApp,
  * if this conversation is on WhatsApp and the 24-hour window is open.
@@ -855,17 +872,22 @@ async function deliverToWhatsApp(conversation, rows) {
   const to = conversation.whatsapp_phone;
   if (!to || !rows.length) return;
   const windowOpen = whatsappWindowOpen(conversation.whatsapp_last_inbound_at);
+  // Cost guard: each template message is paid. While the student hasn't replied, only ONE goes out
+  // (per 72 hours); everything after it waits in the chat and is sent free as soon as they reply or tap the button.
+  let templateOut = !windowOpen && outreachTemplateName() ? await templateSentSinceReply(conversation) : false;
   for (const row of rows) {
     if (!row || row.sender_role === "student" || !String(row.body || "").trim()) continue;
     let patch;
     if (!whatsappSendConfigured()) patch = { wa_status: "not_configured" };
     else if (!windowOpen && !outreachTemplateName()) patch = { wa_status: "window_closed" };
+    else if (!windowOpen && templateOut) patch = { wa_status: "waiting" };
     else if (!windowOpen) {
       // Window closed: reach the student with the approved template instead.
       try {
         const lead = conversation.lead_id ? await leadById(conversation.lead_id) : null;
         const first = String(lead?.first_name || "").trim();
         patch = { wa_status: "accepted", wa_via: "template", wa_message_id: await sendWhatsAppOutreach(to, first, whatsappText(row)) };
+        templateOut = true;
       } catch (error) {
         console.error("[case-wa] template send failed:", error.message || error);
         patch = { wa_status: "window_closed", wa_error: String(error.message || error).slice(0, 200) };
@@ -1033,6 +1055,8 @@ async function processWhatsAppInbound({ phone: rawPhone, contactName, body, sour
   // (With a person already assigned there is no intake, so the message is handled normally.)
   if (!fresh || owner.role !== "ai") await handleStudentMessage(thread, userId || null, lead, owner, text);
 
+  // They are back inside the 24-hour window: first anything we held while they were away, then the reply.
+  await releaseWaiting(thread);
   const created = (await rawMessages(thread.id)).filter((m) => !before.has(m.id));
   const replies = created.filter((m) => m.sender_role !== "system" && m.sender_role !== "student");
   await deliverToWhatsApp(thread, replies);
