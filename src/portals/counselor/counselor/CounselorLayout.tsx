@@ -33,8 +33,6 @@ const work = [
   { to: "/students", label: "My Students", icon: Users },
   { to: "/shortlists", label: "Shortlists", icon: Target },
   { to: "/chat", label: "Student Chat", icon: MessageCircle },
-  { to: "/whatsapp/leads", label: "WhatsApp Leads", icon: Phone },
-  { to: "/whatsapp/students", label: "WhatsApp Students", icon: MessageCircle },
   { to: "/checklists", label: "Checklists & status", icon: ClipboardCheck },
   { to: "/documents", label: "Documents", icon: FileText },
   { to: "/applications", label: "Applications", icon: BookOpen },

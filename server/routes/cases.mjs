@@ -315,6 +315,7 @@ function publicMessage(row, { staff = false } = {}) {
     msg.original_body = row.original_body || null;
     msg.wa_status = row.wa_status || null;
     msg.wa_via = row.wa_via || null;
+    msg.wa_error = row.wa_error || null;
   }
   return msg;
 }
@@ -944,25 +945,30 @@ async function processWhatsAppInbound({ phone: rawPhone, contactName, body, sour
  * Only runs after the number is verified, so typing someone else's number can't
  * pull their chat into your account.
  */
-export async function linkWhatsAppLeads(studentUserId, rawPhone) {
+export async function linkWhatsAppLeads(studentUserId, rawPhone, { notify = true } = {}) {
   const phone = normalizeWaPhone(rawPhone);
   if (!studentUserId || !phone) return { merged: 0 };
   const keep = await leadForStudent(studentUserId);
   if (!keep) return { merged: 0 };
-  // A verified number is where this student's chat can reach WhatsApp from now on, and the
-  // student hears about it there once (the follow-up template when the 24-hour window is closed).
+  // A verified number is where this student's chat can reach WhatsApp from now on, and (once) the
+  // student hears about it there: the follow-up template when the 24-hour window is closed.
   try {
     const own = await conversationFor(studentUserId, keep.id);
     if (own.whatsapp_phone !== phone) await patchConversation(own, { whatsapp_phone: phone });
-    const notice = await addMessage(own, {
-      senderRole: "system",
-      kind: "system",
-      body: "✅ WhatsApp verified. Your advisor's replies and updates will reach you on WhatsApp too — reply here any time.",
-      sourceId: `wa-verified:${own.id}:${phone}`,
-    });
-    await deliverToWhatsApp(own, [notice]);
+    const sourceId = `wa-verified:${own.id}:${phone}`;
+    const noticeId = `cm-${crypto.createHash("sha1").update(sourceId).digest("hex")}`;
+    const { rows: sent } = await pool.query("SELECT 1 FROM app_records WHERE table_name = 'case_messages' AND id = $1", [noticeId]);
+    if (notify && !sent.length) {
+      const notice = await addMessage(own, {
+        senderRole: "system",
+        kind: "system",
+        body: "✅ WhatsApp verified. Your advisor's replies and updates will reach you on WhatsApp too — reply here any time.",
+        sourceId,
+      });
+      await deliverToWhatsApp(own, [notice]);
+    }
   } catch (error) {
-    console.error("[case] verified-number notice failed:", error?.message || error);
+    console.error("[case] verified-number link failed:", error?.message || error);
   }
   const { rows } = await pool.query(
     `SELECT id, data FROM app_records
@@ -1043,6 +1049,36 @@ export async function notifyStudentChat(studentRef, body, key) {
     console.error("[case] student chat notice failed:", error?.message || error);
     return false;
   }
+}
+
+
+const lastMergeCheck = new Map();
+/** A student who verified their number before merging existed (or whose WhatsApp chat started
+ *  later) is folded into one record the next time their chat loads. Quiet: sends nothing. */
+async function mergeIfVerified(userId, profile, lead) {
+  const phone = [profile?.whatsapp_verified ? profile.whatsapp_number : null, lead?.whatsapp_verified ? lead.whatsapp_number : null]
+    .find(Boolean);
+  if (!phone) return;
+  const key = String(userId);
+  if (Date.now() - (lastMergeCheck.get(key) || 0) < 60_000) return;
+  lastMergeCheck.set(key, Date.now());
+  await linkWhatsAppLeads(userId, phone, { notify: false }).catch((error) => console.error("[case] merge check failed:", error?.message || error));
+}
+
+/** Once at start-up: fold every already-verified student's WhatsApp chat into their one record. */
+export async function sweepVerifiedMerges() {
+  const { rows } = await pool.query(
+    `SELECT DISTINCT data->>'user_id' AS user_id, coalesce(data->>'whatsapp_number', data->>'phone') AS phone
+       FROM app_records
+      WHERE table_name = 'profiles' AND data->>'whatsapp_verified' = 'true'
+        AND coalesce(data->>'user_id','') <> ''`,
+  );
+  let merged = 0;
+  for (const row of rows) {
+    const result = await linkWhatsAppLeads(row.user_id, row.phone, { notify: false }).catch(() => ({ merged: 0 }));
+    merged += result.merged || 0;
+  }
+  if (merged) console.log(`[case] start-up sweep folded ${merged} WhatsApp chat(s) into verified students`);
 }
 
 /** Called when admin assigns a telecaller or counselor: the notice appears (and reaches WhatsApp) right away. */
@@ -1130,7 +1166,10 @@ router.get("/api/case/me/unread", anySession, requireStudent, async (req, res) =
 
 router.get("/api/case/me", anySession, requireStudent, async (req, res) => {
   try {
-    const lead = await leadForStudent(req.user.id);
+    let lead = await leadForStudent(req.user.id);
+    const profile = await jsonFind("profiles", "user_id", req.user.id).catch(() => null);
+    await mergeIfVerified(req.user.id, profile, lead);
+    lead = await leadForStudent(req.user.id);
     const { owner, conversation } = await prepareThread(req.user.id, lead);
     await patchConversation(conversation, { student_last_read_at: new Date().toISOString() });
     res.json({

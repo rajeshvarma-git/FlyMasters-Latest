@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { CheckCircle2, LogOut, MessageCircle, PhoneCall, Smartphone } from "lucide-react";
+import { CheckCircle2, LogOut, MessageCircle, PhoneCall } from "lucide-react";
 import { useAuth } from "@telecaller/context/AuthContext";
 import { displayName, initials, isConvertedStudent, isSystemWhatsAppMessage } from "@telecaller/lib/utils";
 import { useStore } from "@telecaller/lib/store";
@@ -9,7 +9,6 @@ import { api } from "@telecaller/lib/api";
 
 const items = [
   { to: "/queue", label: "My queue", icon: PhoneCall },
-  { to: "/whatsapp", label: "WhatsApp", icon: Smartphone },
   { to: "/chat", label: "Student Chat", icon: MessageCircle },
   { to: "/converted", label: "Converted", icon: CheckCircle2 },
 ];
