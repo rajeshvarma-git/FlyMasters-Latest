@@ -618,11 +618,15 @@ export function createWhatsAppService(deps) {
 
     const lead = await findLeadForUser(userId);
     if (lead) {
+      // The number just verified by OTP is the authoritative one — always
+      // overwrite `phone`, even if it already held an earlier (possibly
+      // mistyped) value, so the lead/student record never ends up pointing
+      // at a number that was never actually confirmed.
       await patchLead(lead, {
         whatsapp_number: normalized,
         whatsapp_verified: true,
         whatsapp_verified_at: now,
-        phone: lead.phone || normalized.slice(-10),
+        phone: normalized.slice(-10),
       });
       await getOrCreateConversation({ ...lead, whatsapp_number: normalized }, normalized);
     }
