@@ -8,6 +8,8 @@ import { Input, Label } from "@admin/components/ui/Field";
 type Settings = {
   documents: { enabled: boolean; afterDays: number; repeatDays: number; maxReminders: number };
   intake: { enabled: boolean; firstHours: number; secondHours: number };
+  whatsapp: { monthlyBudgetInr: number; costPerTemplateInr: number; maxPerHour: number; holdHours: number; sendFrom: number; sendUntil: number };
+  usage?: { month: number; hour: number; spentInr: number };
   lastRunAt: string | null;
   lastResult: {
     documents?: { reminders?: number; students?: number; skipped?: string; error?: string } | null;
@@ -57,7 +59,7 @@ export default function ReminderSettings() {
         <h2 className="text-sm font-semibold text-navy-900">Automatic reminders</h2>
       </div>
       <p className="mb-4 max-w-3xl text-xs text-slate-500">
-        Sent in the student's chat (web app and WhatsApp together), 9am–8pm India time only. No template needed. Checked every hour.
+        Sent in the student's chat (web app and WhatsApp together) during the sending hours below (India time). Checked every hour.
       </p>
 
       <div className="grid gap-5 lg:grid-cols-2">
@@ -85,6 +87,29 @@ export default function ReminderSettings() {
           </div>
           <p className="text-xs text-slate-500">Repeats the question they were on. Only while the AI still owns the student. Never more than twice.</p>
         </div>
+      </div>
+
+      <div className="mt-5 space-y-3 rounded-lg border border-slate-200 p-4">
+        <div className="text-sm font-medium text-navy-900">WhatsApp spend, rate and timing</div>
+        <p className="text-xs text-slate-500">
+          Free text only works within 24 hours of the student's last message; after that a paid template goes out
+          (Marketing about ₹0.86, Utility about ₹0.15 — set the rate that matches your template).
+          Over a limit, messages wait in the chat and are sent free when the student replies.
+        </p>
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-6">
+          <div><Label>Monthly budget ₹ (0 = none)</Label><Input type="number" min={0} value={s.whatsapp.monthlyBudgetInr} onChange={(e) => setS({ ...s, whatsapp: { ...s.whatsapp, monthlyBudgetInr: num(e.target.value) } })} /></div>
+          <div><Label>Cost per template ₹</Label><Input type="number" min={0.01} step="0.01" value={s.whatsapp.costPerTemplateInr} onChange={(e) => setS({ ...s, whatsapp: { ...s.whatsapp, costPerTemplateInr: num(e.target.value) } })} /></div>
+          <div><Label>Max templates per hour</Label><Input type="number" min={1} value={s.whatsapp.maxPerHour} onChange={(e) => setS({ ...s, whatsapp: { ...s.whatsapp, maxPerHour: num(e.target.value) } })} /></div>
+          <div><Label>One template per silence (hours)</Label><Input type="number" min={1} max={720} value={s.whatsapp.holdHours} onChange={(e) => setS({ ...s, whatsapp: { ...s.whatsapp, holdHours: num(e.target.value) } })} /></div>
+          <div><Label>Reminders from (hour, IST)</Label><Input type="number" min={0} max={23} value={s.whatsapp.sendFrom} onChange={(e) => setS({ ...s, whatsapp: { ...s.whatsapp, sendFrom: num(e.target.value) } })} /></div>
+          <div><Label>Reminders until (hour, IST)</Label><Input type="number" min={1} max={24} value={s.whatsapp.sendUntil} onChange={(e) => setS({ ...s, whatsapp: { ...s.whatsapp, sendUntil: num(e.target.value) } })} /></div>
+        </div>
+        {s.usage && (
+          <p className="text-xs text-slate-600">
+            This month: <strong>{s.usage.month}</strong> template message{s.usage.month === 1 ? "" : "s"} ≈ <strong>₹{s.usage.spentInr.toFixed(2)}</strong>
+            {s.whatsapp.monthlyBudgetInr > 0 ? ` of ₹${s.whatsapp.monthlyBudgetInr}` : ""} · last hour: {s.usage.hour}
+          </p>
+        )}
       </div>
 
       <div className="mt-4 flex flex-wrap items-center gap-3">
