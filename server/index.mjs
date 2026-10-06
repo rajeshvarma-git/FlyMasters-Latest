@@ -32,7 +32,7 @@ import partnerRoutes from "./routes/partner.mjs";
 import financeRoutes from "./routes/finance.mjs";
 import configRoutes from "./routes/config.mjs";
 import commsRoutes, { startCommsScheduler } from "./routes/comms.mjs";
-import caseRoutes, { sweepVerifiedMerges } from "./routes/cases.mjs";
+import caseRoutes, { sweepVerifiedMerges, nudgeStalledIntakes } from "./routes/cases.mjs";
 import knowledgeRoutes from "./routes/knowledge.mjs";
 
 assertBootConfig();
@@ -140,6 +140,13 @@ async function start() {
     await sweepVerifiedMerges();
   } catch (error) {
     console.error("Verified-student merge sweep failed:", error.message || error);
+  }
+
+  try {
+    // Students who stopped mid-questions get the same question again on WhatsApp (max 2 nudges).
+    setInterval(() => { nudgeStalledIntakes().catch((e) => console.error("Intake nudge failed:", e?.message || e)); }, 30 * 60 * 1000).unref?.();
+  } catch (error) {
+    console.error("Intake nudge scheduler failed:", error.message || error);
   }
 
   try {

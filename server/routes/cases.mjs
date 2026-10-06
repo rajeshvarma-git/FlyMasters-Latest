@@ -594,6 +594,47 @@ async function startIntake(conversation, profile, lead) {
   await patchConversation(conversation, { intake_field: step.key, intake_complete: false });
 }
 
+/**
+ * Keeps the guided questions in step with what is already known, wherever it was answered
+ * (web chat, WhatsApp, profile page). A question answered elsewhere is never asked again;
+ * when the thread is waiting on one that is now known, it moves to the next missing one
+ * (and says so, unless `quiet`). Returns "skip" | "same" | "moved" | "done".
+ */
+async function syncIntake(conversation, studentUserId, lead, owner, { quiet = false } = {}) {
+  if (conversation.intake_complete || owner.role !== "ai") return "skip";
+  const profile = studentUserId ? await jsonFind("profiles", "user_id", studentUserId).catch(() => null) : null;
+  const known = { ...knownProfile(profile, lead), ...(conversation.intake_answers || {}) };
+  const step = nextMissing(known);
+  if (!step) {
+    if (quiet) {
+      await patchConversation(conversation, { intake_field: null, intake_complete: true, intake_answers: null });
+    } else {
+      await aiSay(conversation, "I already have your details from your profile — let me find universities that match you.", { sourceId: `intake-sync:${conversation.id}:done` });
+      await finishIntake(conversation, known, `intake-sync:${conversation.id}:finish`);
+      await patchConversation(conversation, { intake_answers: null });
+    }
+    return "done";
+  }
+  if (step.key === conversation.intake_field) return "same";
+  if (!quiet) {
+    await aiSay(conversation, `Let's pick up where we left off.\n\n${step.ask}`, { sourceId: `intake-sync:${conversation.id}:${step.key}` });
+  }
+  await patchConversation(conversation, { intake_field: step.key, intake_complete: false });
+  return "moved";
+}
+
+/** The profile follows what the chat learned: answers kept on a lead (e.g. from WhatsApp) fill gaps in the student's own profile. */
+async function fillProfileFromLead(studentUserId, lead) {
+  if (!studentUserId || !lead) return;
+  const profile = await jsonFind("profiles", "user_id", studentUserId).catch(() => null);
+  const have = knownProfile(profile, null);
+  const known = knownProfile(profile, lead);
+  for (const s of STEPS) {
+    if (s.key === "phone" || have[s.key] || !known[s.key]) continue;
+    await saveAnswer(studentUserId, null, s.key, known[s.key], known);
+  }
+}
+
 // ----------------------------------------------- FAQ / policy answers
 
 async function activeArticles() {
@@ -691,7 +732,7 @@ async function announceOwner(conversation, owner) {
 }
 
 /** Everything that should happen when a thread is opened, by anyone. */
-async function prepareThread(studentUserId, lead) {
+async function prepareThread(studentUserId, lead, { sync = false } = {}) {
   const owner = await ownerOf(lead);
   const conversation = await conversationFor(studentUserId, lead?.id);
   if (studentUserId) await importLegacy(conversation, studentUserId);
@@ -713,6 +754,8 @@ async function prepareThread(studentUserId, lead) {
       await patchConversation(conversation, { intake_complete: true, intake_field: null });
     }
   }
+  // Answered somewhere else since the last question? Move on instead of asking it again.
+  if (sync) await syncIntake(conversation, studentUserId, lead, owner);
   await announceOwner(conversation, owner);
   return { owner, conversation };
 }
@@ -1009,6 +1052,8 @@ export async function linkWhatsAppLeads(studentUserId, rawPhone, { notify = true
         whatsapp_phone: phone,
         whatsapp_last_inbound_at: later(dc.whatsapp_last_inbound_at, keepConv.whatsapp_last_inbound_at) || null,
         ...(dc.intake_complete && !keepConv.intake_complete ? { intake_complete: true, intake_field: null } : {}),
+        ...(dc.intake_answers ? { intake_answers: { ...dc.intake_answers, ...(keepConv.intake_answers || {}) } } : {}),
+        ...(!dc.intake_complete && !keepConv.intake_complete && !keepConv.intake_field && dc.intake_field ? { intake_field: dc.intake_field } : {}),
       });
       await jsonUpsert("case_conversations", { id: dc.id, merged_into: String(keepConv.id) });
     }
@@ -1020,6 +1065,13 @@ export async function linkWhatsAppLeads(studentUserId, rawPhone, { notify = true
     );
     await jsonUpsert("student_leads", { id: dup.id, merged_into: String(keep.id), merged_at: now, lead_status: "merged", updated_at: now });
     await pool.query("UPDATE student_leads SET lead_status = 'merged' WHERE id = $1", [String(dup.id)]).catch(() => {});
+  }
+  // What the WhatsApp chat learned now lives on the student's own profile, and the questions carry on from there.
+  try {
+    await fillProfileFromLead(studentUserId, keep);
+    await syncIntake(keepConv, studentUserId, keep, await ownerOf(keep), { quiet: true });
+  } catch (error) {
+    console.error("[case] profile fill after merge failed:", error?.message || error);
   }
   return { merged: rows.length };
 }
@@ -1079,6 +1131,51 @@ export async function sweepVerifiedMerges() {
     merged += result.merged || 0;
   }
   if (merged) console.log(`[case] start-up sweep folded ${merged} WhatsApp chat(s) into verified students`);
+}
+
+/**
+ * A student who stopped in the middle of the questions gets the same question again on WhatsApp
+ * (the follow-up template when the 24-hour window is closed; the tap on "Continue Chat" resumes
+ * it). At most two nudges — after 3 hours, then after 2 days — only 9am-8pm India time, only
+ * while the AI still owns the student. Set INTAKE_NUDGE=off to disable.
+ */
+const NUDGE_AFTER_HOURS = [3, 48];
+export async function nudgeStalledIntakes(now = new Date()) {
+  if (String(process.env.INTAKE_NUDGE || "").toLowerCase() === "off") return 0;
+  const istHour = new Date(now.getTime() + 5.5 * 3600000).getUTCHours();
+  if (istHour < 9 || istHour >= 20) return 0;
+  const convs = (await jsonTable("case_conversations")).filter(
+    (c) => c.whatsapp_phone && c.intake_field && !c.intake_complete && !c.merged_into && Number(c.intake_nudges || 0) < NUDGE_AFTER_HOURS.length,
+  );
+  let sent = 0;
+  for (const conv of convs) {
+    try {
+      const hoursSince = (iso) => (now.getTime() - Date.parse(iso || "")) / 3600000;
+      const n = Number(conv.intake_nudges || 0);
+      const messages = await rawMessages(conv.id);
+      const lastStudent = [...messages].reverse().find((m) => m.sender_role === "student");
+      const lastAny = messages[messages.length - 1];
+      // Only if the student is the one who went quiet (the last thing in the thread is our question).
+      if (!lastAny || lastAny.sender_role === "student") continue;
+      const quiet = hoursSince(lastStudent ? sentAt(lastStudent) : sentAt(messages[0]));
+      if (!(quiet >= NUDGE_AFTER_HOURS[n])) continue;
+      if (conv.intake_nudged_at && hoursSince(conv.intake_nudged_at) < 20) continue;
+      const lead = conv.lead_id ? await leadById(conv.lead_id) : null;
+      if (!lead || lead.entity_type === "student" || lead.lead_status === "converted" || lead.merged_into) continue;
+      const owner = await ownerOf(lead);
+      if (owner.role !== "ai") continue;
+      const step = STEPS.find((x) => x.key === conv.intake_field);
+      if (!step) continue;
+      const first = String(lead.first_name || "").trim().split(/\s+/)[0];
+      const msg = await aiSay(conv, `${first && first !== "WhatsApp" ? `Hi ${first}! ` : "Hi! "}You were in the middle of your Fly Masters study-abroad profile. ${step.ask}`, { sourceId: `intake-nudge:${conv.id}:${n + 1}` });
+      await deliverToWhatsApp(conv, [msg]);
+      await patchConversation(conv, { intake_nudges: n + 1, intake_nudged_at: now.toISOString() });
+      sent += 1;
+    } catch (error) {
+      console.error("[case] intake nudge failed:", error?.message || error);
+    }
+  }
+  return sent;
 }
 
 /** Called when admin assigns a telecaller or counselor: the notice appears (and reaches WhatsApp) right away. */
@@ -1170,7 +1267,7 @@ router.get("/api/case/me", anySession, requireStudent, async (req, res) => {
     const profile = await jsonFind("profiles", "user_id", req.user.id).catch(() => null);
     await mergeIfVerified(req.user.id, profile, lead);
     lead = await leadForStudent(req.user.id);
-    const { owner, conversation } = await prepareThread(req.user.id, lead);
+    const { owner, conversation } = await prepareThread(req.user.id, lead, { sync: true });
     await patchConversation(conversation, { student_last_read_at: new Date().toISOString() });
     res.json({
       conversation_id: conversation.id,
@@ -1219,6 +1316,10 @@ async function handleStudentMessage(conversation, studentUserId, lead, owner, te
   // Not an answer: the tap on the follow-up template's button, or a photo/file/voice note.
   const resumeTap = text.trim().toLowerCase() === outreachButtonText().toLowerCase();
   const attachment = /^\[[^\]]+\]/.test(text.trim());
+  // Something was answered on the other side (web profile / WhatsApp) since the last question.
+  // When it moved on, the AI has just said what comes next, so this message isn't treated as an answer.
+  const synced = attachment ? "skip" : await syncIntake(conversation, studentUserId, lead, owner);
+  if (synced === "moved" || synced === "done") return;
   if (resumeTap || attachment) {
     const step = !conversation.intake_complete && conversation.intake_field ? STEPS.find((s) => s.key === conversation.intake_field) : null;
     const who = owner.role === "ai"
@@ -1236,6 +1337,11 @@ async function handleStudentMessage(conversation, studentUserId, lead, owner, te
   // 1. Still in the guided questions.
   if (!conversation.intake_complete && conversation.intake_field) {
     const step = STEPS.find((s) => s.key === conversation.intake_field) || STEPS[0];
+    // A bare "hi" in the middle of the questions: say hello and ask the same question again.
+    if (GREETING.test(text.trim())) {
+      await aiSay(conversation, `Hi! 👋 I'm your Fly Masters AI assistant. Let's continue.\n\n${step.ask}`);
+      return;
+    }
     if (looksLikeQuestion(text)) {
       const answer = await answerFromKnowledge(text, await rawMessages(conversation.id));
       const lead_in = answer ? answer.reply : "Good question — your Fly Masters advisor will help you with that once you're assigned.";
