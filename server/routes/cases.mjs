@@ -31,6 +31,7 @@
  */
 import express from "express";
 import { whatsappWindowOpen } from "../lib/waDelivery.mjs";
+import { getReminderSettings, reminderHoursOpen } from "../lib/reminders.mjs";
 import crypto from "crypto";
 import { pool, jsonTable, jsonFind, jsonUpsert } from "../lib/db.mjs";
 import { anySession, branchScope, ROLES } from "../lib/auth.mjs";
@@ -558,7 +559,7 @@ function nextMissing(known) {
 
 // `once` gives the messages fixed ids, so a finish triggered from two
 // requests at the same moment writes each message once.
-async function finishIntake(conversation, known, once = null) {
+async function finishIntake(conversation, known, once = null, lead = null) {
   const sid = (n) => (once ? `${once}:${n}` : null);
   await aiSay(conversation, "Perfect — I have everything I need. Let me find universities that match your profile.", { sourceId: sid(1) });
   const unis = await recommendations(known);
@@ -574,6 +575,71 @@ async function finishIntake(conversation, known, once = null) {
   });
   await aiSay(conversation, "✅ Your chat answers have been saved to your student profile. A Fly Masters advisor will be assigned to you soon — you can keep asking questions here any time.", { sourceId: sid(3) });
   await patchConversation(conversation, { intake_field: null, intake_complete: true });
+  await askContact(conversation, lead);
+}
+
+// ---- name + email: asked once, at the end, only of a student who started on WhatsApp
+// (a web sign-up already gave both, so the web chat never asks).
+const looksLikeName = (t) => /^[\p{L}][\p{L} .'-]{1,58}$/u.test(t) && t.split(/\s+/).length <= 5 && !GREETING.test(t) && !ACK_ONLY.test(t) && !UNI_INTENT.test(t) && !looksLikeQuestion(t);
+const EMAIL_RE = /[^\s@<>]+@[^\s@<>]+\.[^\s@<>]{2,}/;
+const hasName = (lead) => { const f = String(lead?.first_name || "").trim().toLowerCase(); return Boolean(f) && f !== "whatsapp"; };
+const hasEmail = (lead) => EMAIL_RE.test(String(lead?.email || ""));
+const CONTACT_ASK = {
+  name: "One last thing so your advisor can save your shortlist: what's your full name?",
+  email: "Thanks! And your email address? (Your advisor will send documents and updates there too.)",
+};
+
+async function askContact(conversation, lead) {
+  if (!lead || conversation.student_user_id || conversation.contact_done) return;
+  const field = !hasName(lead) ? "name" : !hasEmail(lead) ? "email" : null;
+  if (!field) return;
+  await aiSay(conversation, CONTACT_ASK[field], { sourceId: `contact-ask:${conversation.id}:${field}` });
+  await patchConversation(conversation, { contact_field: field });
+}
+
+/** Handles a reply while the AI is waiting for the name or email. Returns true when it used the message. */
+async function handleContactAnswer(conversation, lead, text) {
+  const field = conversation.contact_field;
+  if (!field || !lead) return false;
+  const t = text.trim();
+  if (/^(skip|later|no|nope|not now|don'?t want to)\b/i.test(t)) {
+    await patchConversation(conversation, { contact_field: null, contact_done: true });
+    await aiSay(conversation, "No problem — you can share your name and email any time and your advisor will add them.");
+    return true;
+  }
+  const now = new Date().toISOString();
+  if (field === "name") {
+    if (!looksLikeName(t)) {
+      if (looksLikeQuestion(t) || UNI_INTENT.test(t)) return false; // let the normal answer happen
+      await aiSay(conversation, `Sorry, I didn't catch that. ${CONTACT_ASK.name} (or say "later")`);
+      return true;
+    }
+    const [first, ...rest] = t.replace(/\s+/g, " ").split(" ");
+    const patch = { id: lead.id, first_name: first, last_name: rest.join(" "), updated_at: now };
+    await jsonUpsert("student_leads", patch);
+    await pool.query("UPDATE student_leads SET first_name = $2, last_name = $3 WHERE id = $1", [String(lead.id), patch.first_name, patch.last_name]).catch(() => {});
+    Object.assign(lead, patch);
+    if (!hasEmail(lead)) {
+      await aiSay(conversation, `Nice to meet you, ${first}! ${CONTACT_ASK.email}`);
+      await patchConversation(conversation, { contact_field: "email" });
+      return true;
+    }
+  } else {
+    const match = t.match(EMAIL_RE);
+    if (!match) {
+      if (looksLikeQuestion(t) || UNI_INTENT.test(t)) return false;
+      await aiSay(conversation, `That doesn't look like an email address. ${CONTACT_ASK.email} (or say "later")`);
+      return true;
+    }
+    const patch = { id: lead.id, email: match[0].toLowerCase(), updated_at: now };
+    await jsonUpsert("student_leads", patch);
+    await pool.query("UPDATE student_leads SET email = $2 WHERE id = $1", [String(lead.id), patch.email]).catch(() => {});
+    Object.assign(lead, patch);
+  }
+  const portalUrl = String(process.env.PUBLIC_APP_URL || "").trim().replace(/\/$/, "");
+  await patchConversation(conversation, { contact_field: null, contact_done: true });
+  await aiSay(conversation, `Thank you${hasName(lead) ? `, ${lead.first_name}` : ""}! ✅ Your advisor now has your details.${portalUrl ? ` You can also continue on the web — sign up at ${portalUrl}/student with this same number and this chat will be waiting for you.` : ""}`);
+  return true;
 }
 
 /** First message the AI sends: greeting + what's known + first missing question. */
@@ -587,7 +653,7 @@ async function startIntake(conversation, profile, lead) {
   const once = `intake-start:${conversation.id}`;
   if (!step) {
     await aiSay(conversation, `${greeting}${note} Let me find universities that match you.`, { sourceId: once });
-    await finishIntake(conversation, known, `${once}:finish`);
+    await finishIntake(conversation, known, `${once}:finish`, lead);
     return;
   }
   await aiSay(conversation, `${greeting}${note}\n\n${step.ask}`, { sourceId: once });
@@ -610,7 +676,7 @@ async function syncIntake(conversation, studentUserId, lead, owner, { quiet = fa
       await patchConversation(conversation, { intake_field: null, intake_complete: true, intake_answers: null });
     } else {
       await aiSay(conversation, "I already have your details from your profile — let me find universities that match you.", { sourceId: `intake-sync:${conversation.id}:done` });
-      await finishIntake(conversation, known, `intake-sync:${conversation.id}:finish`);
+      await finishIntake(conversation, known, `intake-sync:${conversation.id}:finish`, lead);
       await patchConversation(conversation, { intake_answers: null });
     }
     return "done";
@@ -1136,14 +1202,14 @@ export async function sweepVerifiedMerges() {
 /**
  * A student who stopped in the middle of the questions gets the same question again on WhatsApp
  * (the follow-up template when the 24-hour window is closed; the tap on "Continue Chat" resumes
- * it). At most two nudges — after 3 hours, then after 2 days — only 9am-8pm India time, only
- * while the AI still owns the student. Set INTAKE_NUDGE=off to disable.
+ * it). At most two nudges (hours set on the Automation screen, default 3 then 48), only 9am-8pm India
+ * time, only while the AI still owns the student.
  */
-const NUDGE_AFTER_HOURS = [3, 48];
-export async function nudgeStalledIntakes(now = new Date()) {
-  if (String(process.env.INTAKE_NUDGE || "").toLowerCase() === "off") return 0;
-  const istHour = new Date(now.getTime() + 5.5 * 3600000).getUTCHours();
-  if (istHour < 9 || istHour >= 20) return 0;
+export async function nudgeStalledIntakes(now = new Date(), { settings = null, ignoreHours = false } = {}) {
+  const cfg = (settings || (await getReminderSettings())).intake;
+  if (!cfg.enabled || String(process.env.INTAKE_NUDGE || "").toLowerCase() === "off") return 0;
+  if (!ignoreHours && !reminderHoursOpen(now)) return 0;
+  const NUDGE_AFTER_HOURS = [cfg.firstHours, cfg.secondHours];
   const convs = (await jsonTable("case_conversations")).filter(
     (c) => c.whatsapp_phone && c.intake_field && !c.intake_complete && !c.merged_into && Number(c.intake_nudges || 0) < NUDGE_AFTER_HOURS.length,
   );
@@ -1334,6 +1400,9 @@ async function handleStudentMessage(conversation, studentUserId, lead, owner, te
     }
     return;
   }
+  // 0. Waiting for the name / email (asked once, after the recommendations, of a WhatsApp-first student).
+  if (conversation.contact_field && (await handleContactAnswer(conversation, lead, text))) return;
+
   // 1. Still in the guided questions.
   if (!conversation.intake_complete && conversation.intake_field) {
     const step = STEPS.find((s) => s.key === conversation.intake_field) || STEPS[0];
@@ -1366,7 +1435,7 @@ async function handleStudentMessage(conversation, studentUserId, lead, owner, te
       await patchConversation(conversation, { intake_field: next.key, intake_answers: answers });
     } else {
       await aiSay(conversation, ACK[step.key](checked.value));
-      await finishIntake(conversation, known);
+      await finishIntake(conversation, known, null, lead);
       await patchConversation(conversation, { intake_answers: null });
     }
     return;
