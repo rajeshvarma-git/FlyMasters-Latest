@@ -305,8 +305,20 @@ function isPortalStudent(row) {
 
 async function resolveCounselorAliases(portalCounselorId) {
   const aliases = new Set([String(portalCounselorId)]);
-  const found = await pool.query("SELECT id, email FROM counselor_users WHERE id = $1", [portalCounselorId]).catch(() => ({ rows: [] }));
-  const email = String(found.rows[0]?.email || "").trim().toLowerCase();
+  // portalCounselorId is req.user.id, i.e. the counselor's real login id
+  // (auth_users.id) by construction — look it up there first. A counselor
+  // created directly also happens to have a matching counselor_users.id, so
+  // that lookup used to work by coincidence; it silently returns nothing for
+  // a counselor who was *promoted* from another role (their counselor_users
+  // row was minted with an unrelated id — see resolveCounselorId in
+  // core.mjs), which left this whole alias set — and therefore their leads
+  // — invisible to them.
+  const authRow = await pool.query("SELECT email FROM auth_users WHERE id = $1", [portalCounselorId]).catch(() => ({ rows: [] }));
+  let email = String(authRow.rows[0]?.email || "").trim().toLowerCase();
+  if (!email) {
+    const found = await pool.query("SELECT email FROM counselor_users WHERE id = $1", [portalCounselorId]).catch(() => ({ rows: [] }));
+    email = String(found.rows[0]?.email || "").trim().toLowerCase();
+  }
   if (email) {
     const auth = await pool.query("SELECT id, email FROM auth_users WHERE lower(email) = $1", [email]).catch(() => ({ rows: [] }));
     for (const row of auth.rows) {

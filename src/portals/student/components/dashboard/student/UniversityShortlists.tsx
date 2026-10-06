@@ -443,11 +443,22 @@ export function UniversityShortlists() {
                     Give your consent to proceed with the application to this university.
                   </p>
                   <div className="flex flex-wrap gap-3">
-                    <Button size="sm" asChild>
-                      <Link to={`/student/applications?shortlist=${encodeURIComponent(shortlist.id)}`}>
+                    {shortlist.status?.toLowerCase() === 'applied' ? (
+                      <Button size="sm" variant="outline" disabled>
+                        <CheckCircle className="w-4 h-4 mr-2" />
+                        Application started
+                      </Button>
+                    ) : shortlist.student_consent ? (
+                      <Button size="sm" asChild>
+                        <Link to={`/student/applications?shortlist=${encodeURIComponent(shortlist.id)}`}>
+                          Start application
+                        </Link>
+                      </Button>
+                    ) : (
+                      <Button size="sm" disabled title="Give your consent below first">
                         Start application
-                      </Link>
-                    </Button>
+                      </Button>
+                    )}
                     <Button
                       onClick={() => handleConsentChange(shortlist.id, true)}
                       disabled={shortlist.student_consent}
@@ -473,9 +484,13 @@ export function UniversityShortlists() {
                       </Button>
                     )}
                   </div>
-                  {shortlist.student_consent_date && (
+                  {shortlist.student_consent_date ? (
                     <p className="text-xs text-muted-foreground mt-2">
                       Consented on: {format(new Date(shortlist.student_consent_date), 'MMM dd, yyyy')}
+                    </p>
+                  ) : (
+                    <p className="text-xs text-muted-foreground mt-2">
+                      Give your consent above before starting the application.
                     </p>
                   )}
                 </div>

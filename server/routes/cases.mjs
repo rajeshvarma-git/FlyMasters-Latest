@@ -193,8 +193,43 @@ async function rowsWhere(table, field, values) {
   return rows.map((r) => ({ ...r.data, id: r.id, branch_id: r.branch_id, _created_at: r.created_at }));
 }
 
+// Mirrors src/portals/student/lib/studentShortlists.ts's sameMailbox(): two
+// addresses are the same person only if they're the same mailbox (Gmail
+// ignores dots and "+tags"), not just the same local part across domains.
+function sameMailbox(value) {
+  const email = String(value || "").trim().toLowerCase();
+  const at = email.lastIndexOf("@");
+  if (at < 1) return "";
+  let local = email.slice(0, at);
+  let domain = email.slice(at + 1);
+  if (domain === "googlemail.com") domain = "gmail.com";
+  if (domain === "gmail.com") local = local.split("+")[0].replace(/\./g, "");
+  return `${local}@${domain}`;
+}
+
 async function leadForStudent(userId) {
   const leads = await rowsWhere("student_leads", "user_id", userId);
+  // A lead a counselor created from the student's email before the
+  // student's account existed/was linked won't carry this user_id yet — the
+  // student portal's own shortlist matching already falls back to email for
+  // exactly this reason (collectStudentShortlistKeys); without the same
+  // fallback here, a student in that state hits a 404 on endpoints keyed by
+  // leadForStudent (e.g. posting a case notification) even though the
+  // portal itself can see their shortlist/lead just fine.
+  if (!leads.length) {
+    const { rows } = await pool.query("SELECT email FROM auth_users WHERE id::text = $1", [String(userId)]).catch(() => ({ rows: [] }));
+    const mailbox = sameMailbox(rows[0]?.email);
+    if (mailbox) {
+      const { rows: leadRows } = await pool.query(
+        `SELECT id, data, branch_id FROM app_records WHERE table_name = 'student_leads' AND data->>'email' IS NOT NULL`,
+      );
+      for (const row of leadRows) {
+        if (sameMailbox(row.data?.email) === mailbox) {
+          leads.push({ ...row.data, id: row.id, branch_id: row.branch_id });
+        }
+      }
+    }
+  }
   leads.sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
   return leads[0] || null;
 }
@@ -942,6 +977,29 @@ async function leadByPhone(phone) {
   return rows[0] ? { ...rows[0].data, id: rows[0].id, branch_id: rows[0].branch_id } : null;
 }
 
+// Same matching as leadByPhone, but without the whatsapp_verified gate.
+// Used only to avoid minting a second, duplicate lead for someone who
+// already has one on file under this phone number (e.g. they typed it on
+// the web app and never finished WhatsApp OTP verification, then went and
+// messaged WhatsApp from that same number) — see the caller for why this is
+// safe to use for *which CRM record to attach the message to* while staying
+// unsafe to use for *whose account to sign this sender in as*.
+async function leadByPhoneAnyVerification(phone) {
+  const digits = normalizeWaPhone(phone);
+  if (!digits) return null;
+  const { rows } = await pool.query(
+    `SELECT id, data, branch_id FROM app_records
+      WHERE table_name = 'student_leads'
+        AND (coalesce(data->>'merged_into','') = ''
+          OR NOT EXISTS (SELECT 1 FROM app_records t WHERE t.table_name = 'student_leads' AND t.id = app_records.data->>'merged_into'))
+        AND (${PHONE_MATCH("whatsapp_number")} OR ${PHONE_MATCH("phone")})
+      ORDER BY (data->>'user_id' IS NOT NULL) DESC, coalesce(data->>'updated_at','') DESC
+      LIMIT 1`,
+    [digits],
+  );
+  return rows[0] ? { ...rows[0].data, id: rows[0].id, branch_id: rows[0].branch_id } : null;
+}
+
 async function userIdByPhone(phone) {
   const digits = normalizeWaPhone(phone);
   if (!digits) return null;
@@ -1023,9 +1081,26 @@ async function processWhatsAppInbound({ phone: rawPhone, contactName, body, sour
   let lead = await leadByPhone(phone);
   let userId = lead?.user_id || (await userIdByPhone(phone));
   if (!lead && userId) lead = await leadForStudent(userId);
+  // Before minting a brand-new lead, see if one already exists on file for
+  // this phone number that the verified-only lookups above couldn't see
+  // (one person, one record — don't let an unverified web signup leave a
+  // second "ghost" lead/conversation behind the first time they text in).
+  let reusedUnverifiedLead = false;
+  if (!lead) {
+    lead = await leadByPhoneAnyVerification(phone);
+    reusedUnverifiedLead = Boolean(lead);
+  }
   const isNewLead = !lead;
   if (!lead) lead = await createWhatsAppLead(phone, contactName, userId);
-  if (lead.user_id) userId = lead.user_id;
+  // Only treat the lead's user_id as *this sender's* authenticated identity
+  // when it came from a verified match. A lead reused above only via the lax
+  // phone match may have had this number typed in by mistake (possibly
+  // someone else's real number), so adopting its account here could leak
+  // that other person's profile/chat into this conversation. The lead
+  // record itself is still reused (so the CRM doesn't fork), but the sender
+  // stays anonymous on the WhatsApp side until normal OTP verification
+  // confirms the number is really theirs (see linkWhatsAppLeads).
+  if (lead.user_id && !reusedUnverifiedLead) userId = lead.user_id;
   if (!lead.whatsapp_number) {
     await jsonUpsert("student_leads", { id: lead.id, whatsapp_number: phone });
     lead.whatsapp_number = phone;

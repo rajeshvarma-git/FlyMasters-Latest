@@ -498,6 +498,15 @@ export function StudentDocuments() {
   const totalRequired = checklist.filter((item) => item.is_required).length + requests.filter((req) => req.is_mandatory).length;
   const remainingCount = Math.max(totalRequired - submittedCount, 0);
   const completionPercentage = totalRequired > 0 ? (submittedCount / totalRequired) * 100 : submittedCount > 0 ? 100 : 0;
+  // A request's own status stays 'pending'/'uploaded' even after the linked
+  // document is approved or rejected — nothing writes the approval decision
+  // back onto the document_requests row. Derive "still needed" from the
+  // linked document's actual status instead of trusting the request row's
+  // stale one, so an approved document's request card disappears here
+  // instead of sticking around forever.
+  const visibleRequests = requests.filter(
+    (request) => !documents.some((doc) => doc.request_id === request.id && doc.status === 'approved')
+  );
 
   if (loading) {
     return (
@@ -565,7 +574,7 @@ export function StudentDocuments() {
       </Card>
 
       {/* Additional Document Requests */}
-      {requests.length > 0 && (
+      {visibleRequests.length > 0 && (
         <Card className="glass-card border-warning/50 overflow-hidden">
           <CardHeader className="p-4 md:p-6">
             <CardTitle className="flex items-center gap-2 text-warning text-base md:text-lg">
@@ -575,7 +584,7 @@ export function StudentDocuments() {
             <CardDescription className="text-xs md:text-sm">Your counselor has requested these additional documents</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3 p-4 pt-0 md:p-6 md:pt-0">
-            {requests.map((request) => {
+            {visibleRequests.map((request) => {
               const uploadedDoc = documents.find(doc => doc.request_id === request.id);
 
               return (
@@ -792,7 +801,7 @@ export function StudentDocuments() {
         </Card>
       )}
 
-      {checklist.length === 0 && requests.length === 0 && (
+      {checklist.length === 0 && visibleRequests.length === 0 && (
         <Card className="glass-card">
           <CardContent className="p-12 text-center">
             <FileText className="w-16 h-16 text-muted-foreground mx-auto mb-4 opacity-50" />

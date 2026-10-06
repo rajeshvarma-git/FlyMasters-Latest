@@ -130,8 +130,20 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
     setListError("");
   }, []);
 
+  // Tracks which student is selected *right now*, read inside loadThread's
+  // async continuation. Two in-flight requests (a fast click to another
+  // student, or the 6s poll firing for a student the counselor has since
+  // left) can resolve out of order; without this guard the later-arriving
+  // response for a no-longer-selected student would overwrite the thread
+  // currently on screen with the wrong student's messages.
+  const selectedRef = useRef<string | null>(null);
+  useEffect(() => {
+    selectedRef.current = selected;
+  }, [selected]);
+
   const loadThread = useCallback(async (leadId: string) => {
     const data = await request<Thread>(`/case/lead/${encodeURIComponent(leadId)}`);
+    if (selectedRef.current !== leadId) return;
     setThread(data);
     setThreadError("");
   }, []);

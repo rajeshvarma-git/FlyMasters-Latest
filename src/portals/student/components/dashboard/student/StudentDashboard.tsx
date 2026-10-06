@@ -30,12 +30,16 @@ import { studentDisplayName } from './studentIdentity';
 
 type Counts = { profileMissing: string[]; saved: number; documents: number; applications: number };
 
+// Keep this in sync with what StudentProfileForm.tsx actually requires.
+// passport_number was listed here but the form itself marks it optional
+// ("Optional until you have a passport", no `required`) — so a student who
+// filled in everything the form asked for still had profileMissing.length
+// > 0 forever, and "Complete Your Profile" never cleared.
 const PROFILE_FIELDS: [string, string][] = [
   ['first_name', 'first name'],
   ['last_name', 'last name'],
   ['phone', 'phone number'],
   ['date_of_birth', 'date of birth'],
-  ['passport_number', 'passport number'],
 ];
 
 function greeting() {

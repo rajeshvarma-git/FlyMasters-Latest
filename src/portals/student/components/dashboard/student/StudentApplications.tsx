@@ -97,6 +97,8 @@ type ShortlistRow = {
   application_deadline: string | null;
   priority_level: string | null;
   counselor_notes: string | null;
+  status: string;
+  student_consent: boolean;
 };
 
 function progressFor(status: string) {
@@ -194,7 +196,7 @@ export function StudentApplications() {
         supabase.from('universities').select('id, name, country, city, is_active').eq('is_active', true),
         supabase
           .from('university_shortlists')
-          .select('id, student_id, student_email, email, university_id, university_name, course_name, location, application_deadline, priority_level, counselor_notes, status'),
+          .select('id, student_id, student_email, email, university_id, university_name, course_name, location, application_deadline, priority_level, counselor_notes, status, student_consent'),
         supabase.from('student_leads').select('id, user_id, email, preferred_countries'),
         supabase.from('user_favorites').select('university_id').eq('user_id', user.id),
         supabase.from('profiles').select('interested_countries').eq('user_id', user.id).maybeSingle(),
@@ -296,6 +298,14 @@ export function StudentApplications() {
       toast({ title: 'Enter a course or program', variant: 'destructive' });
       return;
     }
+    if (fromShortlist && !fromShortlist.student_consent) {
+      toast({
+        title: 'Give your consent first',
+        description: 'Give your consent on the Shortlist page before starting this application.',
+        variant: 'destructive',
+      });
+      return;
+    }
 
     const duplicate = applications.some(
       (app) =>
@@ -335,14 +345,37 @@ export function StudentApplications() {
       if (error) throw error;
 
       setApplications((prev) => [row, ...prev]);
+
+      // The shortlist card (University Shortlists / "ready to apply" above)
+      // reads its own `status` field to decide whether to still show "Start
+      // application" — without this it stayed on the original status
+      // forever, so the button never reflected that the application had
+      // actually been started.
+      if (shortlistId) {
+        const { error: shortlistError } = await supabase
+          .from('university_shortlists')
+          .update({ status: 'applied' })
+          .eq('id', shortlistId);
+        if (!shortlistError) {
+          setShortlists((prev) => prev.map((item) => (item.id === shortlistId ? { ...item, status: 'applied' } : item)));
+        }
+      }
+
       setDialogOpen(false);
 
-      await notifyAssignedCounselors(user, {
-        type: 'info',
-        title: 'Student started an application',
-        message: `${user.email || 'A student'} started an application to ${name} (${courseName.trim()}, ${intakeTerm}).`,
-        actionUrl: '/counselor/applications',
-      });
+      // Best-effort: a failure to notify the counselor must never look like
+      // the application itself failed to start — it already has, by this
+      // point (the insert above succeeded).
+      try {
+        await notifyAssignedCounselors(user, {
+          type: 'info',
+          title: 'Student started an application',
+          message: `${user.email || 'A student'} started an application to ${name} (${courseName.trim()}, ${intakeTerm}).`,
+          actionUrl: '/counselor/applications',
+        });
+      } catch (notifyError) {
+        console.error('Could not notify counselor of new application:', notifyError);
+      }
 
       toast({
         title: 'Application started',
@@ -563,8 +596,13 @@ export function StudentApplications() {
                     {[row.course_name, row.location].filter(Boolean).join(' · ') || 'Course details from your counselor'}
                   </div>
                 </div>
-                <Button size="sm" onClick={() => openStartDialog(undefined, row)}>
-                  Start application
+                <Button
+                  size="sm"
+                  disabled={!row.student_consent}
+                  title={row.student_consent ? undefined : 'Give your consent on the Shortlist page first'}
+                  onClick={() => openStartDialog(undefined, row)}
+                >
+                  {row.student_consent ? 'Start application' : 'Consent needed'}
                 </Button>
               </div>
             ))}

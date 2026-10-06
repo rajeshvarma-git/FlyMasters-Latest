@@ -179,6 +179,24 @@ export async function checkMutation(viewer: Viewer | null, mutation: Mutation, m
     // overwrite someone else's existing row.
     if (!rows.every((row) => ownsRow(viewer, row))) return "You can only save your own records.";
     if (matching.some((row) => !ownsRow(viewer, row))) return "You can only change your own records.";
+    if (table === "applications" && mutation.action === "insert") {
+      // The UI only shows "Start application" once the student has given
+      // consent on the shortlist, but nothing enforced that server-side —
+      // a student could start an application for a shortlist they never
+      // consented to. Belt-and-braces: re-check here too.
+      for (const row of rows) {
+        const shortlistId = row.shortlist_id;
+        if (!shortlistId) continue;
+        const { rows: shortlistRows } = await getPool().query(
+          "SELECT data->>'student_consent' AS consent FROM app_records WHERE table_name = 'university_shortlists' AND id = $1",
+          [String(shortlistId)],
+        );
+        if (!shortlistRows.length) return "That shortlist entry no longer exists.";
+        if (shortlistRows[0].consent !== "true") {
+          return "Give your consent on the shortlist before starting this application.";
+        }
+      }
+    }
     return null;
   }
   if (mutation.action === "update" || mutation.action === "delete") {

@@ -221,7 +221,15 @@ async function resolveCounselorId(rawId) {
   const id = String(rawId);
   const found = counselors.find((row) => row.id === id || row.auth_user_id === id);
   if (!found) return isUuid(id) ? id : null;
-  return [found.id, found.auth_user_id].find((value) => isUuid(value)) || found.id;
+  // Prefer the counselor's real login id (auth_users.id / user_roles.user_id)
+  // over counselor_users.id. A counselor created directly has the two in sync,
+  // but one *promoted* to counselor from another role (via Users > change
+  // role) ends up with an unrelated counselor_users.id minted separately —
+  // storing that on a lead makes the lead invisible to the counselor's own
+  // "my leads" queries, which key off their real login id. See
+  // ensureCounselorLogin() and the counselor-portal alias resolution for the
+  // other half of this fix.
+  return [found.auth_user_id, found.id].find((value) => isUuid(value)) || found.auth_user_id || found.id;
 }
 
 function mergeById(...lists) {
