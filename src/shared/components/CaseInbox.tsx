@@ -42,6 +42,7 @@ type Message = {
   original_body: string | null;
   /** Whether this reply reached the student's WhatsApp */
   wa_via?: string | null;
+  wa_error?: string | null;
   wa_status?: "accepted" | "sent" | "delivered" | "read" | "failed" | "window_closed" | "not_configured" | null;
   created_at: string;
 };
@@ -435,8 +436,11 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
                         <p className={`mt-1 text-[10px] ${student || ai ? "text-slate-400" : "text-emerald-100"}`}>
                           {when(m.created_at)}
                           {m.channel === "whatsapp" ? " · WhatsApp" : ""}
-                          {m.sender_role !== "student" && m.wa_status ? (WA_STATUS[m.wa_status] || "") + (m.wa_via === "template" ? " (template message)" : "") : ""}
+                          {m.sender_role !== "student" && m.wa_status ? ((m.wa_status === "window_closed" && m.wa_error ? WA_STATUS.failed : WA_STATUS[m.wa_status]) || "") + (m.wa_via === "template" ? " (template message)" : "") : ""}
                         </p>
+                        {m.sender_role !== "student" && m.wa_error && ["failed", "window_closed"].includes(String(m.wa_status)) ? (
+                          <p className="mt-0.5 text-[10px] text-rose-100">WhatsApp said: {m.wa_error}</p>
+                        ) : null}
                       </div>
                     </div>
                   );

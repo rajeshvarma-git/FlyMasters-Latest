@@ -32,7 +32,7 @@ import partnerRoutes from "./routes/partner.mjs";
 import financeRoutes from "./routes/finance.mjs";
 import configRoutes from "./routes/config.mjs";
 import commsRoutes, { startCommsScheduler } from "./routes/comms.mjs";
-import caseRoutes from "./routes/cases.mjs";
+import caseRoutes, { sweepVerifiedMerges } from "./routes/cases.mjs";
 import knowledgeRoutes from "./routes/knowledge.mjs";
 
 assertBootConfig();
@@ -134,6 +134,12 @@ async function start() {
     if (moved) console.log(`Moved ${moved} assigned lead(s) into their telecaller's branch`);
   } catch (error) {
     console.error("Lead branch repair failed:", error.message || error);
+  }
+
+  try {
+    await sweepVerifiedMerges();
+  } catch (error) {
+    console.error("Verified-student merge sweep failed:", error.message || error);
   }
 
   try {
