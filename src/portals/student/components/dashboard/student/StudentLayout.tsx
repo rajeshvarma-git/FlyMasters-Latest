@@ -13,7 +13,6 @@ import { StudentProfileForm } from './StudentProfileForm';
 import { UniversityShortlists } from './UniversityShortlists';
 import { StudentUniversities } from './StudentUniversities';
 import { StudentDocuments } from './StudentDocuments';
-import { StudentApplications } from './StudentApplications';
 import { StudentMessages } from './StudentMessages';
 import { StudentNotifications } from './StudentNotifications';
 import { MobilePortalHeader } from '@student/components/mobile/MobilePortalHeader';
@@ -128,11 +127,8 @@ export function StudentLayout() {
               <StudentDocuments />
             </div>
           } />
-          <Route path="applications" element={
-            <div className="mobile-page-content">
-              <StudentApplications />
-            </div>
-          } />
+          {/* The counsellor runs applications now; progress shows on My Shortlists. */}
+          <Route path="applications" element={<Navigate to="/student/shortlists" replace />} />
           <Route path="messages" element={
             <div className="mobile-page-content">
               <StudentMessages defaultTab="ai" />

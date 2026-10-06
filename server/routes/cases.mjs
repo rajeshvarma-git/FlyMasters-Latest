@@ -277,7 +277,7 @@ async function ownerOf(lead) {
 
 const ownerKey = (owner) => (owner.role === "ai" ? "ai" : `${owner.role}:${owner.id}`);
 
-async function conversationFor(studentUserId, leadId) {
+async function conversationFor(studentUserId, leadId, { phone = null } = {}) {
   if (studentUserId) {
     const existing = (await rowsWhere("case_conversations", "student_user_id", studentUserId))[0];
     if (existing) {
@@ -290,10 +290,29 @@ async function conversationFor(studentUserId, leadId) {
   // A conversation that started on WhatsApp before the student had an
   // account: it becomes theirs once the lead is linked to their account.
   if (leadId) {
-    const byLead = (await rowsWhere("case_conversations", "lead_id", leadId)).find((c) => !c.student_user_id);
+    const forLead = await rowsWhere("case_conversations", "lead_id", leadId);
+    const byLead = forLead.find((c) => !c.student_user_id);
     if (byLead) {
       if (studentUserId) return jsonUpsert("case_conversations", { id: byLead.id, student_user_id: String(studentUserId) });
       return byLead;
+    }
+    // Already joined to the student's account on this same WhatsApp number:
+    // the next message lands in that same thread. (This used to re-create the
+    // "case-lead-…" row with no student, flipping the thread between the
+    // account and the bare number on every message.)
+    if (!studentUserId && phone) {
+      const same = forLead.find((c) => c.whatsapp_phone && normalizeWaPhone(c.whatsapp_phone) === phone);
+      if (same) return same;
+    }
+    // A different number on the same lead gets its own thread, never the
+    // account's (and never an id that would un-join the account's thread).
+    if (!studentUserId && forLead.some((c) => c.id === `case-lead-${leadId}`)) {
+      return jsonUpsert("case_conversations", {
+        id: `case-lead-${leadId}-${phone || "app"}`,
+        student_user_id: null,
+        lead_id: String(leadId),
+        last_message_at: new Date().toISOString(),
+      });
     }
   }
   // Deterministic ids: two requests racing to create it land on the same row.
@@ -833,9 +852,9 @@ async function announceOwner(conversation, owner) {
 }
 
 /** Everything that should happen when a thread is opened, by anyone. */
-async function prepareThread(studentUserId, lead, { sync = false } = {}) {
+async function prepareThread(studentUserId, lead, { sync = false, phone = null } = {}) {
   const owner = await ownerOf(lead);
-  const conversation = await conversationFor(studentUserId, lead?.id);
+  const conversation = await conversationFor(studentUserId, lead?.id, { phone });
   if (studentUserId) await importLegacy(conversation, studentUserId);
   // flow_version 2 = guided intake. Threads from before it (none, or the
   // short-lived free-chat version) start the intake once, if the AI still
@@ -903,9 +922,39 @@ async function releaseWaiting(conversation) {
  * if this conversation is on WhatsApp and the 24-hour window is open.
  * Each message records the outcome (wa_status) so staff can see it.
  */
+/**
+ * Whether replies in this thread may go to its WhatsApp number. A thread that
+ * belongs to a portal account only sends to WhatsApp once that number was
+ * OTP-verified for the account — otherwise anyone who typed (or mistyped)
+ * that number would receive the counsellor's messages for that student.
+ * A thread that is just a WhatsApp lead (no account) is the person on that
+ * number, so it always may.
+ */
+export async function whatsappTrusted(conversation) {
+  if (!conversation?.whatsapp_phone) return false;
+  if (!conversation.student_user_id) return true;
+  const digits = normalizeWaPhone(conversation.whatsapp_phone);
+  const lead = conversation.lead_id ? await leadById(conversation.lead_id).catch(() => null) : null;
+  const profile = await jsonFind("profiles", "user_id", conversation.student_user_id).catch(() => null);
+  const verified = (rec) => Boolean(rec)
+    && (rec.whatsapp_verified === true || rec.whatsapp_verified === "true")
+    && [rec.whatsapp_number, rec.phone].some((n) => n && normalizeWaPhone(n) === digits);
+  return verified(lead) || verified(profile);
+}
+
 async function deliverToWhatsApp(conversation, rows) {
   const to = conversation.whatsapp_phone;
   if (!to || !rows.length) return;
+  if (!(await whatsappTrusted(conversation))) {
+    // Kept in the app; staff see "app only — number not verified".
+    for (const row of rows) {
+      if (!row || row.sender_role === "student" || !String(row.body || "").trim()) continue;
+      const patch = { wa_status: "unverified", wa_attempted_at: new Date().toISOString() };
+      Object.assign(row, patch);
+      await jsonUpsert("case_messages", { id: row.id, ...patch });
+    }
+    return;
+  }
   const windowOpen = whatsappWindowOpen(conversation.whatsapp_last_inbound_at);
   // Cost guard: each template message is paid. While the student hasn't replied, only ONE goes out
   // (per 72 hours); everything after it waits in the chat and is sent free as soon as they reply or tap the button.
@@ -1106,7 +1155,7 @@ async function processWhatsAppInbound({ phone: rawPhone, contactName, body, sour
     lead.whatsapp_number = phone;
   }
 
-  const conversation = await conversationFor(userId || null, lead.id);
+  const conversation = await conversationFor(userId || null, lead.id, { phone });
   const fresh = conversation.flow_version !== 2;
   const before = new Set((await rawMessages(conversation.id)).map((m) => m.id));
   await addMessage(conversation, {
@@ -1127,8 +1176,10 @@ async function processWhatsAppInbound({ phone: rawPhone, contactName, body, sour
     })(),
   });
 
+  void notifyStaffOfChat(conversation, lead, text);
+
   // A brand-new conversation's reply is the intake greeting and first question.
-  const { owner, conversation: thread } = await prepareThread(userId || null, lead);
+  const { owner, conversation: thread } = await prepareThread(userId || null, lead, { phone });
   // (With a person already assigned there is no intake, so the message is handled normally.)
   if (!fresh || owner.role !== "ai") await handleStudentMessage(thread, userId || null, lead, owner, text);
 
@@ -1137,6 +1188,19 @@ async function processWhatsAppInbound({ phone: rawPhone, contactName, body, sour
   const created = (await rawMessages(thread.id)).filter((m) => !before.has(m.id));
   const replies = created.filter((m) => m.sender_role !== "system" && m.sender_role !== "student");
   await deliverToWhatsApp(thread, replies);
+  // This number is on a portal account but was never verified for it: replies
+  // stay in the portal. Tell the person on WhatsApp why (at most once a day).
+  const unverifiedForAccount = thread.student_user_id
+    ? !(await whatsappTrusted(thread))
+    : Boolean(lead.user_id) && !numberVerifiedForLead(lead, phone);
+  if (unverifiedForAccount && whatsappSendConfigured()) {
+    const last = Date.parse(thread.wa_verify_nudged_at || "") || 0;
+    if (Date.now() - last > 24 * 3600000) {
+      await sendWhatsAppText(phone, "Thanks for your message. To keep chatting with Fly Masters here, please verify this WhatsApp number in your student portal (Profile → WhatsApp). Until then, our replies appear in the portal's Messages.")
+        .then(() => patchConversation(thread, { wa_verify_nudged_at: new Date().toISOString() }))
+        .catch((error) => console.error("[case-wa] verify nudge failed:", error.message || error));
+    }
+  }
   const counts = replies.reduce((acc, m) => ({ ...acc, [m.wa_status || "?"]: (acc[m.wa_status || "?"] || 0) + 1 }), {});
   const summary = [
     isNewLead ? "new lead created" : `existing ${userId ? "student" : "lead"}`,
@@ -1378,9 +1442,11 @@ async function canStaffAccess(req, lead) {
   }
   if (role === ROLES.TELECALLER) return String(lead.assigned_telecaller_id || "") === String(req.user.id);
   if (role === ROLES.COUNSELOR) {
-    const assigned = String(lead.assigned_counselor_id || "");
-    if (!assigned) return false;
-    return (await counselorAliases(req.user)).has(assigned);
+    const aliases = await counselorAliases(req.user);
+    // Theirs as counsellor, or as the telecaller on it (a counsellor can be
+    // given telecalling work).
+    return [lead.assigned_counselor_id, lead.assigned_telecaller_id]
+      .some((id) => id && aliases.has(String(id)));
   }
   return false;
 }
@@ -1583,39 +1649,223 @@ async function handleStudentMessage(conversation, studentUserId, lead, owner, te
 
 // Student events go to the assigned advisor, or Admin's allocation queue.
 // Recipient selection is server-side; an unassigned case is never broadcast.
+/**
+ * Who should hear about something a student did: their assigned counsellor,
+ * or every active admin when nobody is assigned yet. One notification per
+ * person (it used to be written twice — once in `notifications` and once in
+ * `document_notifications` with a different id — which showed up as two
+ * entries in the counsellor bell and could not be cleared together).
+ */
+export async function notifyStaffAboutStudent(studentUserId, lead, { title, message, counselorUrl = "/counselor/chat", adminUrl = null }) {
+  const counselorId = String(lead?.assigned_counselor_id || "");
+  let targets = [];
+  if (counselorId && counselorId !== SHARED_COUNSELOR_ID) {
+    const directory = await jsonTable("counselors");
+    const counselor = directory.find((c) => String(c.id) === counselorId || String(c.auth_user_id || c.user_id) === counselorId);
+    const targetId = counselor?.auth_user_id || counselor?.user_id || counselorId;
+    const { rows } = await pool.query("SELECT user_id FROM user_roles WHERE user_id = $1 AND role = 'counselor' AND is_active IS DISTINCT FROM false", [targetId]);
+    targets = rows.map((r) => String(r.user_id));
+  }
+  const queuedForAdmin = !targets.length;
+  if (queuedForAdmin) {
+    const { rows } = await pool.query("SELECT user_id FROM user_roles WHERE role IN ('admin', 'super_admin') AND is_active IS DISTINCT FROM false");
+    targets = rows.map((r) => String(r.user_id));
+  }
+  const now = new Date().toISOString();
+  for (const userId of targets) {
+    await jsonUpsert("notifications", { id: crypto.randomUUID(), user_id: userId, title, message, type: "info",
+      action_url: queuedForAdmin ? (adminUrl || (lead?.id ? `/admin/leads/${lead.id}` : "/admin")) : counselorUrl, is_read: false,
+      additional_data: { student_id: studentUserId, lead_id: lead?.id || null }, created_at: now });
+  }
+  return { queuedForAdmin, targets };
+}
+
+/**
+ * A student wrote in the chat (portal or WhatsApp): the person who owns the
+ * case gets a bell notification. One per conversation while unread — later
+ * messages update it ("3 new messages") instead of piling up. Nothing is sent
+ * while the AI still owns the case; it answers on its own.
+ */
+async function notifyStaffOfChat(conversation, lead, text) {
+  try {
+    const owner = await ownerOf(lead);
+    if (owner.role === "ai" || !owner.id) return;
+    let targetId = owner.id;
+    if (owner.role === "counselor") {
+      const directory = await jsonTable("counselors");
+      const counselor = directory.find((c) => String(c.id) === owner.id || String(c.auth_user_id || c.user_id) === owner.id);
+      targetId = counselor?.auth_user_id || counselor?.user_id || owner.id;
+    }
+    const name = studentNameFromLead(lead);
+    const preview = String(text || "").slice(0, 140);
+    const now = new Date().toISOString();
+    const { rows } = await pool.query(
+      `SELECT id, data FROM app_records
+        WHERE table_name = 'notifications' AND data->>'user_id' = $1
+          AND coalesce(data->>'is_read', 'false') <> 'true'
+          AND data->'additional_data'->>'conversation_id' = $2
+        LIMIT 1`,
+      [String(targetId), String(conversation.id)],
+    );
+    const existing = rows[0] ? { ...rows[0].data, id: rows[0].id } : null;
+    const count = Number(existing?.additional_data?.count || 0) + 1;
+    await jsonUpsert("notifications", {
+      ...(existing || {}),
+      id: existing?.id || crypto.randomUUID(),
+      user_id: String(targetId),
+      title: count > 1 ? `${count} new messages from ${name}` : `New message from ${name}`,
+      message: preview,
+      type: "chat",
+      category: "chat",
+      action_url: owner.role === "telecaller" ? "/telecaller/chat" : "/counselor/chat",
+      is_read: false,
+      additional_data: { conversation_id: String(conversation.id), lead_id: lead?.id ? String(lead.id) : null, count },
+      created_at: now,
+      updated_at: now,
+    });
+  } catch (error) {
+    console.error("[case] chat notification failed:", error.message || error);
+  }
+}
+
 router.post("/api/case/me/notifications", anySession, requireStudent, async (req, res) => {
   try {
     const lead = await leadForStudent(req.user.id);
     if (!lead) return res.status(404).json({ error: "Student case not found." });
-    const counselorId = String(lead.assigned_counselor_id || "");
-    let targets = [];
-    if (counselorId && counselorId !== SHARED_COUNSELOR_ID) {
-      const directory = await jsonTable("counselors");
-      const counselor = directory.find((c) => String(c.id) === counselorId || String(c.auth_user_id || c.user_id) === counselorId);
-      const targetId = counselor?.auth_user_id || counselor?.user_id || counselorId;
-      const { rows } = await pool.query("SELECT user_id FROM user_roles WHERE user_id = $1 AND role = 'counselor' AND is_active IS DISTINCT FROM false", [targetId]);
-      targets = rows.map((r) => String(r.user_id));
-    }
-    const queuedForAdmin = !targets.length;
-    if (queuedForAdmin) {
-      const { rows } = await pool.query("SELECT user_id FROM user_roles WHERE role IN ('admin', 'super_admin') AND is_active IS DISTINCT FROM false");
-      targets = rows.map((r) => String(r.user_id));
-    }
     const title = cleanText(req.body?.title).slice(0, 160) || "Student case needs attention";
     const message = cleanText(req.body?.message);
     if (!message) return res.status(400).json({ error: "Notification message required." });
-    const now = new Date().toISOString();
-    for (const userId of targets) {
-      await jsonUpsert("notifications", { id: crypto.randomUUID(), user_id: userId, title, message, type: "info",
-        action_url: queuedForAdmin ? `/admin/leads/${lead.id}` : "/counselor/student-chat", is_read: false,
-        additional_data: { student_id: req.user.id, lead_id: lead.id }, created_at: now });
-      await jsonUpsert("document_notifications", { id: crypto.randomUUID(), user_id: userId, title, message,
-        notification_type: "info", is_read: false, additional_data: { student_id: req.user.id, lead_id: lead.id }, created_at: now });
-    }
+    const { queuedForAdmin } = await notifyStaffAboutStudent(req.user.id, lead, { title, message });
     res.json({ ok: true, queued_for_admin: queuedForAdmin });
   } catch (error) {
     console.error("[case] event notification failed:", error);
     res.status(500).json({ error: "Could not notify the assigned staff." });
+  }
+});
+
+// ------------------------------------------------------ shortlist decisions
+//
+// The student no longer runs an application themselves. Every university on
+// "My Shortlists" — the counsellor's recommendations and the student's own
+// picks — gets a green tick (go ahead) or a red cross (not interested). A
+// tick hands it to the counsellor, who starts and runs the application from
+// the counsellor portal.
+
+async function studentEmailFor(userId) {
+  const { rows } = await pool.query("SELECT email FROM auth_users WHERE id::text = $1", [String(userId)]).catch(() => ({ rows: [] }));
+  return String(rows[0]?.email || "").trim().toLowerCase();
+}
+
+async function shortlistOwnedBy(userId, shortlistId) {
+  const { rows } = await pool.query(
+    "SELECT id, data FROM app_records WHERE table_name = 'university_shortlists' AND id = $1",
+    [String(shortlistId)],
+  );
+  if (!rows[0]) return { row: null, owned: false };
+  const row = { ...rows[0].data, id: rows[0].id };
+  const lead = await leadForStudent(userId);
+  const keys = new Set([String(userId), lead?.id ? String(lead.id) : ""].filter(Boolean));
+  const email = await studentEmailFor(userId);
+  const owned = keys.has(String(row.student_id || ""))
+    || Boolean(email && sameMailbox(row.student_email || row.email) === sameMailbox(email));
+  return { row, owned, lead };
+}
+
+function shortlistLabel(row) {
+  return [row.university_name, row.course_name].filter(Boolean).join(" — ") || "a university";
+}
+
+router.post("/api/case/me/shortlists/:id/decision", anySession, requireStudent, async (req, res) => {
+  try {
+    const decision = String(req.body?.decision || "");
+    if (!["accept", "decline", "undo"].includes(decision)) {
+      return res.status(400).json({ error: "Choose accept or decline." });
+    }
+    const { row, owned, lead } = await shortlistOwnedBy(req.user.id, req.params.id);
+    if (!row || !owned) return res.status(404).json({ error: "That shortlist entry was not found." });
+    if (String(row.status || "") === "applied") {
+      return res.status(409).json({ error: "Your counsellor has already started this application." });
+    }
+    const now = new Date().toISOString();
+    const accepted = decision === "accept";
+    const next = {
+      ...row,
+      student_consent: accepted,
+      student_consent_date: accepted ? now : null,
+      student_decision: decision === "undo" ? null : decision === "accept" ? "accepted" : "declined",
+      student_decision_at: decision === "undo" ? null : now,
+      status: accepted ? "consented" : decision === "decline" ? "declined" : "recommended",
+      updated_at: now,
+    };
+    await jsonUpsert("university_shortlists", next);
+    if (decision !== "undo") {
+      const email = await studentEmailFor(req.user.id);
+      const who = [lead?.first_name, lead?.last_name].filter(Boolean).join(" ") || email || "A student";
+      await notifyStaffAboutStudent(req.user.id, lead, accepted
+        ? { title: "Student accepted a university", message: `${who} accepted ${shortlistLabel(row)}. Start the application from Shortlists.`, counselorUrl: "/counselor/shortlists" }
+        : { title: "Student declined a university", message: `${who} is not interested in ${shortlistLabel(row)}.`, counselorUrl: "/counselor/shortlists" },
+      ).catch((error) => console.error("[shortlist] staff notify failed:", error));
+    }
+    res.json({ ok: true, shortlist: next });
+  } catch (error) {
+    console.error("[shortlist] decision failed:", error);
+    res.status(500).json({ error: "Could not save your choice." });
+  }
+});
+
+// A university the student picked themselves (Universities page, or a saved
+// one). It lands on the counsellor's Shortlists already accepted.
+router.post("/api/case/me/shortlists", anySession, requireStudent, async (req, res) => {
+  try {
+    const universityName = cleanText(req.body?.university_name).slice(0, 200);
+    if (!universityName) return res.status(400).json({ error: "Choose a university." });
+    const universityId = cleanText(req.body?.university_id).slice(0, 120) || null;
+    const lead = await leadForStudent(req.user.id);
+    const email = await studentEmailFor(req.user.id);
+    const keys = new Set([String(req.user.id), lead?.id ? String(lead.id) : ""].filter(Boolean));
+    const mine = (await jsonTable("university_shortlists")).filter((row) =>
+      keys.has(String(row.student_id || "")) || (email && sameMailbox(row.student_email) === sameMailbox(email)));
+    const now = new Date().toISOString();
+    const existing = mine.find((row) =>
+      (universityId && String(row.university_id || "") === universityId)
+      || String(row.university_name || "").trim().toLowerCase() === universityName.toLowerCase());
+    if (existing && String(existing.status || "") === "applied") {
+      return res.json({ ok: true, shortlist: existing, already: true });
+    }
+    const next = existing
+      ? { ...existing, student_consent: true, student_consent_date: now, student_decision: "accepted", student_decision_at: now, status: "consented", updated_at: now }
+      : {
+          id: crypto.randomUUID(),
+          student_id: String(req.user.id),
+          student_email: email,
+          counselor_id: SHARED_COUNSELOR_ID,
+          source: "student",
+          university_id: universityId,
+          university_name: universityName,
+          course_name: cleanText(req.body?.course_name).slice(0, 200),
+          location: cleanText(req.body?.location).slice(0, 200),
+          counselor_notes: "",
+          status: "consented",
+          priority_level: "medium",
+          student_consent: true,
+          student_consent_date: now,
+          student_decision: "accepted",
+          student_decision_at: now,
+          shortlisted_at: now,
+          created_at: now,
+          updated_at: now,
+        };
+    await jsonUpsert("university_shortlists", next);
+    const who = [lead?.first_name, lead?.last_name].filter(Boolean).join(" ") || email || "A student";
+    await notifyStaffAboutStudent(req.user.id, lead, {
+      title: "Student shortlisted a university",
+      message: `${who} wants to apply to ${shortlistLabel(next)}. Start the application from Shortlists.`,
+      counselorUrl: "/counselor/shortlists",
+    }).catch((error) => console.error("[shortlist] staff notify failed:", error));
+    res.json({ ok: true, shortlist: next });
+  } catch (error) {
+    console.error("[shortlist] student pick failed:", error);
+    res.status(500).json({ error: "Could not add it to your shortlist." });
   }
 });
 
@@ -1627,6 +1877,7 @@ router.post("/api/case/me/messages", anySession, requireStudent, async (req, res
     const { owner, conversation } = await prepareThread(req.user.id, lead);
     const before = new Set((await rawMessages(conversation.id)).map((m) => m.id));
     await addMessage(conversation, { senderRole: "student", senderId: req.user.id, body: text });
+    void notifyStaffOfChat(conversation, lead, text);
     await handleStudentMessage(conversation, req.user.id, lead, owner, text);
     await patchConversation(conversation, { student_last_read_at: new Date().toISOString() });
     const newMessages = (await rawMessages(conversation.id)).filter((m) => !before.has(m.id));
@@ -1648,7 +1899,10 @@ router.get("/api/case/inbox", anySession, requireStaff, scopeBranchHead, async (
     if (role === ROLES.TELECALLER) {
       leads = await rowsWhere("student_leads", "assigned_telecaller_id", req.user.id);
     } else if (role === ROLES.COUNSELOR) {
-      leads = await rowsWhere("student_leads", "assigned_counselor_id", [...(await counselorAliases(req.user))]);
+      const aliases = [...(await counselorAliases(req.user))];
+      const asCounselor = await rowsWhere("student_leads", "assigned_counselor_id", aliases);
+      const asTelecaller = await rowsWhere("student_leads", "assigned_telecaller_id", aliases);
+      leads = [...new Map([...asCounselor, ...asTelecaller].map((l) => [String(l.id), l])).values()];
     } else {
       const all = await jsonTable("case_conversations");
       const byUser = await rowsWhere("student_leads", "user_id", all.map((c) => c.student_user_id));
@@ -1680,19 +1934,28 @@ router.get("/api/case/inbox", anySession, requireStaff, scopeBranchHead, async (
 
     const items = await Promise.all(leads.map(async (lead) => {
       const conv = convFor(lead);
-      const list = (conv && byConv.get(String(conv.id))) || [];
+      // A portal student can also have a separate WhatsApp thread from a
+      // number never verified for their account; it is shown in the same
+      // conversation (one person, one chat) and flagged.
+      const side = sideThreads(convs, lead, conv);
+      const readAt = String(conv?.staff_last_read_at || "");
+      const list = [conv, ...side].filter(Boolean).flatMap((c) => byConv.get(String(c.id)) || []);
       list.sort((a, b) => sentAt(a).localeCompare(sentAt(b)));
       const last = list[list.length - 1];
-      const readAt = String(conv?.staff_last_read_at || "");
+      const unverifiedSide = side.some((c) => !numberVerifiedForLead(lead, c.whatsapp_phone));
       return {
         lead_id: String(lead.id),
         student_user_id: lead.user_id ? String(lead.user_id) : null,
         student_name: studentNameFromLead(lead),
-        channel: conv?.whatsapp_phone ? "whatsapp" : "app",
+        channel: conv?.whatsapp_phone || side.length ? "whatsapp" : "app",
+        // A portal student's WhatsApp number that was never OTP-verified:
+        // replies stay in the app until they verify it.
+        whatsapp_unverified: unverifiedSide || (Boolean(conv?.whatsapp_phone) && !(await whatsappTrusted(conv))),
         owner: await ownerOf(lead),
         last_message: last ? { body: last.body, sender_role: last.sender_role, created_at: sentAt(last) } : null,
         last_message_at: last ? sentAt(last) : null,
-        unread: list.filter((m) => m.sender_role === "student" && sentAt(m) > readAt).length,
+        unread: list.filter((m) => m.sender_role === "student"
+          && sentAt(m) > String((m.conversation_id === conv?.id ? readAt : convs.find((c) => c.id === m.conversation_id)?.staff_last_read_at) || "")).length,
         needs_review: list.filter((m) => m.source === "faq" && m.review_status === "pending").length,
       };
     }));
@@ -1703,6 +1966,19 @@ router.get("/api/case/inbox", anySession, requireStaff, scopeBranchHead, async (
     res.status(500).json({ error: "Could not load conversations." });
   }
 });
+
+/** WhatsApp threads of this lead other than its main one (a number not tied to the account). */
+function sideThreads(convs, lead, main) {
+  if (!lead?.user_id) return [];
+  return convs.filter((c) => !c.student_user_id && String(c.lead_id) === String(lead.id)
+    && c.whatsapp_phone && String(c.id) !== String(main?.id || ""));
+}
+
+function numberVerifiedForLead(lead, phone) {
+  const digits = normalizeWaPhone(phone);
+  return Boolean(digits) && (lead?.whatsapp_verified === true || lead?.whatsapp_verified === "true")
+    && normalizeWaPhone(lead?.whatsapp_number || lead?.phone) === digits;
+}
 
 async function staffLead(req, res) {
   const lead = await leadById(req.params.leadId);
@@ -1718,14 +1994,25 @@ router.get("/api/case/lead/:leadId", anySession, requireStaff, scopeBranchHead, 
     const lead = await staffLead(req, res);
     if (!lead) return;
     const { owner, conversation } = await prepareThread(lead.user_id || null, lead);
-    await patchConversation(conversation, { staff_last_read_at: new Date().toISOString() });
+    const readNow = new Date().toISOString();
+    await patchConversation(conversation, { staff_last_read_at: readNow });
+    const side = sideThreads(await rowsWhere("case_conversations", "lead_id", lead.id), lead, conversation);
+    for (const c of side) await patchConversation(c, { staff_last_read_at: readNow });
+    const sideMessages = (await Promise.all(side.map((c) => rawMessages(c.id)))).flat();
+    const unverifiedSide = side.find((c) => !numberVerifiedForLead(lead, c.whatsapp_phone));
     const profile = lead.user_id ? await jsonFind("profiles", "user_id", lead.user_id).catch(() => null) : null;
     res.json({
       conversation_id: conversation.id,
       owner,
-      whatsapp: conversation.whatsapp_phone
-        ? { phone: conversation.whatsapp_phone, last_inbound_at: conversation.whatsapp_last_inbound_at || null }
-        : null,
+      whatsapp: unverifiedSide
+        ? { phone: unverifiedSide.whatsapp_phone, last_inbound_at: unverifiedSide.whatsapp_last_inbound_at || null, verified: false }
+        : conversation.whatsapp_phone
+          ? {
+              phone: conversation.whatsapp_phone,
+              last_inbound_at: conversation.whatsapp_last_inbound_at || null,
+              verified: await whatsappTrusted(conversation),
+            }
+          : null,
       student: { lead_id: String(lead.id), user_id: lead.user_id ? String(lead.user_id) : null, name: studentNameFromLead(lead), email: lead.email || "", phone: lead.phone || "" },
       known: knownProfile(profile, lead),
       // Answers that wouldn't pass today's checks (e.g. a bare "32" budget
@@ -1737,7 +2024,9 @@ router.get("/api/case/lead/:leadId", anySession, requireStaff, scopeBranchHead, 
         if (k.budget && validateBudget(k.budget).error) out.budget = true;
         return out;
       })(),
-      messages: (await rawMessages(conversation.id)).map((m) => publicMessage(m, { staff: true })),
+      messages: [...(await rawMessages(conversation.id)), ...sideMessages]
+        .sort((a, b) => sentAt(a).localeCompare(sentAt(b)) || String(a.seq || 0).localeCompare(String(b.seq || 0)))
+        .map((m) => publicMessage(m, { staff: true })),
     });
   } catch (error) {
     console.error("[case] staff load failed:", error);

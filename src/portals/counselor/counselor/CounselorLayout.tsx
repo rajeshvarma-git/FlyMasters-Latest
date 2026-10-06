@@ -25,6 +25,7 @@ import { Button } from "@counselor/components/ui/Button";
 import { useLocalStore } from "@counselor/lib/store";
 import NotificationBell from "@counselor/counselor/NotificationBell";
 import AlertCenter from "@shared/components/AlertCenter";
+import { useCaseUnread } from "@shared/lib/useCaseUnread";
 import { api } from "@counselor/lib/api";
 
 const work = [
@@ -51,7 +52,7 @@ export default function CounselorLayout() {
   const [open, setOpen] = useState(false);
   const store = useLocalStore();
   const unread = store.notifications.filter((item) => item.user_id === user?.id && !item.is_read).length;
-  const unreadChats = store.messages.filter((item) => item.receiver_id === user?.id && !item.is_read).length;
+  const unreadChats = useCaseUnread();
   const pendingApps = (store.applications || []).filter(
     (item) => item.status === "pending_counselor" || item.status === "submitted",
   ).length;

@@ -5,6 +5,7 @@ import { displayName, initials, isConvertedStudent, isSystemWhatsAppMessage } fr
 import { useStore } from "@telecaller/lib/store";
 import NotificationBell from "@telecaller/components/NotificationBell";
 import AlertCenter from "@shared/components/AlertCenter";
+import { useCaseUnread } from "@shared/lib/useCaseUnread";
 import { api } from "@telecaller/lib/api";
 
 const items = [
@@ -17,9 +18,8 @@ export default function Layout() {
   const { user, signOut } = useAuth();
   const store = useStore();
   const open = store.leads.filter((lead) => !isConvertedStudent(lead)).length;
-  const unreadChats = store.messages.filter(
-    (m) => String(m.receiver_id) === String(user?.id) && !m.is_read,
-  ).length;
+  // Same count as the per-student badges in Student Chat.
+  const unreadChats = useCaseUnread();
   const unreadWhatsApp = store.whatsappMessages.filter(
     (m) => m.direction === "inbound" && !m.is_read && !isSystemWhatsAppMessage(m),
   ).length;

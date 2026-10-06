@@ -14,6 +14,7 @@ export default function Notifications() {
 
   const send = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    const formEl = e.currentTarget;
     const data = new FormData(e.currentTarget);
     setBusy(true);
     try {
@@ -29,7 +30,7 @@ export default function Notifications() {
       } else {
         await api("/notifications/broadcast", { method: "POST", body });
       }
-      e.currentTarget.reset();
+      formEl.reset();
       await refreshStore();
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Could not send");

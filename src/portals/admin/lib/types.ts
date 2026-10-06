@@ -66,6 +66,9 @@ export interface Telecaller {
   phone: string;
   is_active: boolean;
   created_at: string | null;
+  /** A counsellor who may also be given telecaller work. */
+  can_telecall?: boolean;
+  role?: string;
 }
 
 export interface Lead {

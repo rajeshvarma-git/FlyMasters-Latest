@@ -13,6 +13,7 @@ export default function Checklists() {
 
   const add = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    const formEl = e.currentTarget;
     const data = new FormData(e.currentTarget);
     setBusy(true);
     try {
@@ -26,7 +27,7 @@ export default function Checklists() {
           is_required: Boolean(data.get("required")),
         },
       });
-      e.currentTarget.reset();
+      formEl.reset();
       await refreshStore();
     } finally {
       setBusy(false);

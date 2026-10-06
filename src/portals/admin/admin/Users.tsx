@@ -79,6 +79,7 @@ export default function UsersPage() {
 
   const createUser = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    const formEl = e.currentTarget;
     const data = new FormData(e.currentTarget);
     const role = String(data.get("role"));
     if (role === "counselor" && counselorCountries.length === 0) {
@@ -111,7 +112,7 @@ export default function UsersPage() {
             : {}),
         },
       });
-      resetCreateForm(e.currentTarget);
+      resetCreateForm(formEl);
       await refreshStore();
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Could not create user");

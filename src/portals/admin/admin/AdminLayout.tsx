@@ -37,6 +37,7 @@ import { Button } from "@admin/components/ui/Button";
 import { useAdminStore } from "@admin/lib/store";
 import NotificationBell from "@admin/components/NotificationBell";
 import AlertCenter from "@shared/components/AlertCenter";
+import { useCaseUnread } from "@shared/lib/useCaseUnread";
 
 /**
  * Menu visibility by role.
@@ -92,10 +93,9 @@ const groups = [
     roles: OPERATIONS,
     items: [
       { to: "/universities", label: "Universities", icon: Plane, end: false },
-      { to: "/documents-master", label: "Document master", icon: FileText, end: false, roles: ADMIN_ONLY },
+      { to: "/documents-master", label: "Documents setup", icon: FileText, end: false, roles: ADMIN_ONLY },
       { to: "/checklist-builder", label: "Country checklists", icon: ClipboardList, end: false, roles: ADMIN_ONLY },
       { to: "/statuses", label: "Status words", icon: ListChecks, end: false, roles: ADMIN_ONLY },
-      { to: "/checklists", label: "Document lists (legacy)", icon: ClipboardList, end: false, roles: ADMIN_ONLY },
     ],
   },
   {
@@ -140,6 +140,7 @@ export default function AdminLayout() {
   const pendingLeave = store.leave.filter((item) => item.status === "pending").length;
   const unassigned = store.leads.filter((item) => isConvertedStudent(item) && !item.assigned_counselor_id).length;
   const noTelecaller = store.leads.filter((item) => openLeadNeedsOwner(item)).length;
+  const unreadChats = useCaseUnread(60000);
 
   const Nav = () => (
     <>
@@ -189,6 +190,9 @@ export default function AdminLayout() {
                 )}
                 {item.label === "Lead Alerts" && noTelecaller > 0 && (
                   <span className="ml-auto rounded-full bg-rose-500 px-1.5 text-[10px] font-bold text-white">{noTelecaller}</span>
+                )}
+                {item.label === "Student chats" && unreadChats > 0 && (
+                  <span className="ml-auto rounded-full bg-violet-500 px-1.5 text-[10px] font-bold text-white">{unreadChats}</span>
                 )}
                 {item.label === "HR" && pendingLeave > 0 && (
                   <span className="ml-auto rounded-full bg-gold-500 px-1.5 text-[10px] font-bold text-navy-950">{pendingLeave}</span>

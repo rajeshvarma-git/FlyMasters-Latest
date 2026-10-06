@@ -1,708 +1,405 @@
-import { useState, useEffect } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '@student/hooks/useAuth';
 import { supabase } from '@student/integrations/supabase/client';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@student/components/ui/card';
+import { Card, CardContent } from '@student/components/ui/card';
 import { Button } from '@student/components/ui/button';
 import { Badge } from '@student/components/ui/badge';
-import { Textarea } from '@student/components/ui/textarea';
-import { Progress } from '@student/components/ui/progress';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from '@student/components/ui/dialog';
 import { useToast } from '@student/hooks/use-toast';
-import { 
-  GraduationCap, 
-  Heart, 
-  Clock, 
-  CheckCircle, 
-  AlertCircle,
-  MessageCircle,
-  FileText,
-  Calendar,
-  DollarSign,
-  User,
-  Send,
-  Eye,
-  EyeOff
-} from 'lucide-react';
+import { Calendar, Check, DollarSign, GraduationCap, Info, MapPin, RotateCcw, User, X } from 'lucide-react';
 import { format } from 'date-fns';
 import { collectStudentShortlistKeys, shortlistBelongsToStudent } from '@student/lib/studentShortlists';
+import { decideShortlist, shortlistMyPick } from '@student/lib/shortlistDecisions';
 
-interface UniversityShortlist {
+/**
+ * My Shortlists — one list of every university on the table for this student:
+ * the ones their counsellor recommends, the ones they picked themselves, and
+ * the ones they saved with the heart. Each gets a green tick (go ahead) or a
+ * red cross (not interested). A tick hands it to the counsellor, who starts
+ * and runs the application; the student follows its progress here. There is
+ * no student application form any more.
+ */
+
+type ShortlistRow = {
   id: string;
-  university_id: string;
-  course_id: string | null;
-  status: string;
-  student_consent: boolean;
-  student_consent_date: string | null;
-  priority_level: string;
-  counselor_notes: string | null;
-  student_notes: string | null;
-  application_deadline: string | null;
-  estimated_fees: number | null;
-  counselor_id: string;
-  shortlisted_at: string;
+  university_id: string | null;
   university_name: string | null;
   course_name: string | null;
   location: string | null;
-  course_link: string | null;
-  universities?: {
-    name: string;
-    country: string;
-    logo_url?: string;
-  } | null;
-  courses?: {
-    name: string;
-    degree_type: string;
-  } | null;
-  profiles?: {
-    first_name: string;
-    last_name: string;
-  } | null;
-  application_status: {
-    status: string;
-    notes: string | null;
-    updated_at: string;
-    next_action_required: string | null;
-    deadline_date: string | null;
-  }[];
-  shortlist_notes: {
-    id: string;
-    author_id: string;
-    author_type: string;
-    note_text: string;
-    is_private: boolean;
-    created_at: string;
-    profiles?: {
-      first_name: string;
-      last_name: string;
-    } | null;
-  }[];
-  checklists: {
-    id: string;
-    title: string;
-    description: string;
-    items: any[];
-    is_active: boolean;
-    checklist_type: string;
-  }[];
+  status: string | null;
+  source?: string | null;
+  student_consent: boolean;
+  student_decision?: string | null;
+  student_decision_at?: string | null;
+  counselor_id: string | null;
+  source_counselor_id?: string | null;
+  counselor_notes: string | null;
+  priority_level: string | null;
+  estimated_fees: number | null;
+  application_deadline: string | null;
+  application_id?: string | null;
+  shortlisted_at: string | null;
+  created_at: string | null;
+  course_link?: string | null;
+};
+
+type SavedUniversity = { id: string; name: string; country: string; city: string | null; website_url: string | null };
+
+type ApplicationRow = { id: string; shortlist_id?: string | null; university_name?: string | null; status: string; counselor_comments?: string | null; updated_at?: string | null };
+
+type Item =
+  | { kind: 'shortlist'; key: string; row: ShortlistRow }
+  | { kind: 'saved'; key: string; uni: SavedUniversity };
+
+const APPLICATION_LABELS: Record<string, string> = {
+  in_progress: 'Application in progress',
+  submitted_to_university: 'Submitted to the university',
+  offer_received: 'Offer received 🎉',
+  offer_accepted: 'Offer accepted',
+  enrolled: 'Enrolled',
+  rejected: 'Not successful this time',
+  withdrawn: 'Withdrawn',
+  counselor_approved: 'Approved by your counsellor',
+  returned: 'Returned by your counsellor',
+  pending_counselor: 'With your counsellor',
+  submitted: 'With your counsellor',
+  draft: 'Draft',
+};
+
+function decisionOf(row: ShortlistRow): 'applied' | 'accepted' | 'declined' | 'pending' {
+  const status = String(row.status || '').toLowerCase();
+  if (status === 'applied' || row.application_id) return 'applied';
+  if (status === 'declined' || row.student_decision === 'declined') return 'declined';
+  if (row.student_consent || status === 'consented') return 'accepted';
+  return 'pending';
+}
+
+function safeDate(value: string | null | undefined, pattern = 'MMM dd, yyyy') {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : format(date, pattern);
 }
 
 export function UniversityShortlists() {
   const { user } = useAuth();
   const { toast } = useToast();
-  const [shortlists, setShortlists] = useState<UniversityShortlist[]>([]);
+  const [shortlists, setShortlists] = useState<ShortlistRow[]>([]);
+  const [saved, setSaved] = useState<SavedUniversity[]>([]);
+  const [applications, setApplications] = useState<ApplicationRow[]>([]);
+  const [counselorNames, setCounselorNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
-  const [newNote, setNewNote] = useState<{ [key: string]: string }>({});
-  const [activeTab, setActiveTab] = useState<{ [key: string]: string }>({});
-  // Universities the student saved themselves (heart on Dashboard/Universities),
-  // shown here too so "Saved" and "My Shortlists" never disagree.
-  const [saved, setSaved] = useState<{ id: string; name: string; country: string; city: string | null }[]>([]);
+  const [busyKey, setBusyKey] = useState('');
+  const [details, setDetails] = useState<Item | null>(null);
 
-  const loadSaved = async () => {
+  const load = useCallback(async () => {
     if (!user) return;
-    const [{ data: favs }, { data: unis }] = await Promise.all([
-      supabase.from('user_favorites').select('university_id').eq('user_id', user.id),
-      supabase.from('universities').select('id, name, country, city'),
-    ]);
-    const ids = new Set((favs || []).map((f: any) => String(f.university_id)));
-    setSaved(((unis || []) as any[]).filter((u) => ids.has(String(u.id))).map((u) => ({
-      id: String(u.id), name: u.name, country: u.country || '', city: u.city || null,
-    })));
-  };
-
-  const unsave = async (id: string) => {
-    if (!user) return;
-    setSaved((list) => list.filter((u) => u.id !== id));
-    const { error } = await supabase.from('user_favorites').delete().eq('user_id', user.id).eq('university_id', id);
-    if (error) {
-      toast({ title: 'Could not remove it', variant: 'destructive' });
-      loadSaved();
-    }
-  };
-
-  useEffect(() => {
-    if (user) loadSaved().catch(() => {});
-  }, [user]);
-
-  useEffect(() => {
-    if (user) {
-      fetchShortlists();
-    }
-  }, [user]);
-
-  const fetchShortlists = async () => {
-    if (!user) return;
-
     try {
-      const [{ data: rows, error }, { data: leads }] = await Promise.all([
+      const [{ data: rows, error }, { data: leads }, { data: favs }, { data: unis }, { data: apps }] = await Promise.all([
         supabase.from('university_shortlists').select('*').order('created_at', { ascending: false }),
         supabase.from('student_leads').select('id, user_id, email'),
+        supabase.from('user_favorites').select('university_id').eq('user_id', user.id),
+        supabase.from('universities').select('id, name, country, city, website_url'),
+        supabase.from('applications').select('*').eq('user_id', user.id),
       ]);
-
       const keys = collectStudentShortlistKeys(user, leads || []);
-      const shortlistRows = (error ? [] : rows || []).filter((row: any) => shortlistBelongsToStudent(row, user, keys));
+      const mine = ((error ? [] : rows || []) as ShortlistRow[]).filter((row) => shortlistBelongsToStudent(row, user, keys));
+      setShortlists(mine);
 
-      const mapped: UniversityShortlist[] = shortlistRows.map((row: any) => ({
-        ...row,
-        status: row.status || 'recommended',
-        priority_level: row.priority_level || 'medium',
-        shortlisted_at: row.shortlisted_at || row.created_at,
-        universities: {
-          name: row.university_name || 'University',
-          country: row.location || '',
-        },
-        courses: {
-          name: row.course_name || 'Course',
-          degree_type: row.course_duration || '',
-        },
-        profiles: {
-          first_name: 'Your',
-          last_name: 'Counselor',
-        },
-        application_status: [],
-        shortlist_notes: [],
-        checklists: [],
-      }));
+      const favIds = new Set((favs || []).map((f: any) => String(f.university_id)));
+      setSaved(((unis || []) as any[]).filter((u) => favIds.has(String(u.id))).map((u) => ({
+        id: String(u.id),
+        name: u.name,
+        country: u.country || '',
+        city: u.city || null,
+        website_url: u.website_url || null,
+      })));
+      setApplications((apps || []) as ApplicationRow[]);
 
-      setShortlists(mapped);
-
-      const counselorIds = [...new Set(mapped.map((row) => row.counselor_id).filter(Boolean))];
-      if (counselorIds.length) {
-        try {
-          const { data: counselors } = await supabase
-            .from('profiles')
-            .select('user_id, first_name, last_name')
-            .in('user_id', counselorIds);
-          const counselorMap = new Map<string, any>((counselors || []).map((profile: any) => [profile.user_id, profile]));
-          setShortlists((current) =>
-            current.map((item) => {
-              const counselor = counselorMap.get(item.counselor_id);
-              return counselor
-                ? { ...item, profiles: { first_name: counselor.first_name, last_name: counselor.last_name } }
-                : item;
-            })
-          );
-        } catch {
-          // Names are optional; keep the shortlists even if profiles fail.
-        }
+      const ids = [...new Set(mine.map((row) => row.source_counselor_id || row.counselor_id).filter(Boolean))] as string[];
+      if (ids.length) {
+        const { data: people } = await supabase.from('profiles').select('user_id, first_name, last_name').in('user_id', ids);
+        const names: Record<string, string> = {};
+        (people || []).forEach((p: any) => {
+          const name = [p.first_name, p.last_name].filter(Boolean).join(' ');
+          if (name) names[String(p.user_id)] = name;
+        });
+        setCounselorNames(names);
       }
     } catch (error) {
-      console.error('Error fetching shortlists:', error);
-      setShortlists([]);
+      console.error('Error loading shortlists:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, [user]);
 
-  const handleConsentChange = async (shortlistId: string, consent: boolean) => {
+  useEffect(() => {
+    if (!user) return;
+    void load();
+    // Your counsellor may start or move an application while you are here.
+    const poll = window.setInterval(() => void load(), 20000);
+    return () => window.clearInterval(poll);
+  }, [user, load]);
+
+  const items = useMemo<Item[]>(() => {
+    const list: Item[] = shortlists.map((row) => ({ kind: 'shortlist', key: `s-${row.id}`, row }));
+    // A saved university already on the shortlist is shown once, as the shortlist entry.
+    const onList = new Set(shortlists.map((row) => String(row.university_id || '')));
+    const onListNames = new Set(shortlists.map((row) => String(row.university_name || '').trim().toLowerCase()));
+    saved
+      .filter((uni) => !onList.has(uni.id) && !onListNames.has(uni.name.trim().toLowerCase()))
+      .forEach((uni) => list.push({ kind: 'saved', key: `f-${uni.id}`, uni }));
+    return list;
+  }, [shortlists, saved]);
+
+  const groups = useMemo(() => {
+    const pending: Item[] = [];
+    const going: Item[] = [];
+    const declined: Item[] = [];
+    for (const item of items) {
+      if (item.kind === 'saved') { pending.push(item); continue; }
+      const state = decisionOf(item.row);
+      if (state === 'declined') declined.push(item);
+      else if (state === 'pending') pending.push(item);
+      else going.push(item);
+    }
+    return { pending, going, declined };
+  }, [items]);
+
+  const applicationFor = (row: ShortlistRow) =>
+    applications.find((app) => (row.application_id && app.id === row.application_id) || String(app.shortlist_id || '') === row.id) || null;
+
+  const run = async (key: string, action: () => Promise<unknown>, done: string) => {
+    setBusyKey(key);
     try {
-      const { error } = await supabase
-        .from('university_shortlists')
-        .update({
-          student_consent: consent,
-          student_consent_date: consent ? new Date().toISOString() : null,
-          status: consent ? 'consented' : 'recommended'
-        })
-        .eq('id', shortlistId);
-
-      if (error) throw error;
-
-      toast({
-        title: "Success",
-        description: consent ? "Application consent given" : "Application consent withdrawn",
-      });
-
-      fetchShortlists();
-    } catch (error) {
-      console.error('Error updating consent:', error);
-      toast({
-        title: "Error",
-        description: "Failed to update consent",
-        variant: "destructive",
-      });
+      await action();
+      toast({ title: done });
+      await load();
+    } catch (error: any) {
+      toast({ title: 'Could not save that', description: error?.message || 'Please try again.', variant: 'destructive' });
+    } finally {
+      setBusyKey('');
     }
   };
 
-  const addNote = async (shortlistId: string) => {
-    if (!newNote[shortlistId]?.trim()) return;
+  const accept = (item: Item) => item.kind === 'saved'
+    ? run(item.key, () => shortlistMyPick({
+        university_id: item.uni.id,
+        university_name: item.uni.name,
+        location: [item.uni.city, item.uni.country].filter(Boolean).join(', '),
+      }), 'Sent to your counsellor — they will start the application')
+    : run(item.key, () => decideShortlist(item.row.id, 'accept'), 'Accepted — your counsellor will start the application');
 
-    try {
-      const { error } = await supabase
-        .from('shortlist_notes')
-        .insert({
-          shortlist_id: shortlistId,
-          author_id: user?.id,
-          author_type: 'student',
-          note_text: newNote[shortlistId],
-        });
+  const decline = (item: Item) => item.kind === 'saved'
+    ? run(item.key, async () => {
+        const { error } = await supabase.from('user_favorites').delete().eq('user_id', user!.id).eq('university_id', item.uni.id);
+        if (error) throw error;
+      }, 'Removed from your list')
+    : run(item.key, () => decideShortlist(item.row.id, 'decline'), 'Marked as not interested');
 
-      if (error) throw error;
-
-      setNewNote(prev => ({ ...prev, [shortlistId]: '' }));
-      toast({
-        title: "Success",
-        description: "Note added successfully",
-      });
-
-      fetchShortlists();
-    } catch (error) {
-      console.error('Error adding note:', error);
-      toast({
-        title: "Error",
-        description: "Failed to add note",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const updateChecklistItem = async (checklistId: string, itemIndex: number, completed: boolean) => {
-    try {
-      const checklist = shortlists
-        .flatMap(s => s.checklists)
-        .find(c => c.id === checklistId);
-
-      if (!checklist) return;
-
-      const updatedItems = [...checklist.items];
-      updatedItems[itemIndex] = { ...updatedItems[itemIndex], completed, completed_at: completed ? new Date().toISOString() : null };
-
-      const { error } = await supabase
-        .from('student_checklists')
-        .update({ 
-          items: updatedItems,
-          completed_at: updatedItems.every(item => item.completed) ? new Date().toISOString() : null
-        })
-        .eq('id', checklistId);
-
-      if (error) throw error;
-
-      fetchShortlists();
-    } catch (error) {
-      console.error('Error updating checklist:', error);
-      toast({
-        title: "Error",
-        description: "Failed to update checklist",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const getStatusColor = (status: string) => {
-    switch ((status || 'recommended').toLowerCase()) {
-      case 'recommended': return 'bg-blue-500';
-      case 'consented': return 'bg-green-500';
-      case 'applied': return 'bg-purple-500';
-      case 'accepted': return 'bg-emerald-500';
-      case 'rejected': return 'bg-red-500';
-      case 'waitlisted': return 'bg-yellow-500';
-      default: return 'bg-gray-500';
-    }
-  };
-
-  const getPriorityColor = (priority: string) => {
-    switch ((priority || '').toLowerCase()) {
-      case 'high': return 'destructive';
-      case 'medium': return 'default';
-      case 'low': return 'secondary';
-      default: return 'outline';
-    }
-  };
+  const undo = (item: Item) => item.kind === 'shortlist'
+    ? run(item.key, () => decideShortlist(item.row.id, 'undo'), 'Moved back to your decisions')
+    : Promise.resolve();
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+      <div className="flex min-h-[400px] items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-primary" />
       </div>
     );
   }
 
+  const title = (item: Item) => item.kind === 'saved' ? item.uni.name : (item.row.university_name || 'University');
+  const subtitle = (item: Item) => item.kind === 'saved'
+    ? [item.uni.city, item.uni.country].filter(Boolean).join(', ')
+    : [item.row.course_name, item.row.location].filter(Boolean).join(' • ');
+  const sourceLabel = (item: Item) => {
+    if (item.kind === 'saved') return 'Saved by you';
+    if (item.row.source === 'student') return 'Your pick';
+    const name = counselorNames[String(item.row.source_counselor_id || item.row.counselor_id || '')];
+    return name ? `Recommended by ${name}` : 'Recommended by your counsellor';
+  };
+
+  const renderCard = (item: Item) => {
+    const busy = busyKey === item.key;
+    const state = item.kind === 'saved' ? 'pending' : decisionOf(item.row);
+    const app = item.kind === 'shortlist' ? applicationFor(item.row) : null;
+    return (
+      <Card key={item.key} className="glass-card">
+        <CardContent className="flex flex-wrap items-center gap-4 p-4">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-primary/10">
+            <GraduationCap className="h-5 w-5 text-primary" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <p className="font-semibold leading-snug">{title(item)}</p>
+            {subtitle(item) ? <p className="text-sm text-muted-foreground">{subtitle(item)}</p> : null}
+            <div className="mt-1 flex flex-wrap gap-2">
+              <Badge variant="outline">{sourceLabel(item)}</Badge>
+              {state === 'accepted' ? <Badge className="bg-emerald-600 text-white">Accepted — your counsellor will start it</Badge> : null}
+              {state === 'applied' ? (
+                <Badge className="bg-purple-600 text-white">{APPLICATION_LABELS[app?.status || 'in_progress'] || 'Application in progress'}</Badge>
+              ) : null}
+              {state === 'declined' ? <Badge variant="secondary">Not interested</Badge> : null}
+            </div>
+            {state === 'applied' && app?.counselor_comments ? (
+              <p className="mt-2 text-sm text-muted-foreground">Counsellor: {app.counselor_comments}</p>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => setDetails(item)}>
+              <Info className="mr-1 h-4 w-4" /> View information
+            </Button>
+            {state === 'pending' ? (
+              <>
+                <Button
+                  size="icon"
+                  aria-label="Go ahead with this university"
+                  title="Go ahead — my counsellor can start the application"
+                  disabled={busy}
+                  className="h-9 w-9 rounded-full bg-emerald-600 text-white hover:bg-emerald-700"
+                  onClick={() => void accept(item)}
+                >
+                  <Check className="h-5 w-5" />
+                </Button>
+                <Button
+                  size="icon"
+                  aria-label="Not interested"
+                  title="Not interested"
+                  disabled={busy}
+                  className="h-9 w-9 rounded-full bg-rose-600 text-white hover:bg-rose-700"
+                  onClick={() => void decline(item)}
+                >
+                  <X className="h-5 w-5" />
+                </Button>
+              </>
+            ) : null}
+            {state === 'accepted' || state === 'declined' ? (
+              <Button variant="ghost" size="sm" disabled={busy} onClick={() => void undo(item)} title="Change my mind">
+                <RotateCcw className="mr-1 h-4 w-4" /> Change
+              </Button>
+            ) : null}
+          </div>
+        </CardContent>
+      </Card>
+    );
+  };
+
+  const detailRow = details?.kind === 'shortlist' ? details.row : null;
+  const detailApp = detailRow ? applicationFor(detailRow) : null;
+
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-4">
-        <div className="w-12 h-12 rounded-full bg-gradient-primary flex items-center justify-center">
-          <GraduationCap className="w-6 h-6 text-white" />
+        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gradient-primary">
+          <GraduationCap className="h-6 w-6 text-white" />
         </div>
         <div>
           <h1 className="text-3xl font-bold">My Shortlists</h1>
-          <p className="text-muted-foreground">Universities you saved, and the ones your counselor recommends</p>
+          <p className="text-muted-foreground">
+            Tick <span className="font-medium text-emerald-700">✓</span> the universities you want to go ahead with, or
+            cross <span className="font-medium text-rose-700">✗</span> the ones you don&apos;t. Your counsellor starts the application for every tick.
+          </p>
         </div>
       </div>
 
-      <section className="space-y-3">
-        <h2 className="text-lg font-semibold">Saved by you ({saved.length})</h2>
-        {saved.length === 0 ? (
-          <p className="rounded-xl border border-dashed p-4 text-sm text-muted-foreground">
-            Tap <span className="font-medium">Save</span> on a university on your Dashboard or the Universities page and it appears here.
-          </p>
-        ) : (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {saved.map((u) => (
-              <div key={u.id} className="flex flex-col rounded-xl border border-border/60 bg-card p-4 shadow-sm">
-                <p className="font-semibold leading-snug">{u.name}</p>
-                <p className="text-xs text-muted-foreground">{[u.city, u.country].filter(Boolean).join(', ')}</p>
-                <div className="mt-3 flex items-center justify-between gap-2">
-                  <Button asChild size="sm">
-                    <Link to={`/student/applications?university=${encodeURIComponent(u.id)}`}>Start application</Link>
-                  </Button>
-                  <button type="button" onClick={() => unsave(u.id)} className="text-xs text-muted-foreground hover:text-destructive">
-                    Remove
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      <h2 className="text-lg font-semibold">Recommended by your counselor ({shortlists.length})</h2>
-      {shortlists.length === 0 ? (
+      {items.length === 0 ? (
         <Card className="glass-card">
-          <CardContent className="text-center py-12">
-            <GraduationCap className="w-16 h-16 mx-auto mb-4 text-muted-foreground opacity-50" />
-            <h3 className="text-lg font-semibold mb-2">Nothing from your counselor yet</h3>
-            <p className="text-muted-foreground mb-4">
-              Once a counselor is assigned to you, the universities they recommend show up here.
+          <CardContent className="py-12 text-center">
+            <GraduationCap className="mx-auto mb-4 h-16 w-16 text-muted-foreground opacity-50" />
+            <h3 className="mb-2 text-lg font-semibold">Nothing here yet</h3>
+            <p className="mb-4 text-muted-foreground">
+              Shortlist universities on the Universities page, or wait for your counsellor&apos;s recommendations.
             </p>
-            <Button asChild>
-              <Link to="/student/messages">Message your advisor</Link>
-            </Button>
+            <div className="flex flex-wrap justify-center gap-2">
+              <Button asChild><Link to="/student/universities">Browse universities</Link></Button>
+              <Button asChild variant="outline"><Link to="/student/messages">Message your advisor</Link></Button>
+            </div>
           </CardContent>
         </Card>
-      ) : (
-        <div className="space-y-6">
-          {shortlists.map((shortlist) => (
-            <Card key={shortlist.id} className="glass-card">
-              <CardHeader>
-                <div className="flex justify-between items-start">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-3 mb-2">
-                      <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center">
-                        <GraduationCap className="w-6 h-6 text-primary" />
-                      </div>
-                      <div>
-                        <CardTitle className="text-xl">
-                          {shortlist.university_name || shortlist.universities?.name || 'University'}
-                        </CardTitle>
-                        <CardDescription>
-                          {[shortlist.course_name || shortlist.courses?.name, shortlist.courses?.degree_type, shortlist.location || shortlist.universities?.country]
-                            .filter(Boolean)
-                            .join(' • ')}
-                        </CardDescription>
-                      </div>
-                    </div>
-                    
-                    <div className="flex flex-wrap gap-2 mb-4">
-                      <Badge className={`${getStatusColor(shortlist.status)} text-white`}>
-                        {shortlist.status}
-                      </Badge>
-                      <Badge variant={getPriorityColor(shortlist.priority_level)}>
-                        {shortlist.priority_level} priority
-                      </Badge>
-                      {shortlist.estimated_fees && (
-                        <Badge variant="outline" className="flex items-center gap-1">
-                          <DollarSign className="w-3 h-3" />
-                          ${shortlist.estimated_fees.toLocaleString()}
-                        </Badge>
-                      )}
-                    </div>
+      ) : null}
 
-                    <div className="text-sm text-muted-foreground mb-4">
-                      <div className="flex items-center gap-2 mb-1">
-                        <User className="w-4 h-4" />
-                        Recommended by: {shortlist.profiles?.first_name || 'Your'} {shortlist.profiles?.last_name || 'Counselor'}
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Clock className="w-4 h-4" />
-                        Shortlisted on: {shortlist.shortlisted_at && !Number.isNaN(new Date(shortlist.shortlisted_at).getTime())
-                          ? format(new Date(shortlist.shortlisted_at), 'MMM dd, yyyy')
-                          : 'Recently'}
-                      </div>
-                      {shortlist.application_deadline && !Number.isNaN(new Date(shortlist.application_deadline).getTime()) ? (
-                        <div className="flex items-center gap-2 mt-1">
-                          <Calendar className="w-4 h-4" />
-                          Application deadline: {format(new Date(shortlist.application_deadline), 'MMM dd, yyyy')}
-                        </div>
-                      ) : null}
-                      {shortlist.counselor_notes ? (
-                        <p className="mt-3 rounded-md bg-muted/50 p-3 text-sm text-foreground">
-                          {shortlist.counselor_notes}
-                        </p>
-                      ) : null}
-                    </div>
+      {groups.pending.length > 0 ? (
+        <section className="space-y-3">
+          <h2 className="text-lg font-semibold">Waiting for your decision ({groups.pending.length})</h2>
+          {groups.pending.map(renderCard)}
+        </section>
+      ) : null}
+
+      {groups.going.length > 0 ? (
+        <section className="space-y-3">
+          <h2 className="text-lg font-semibold">Going ahead ({groups.going.length})</h2>
+          {groups.going.map(renderCard)}
+        </section>
+      ) : null}
+
+      {groups.declined.length > 0 ? (
+        <section className="space-y-3">
+          <h2 className="text-lg font-semibold text-muted-foreground">Not interested ({groups.declined.length})</h2>
+          {groups.declined.map(renderCard)}
+        </section>
+      ) : null}
+
+      <Dialog open={Boolean(details)} onOpenChange={(open) => { if (!open) setDetails(null); }}>
+        <DialogContent>
+          {details ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>{title(details)}</DialogTitle>
+                <DialogDescription>{sourceLabel(details)}</DialogDescription>
+              </DialogHeader>
+              <div className="space-y-3 text-sm">
+                {details.kind === 'shortlist' && details.row.course_name ? (
+                  <p className="flex items-start gap-2"><GraduationCap className="mt-0.5 h-4 w-4 shrink-0" /> {details.row.course_name}</p>
+                ) : null}
+                {subtitle(details) && details.kind === 'saved' ? (
+                  <p className="flex items-start gap-2"><MapPin className="mt-0.5 h-4 w-4 shrink-0" /> {subtitle(details)}</p>
+                ) : null}
+                {detailRow?.location ? (
+                  <p className="flex items-start gap-2"><MapPin className="mt-0.5 h-4 w-4 shrink-0" /> {detailRow.location}</p>
+                ) : null}
+                {detailRow?.estimated_fees ? (
+                  <p className="flex items-start gap-2"><DollarSign className="mt-0.5 h-4 w-4 shrink-0" /> Estimated fees: {Number(detailRow.estimated_fees).toLocaleString()}</p>
+                ) : null}
+                {safeDate(detailRow?.application_deadline) ? (
+                  <p className="flex items-start gap-2"><Calendar className="mt-0.5 h-4 w-4 shrink-0" /> Application deadline: {safeDate(detailRow?.application_deadline)}</p>
+                ) : null}
+                {safeDate(detailRow?.shortlisted_at || detailRow?.created_at) ? (
+                  <p className="flex items-start gap-2"><User className="mt-0.5 h-4 w-4 shrink-0" /> Added on {safeDate(detailRow?.shortlisted_at || detailRow?.created_at)}</p>
+                ) : null}
+                {detailRow?.counselor_notes ? (
+                  <div className="rounded-md bg-muted/50 p-3">
+                    <p className="mb-1 font-medium">Why your counsellor suggests it</p>
+                    <p>{detailRow.counselor_notes}</p>
                   </div>
-                </div>
-              </CardHeader>
-
-              <CardContent className="space-y-6">
-                {/* Consent Section */}
-                <div className="p-4 rounded-lg border bg-muted/20">
-                  <h4 className="font-semibold mb-2 flex items-center gap-2">
-                    <CheckCircle className="w-4 h-4" />
-                    Application Consent
-                  </h4>
-                  <p className="text-sm text-muted-foreground mb-3">
-                    Give your consent to proceed with the application to this university.
-                  </p>
-                  <div className="flex flex-wrap gap-3">
-                    {shortlist.status?.toLowerCase() === 'applied' ? (
-                      <Button size="sm" variant="outline" disabled>
-                        <CheckCircle className="w-4 h-4 mr-2" />
-                        Application started
-                      </Button>
-                    ) : shortlist.student_consent ? (
-                      <Button size="sm" asChild>
-                        <Link to={`/student/applications?shortlist=${encodeURIComponent(shortlist.id)}`}>
-                          Start application
-                        </Link>
-                      </Button>
-                    ) : (
-                      <Button size="sm" disabled title="Give your consent below first">
-                        Start application
-                      </Button>
-                    )}
-                    <Button
-                      onClick={() => handleConsentChange(shortlist.id, true)}
-                      disabled={shortlist.student_consent}
-                      variant={shortlist.student_consent ? "default" : "outline"}
-                      size="sm"
-                    >
-                      {shortlist.student_consent ? (
-                        <>
-                          <CheckCircle className="w-4 h-4 mr-2" />
-                          Consented
-                        </>
-                      ) : (
-                        'Give Consent'
-                      )}
-                    </Button>
-                    {shortlist.student_consent && (
-                      <Button
-                        onClick={() => handleConsentChange(shortlist.id, false)}
-                        variant="outline"
-                        size="sm"
-                      >
-                        Withdraw Consent
-                      </Button>
-                    )}
+                ) : null}
+                {detailApp ? (
+                  <div className="rounded-md border p-3">
+                    <p className="font-medium">{APPLICATION_LABELS[detailApp.status] || detailApp.status}</p>
+                    {detailApp.counselor_comments ? <p className="mt-1 text-muted-foreground">{detailApp.counselor_comments}</p> : null}
+                    {safeDate(detailApp.updated_at) ? <p className="mt-1 text-xs text-muted-foreground">Updated {safeDate(detailApp.updated_at)}</p> : null}
                   </div>
-                  {shortlist.student_consent_date ? (
-                    <p className="text-xs text-muted-foreground mt-2">
-                      Consented on: {format(new Date(shortlist.student_consent_date), 'MMM dd, yyyy')}
-                    </p>
-                  ) : (
-                    <p className="text-xs text-muted-foreground mt-2">
-                      Give your consent above before starting the application.
-                    </p>
-                  )}
-                </div>
-
-                {/* Tabs for different sections */}
-                <div className="space-y-4">
-                  <div className="flex gap-2 border-b">
-                    {['status', 'notes', 'checklists'].map((tab) => (
-                      <button
-                        key={tab}
-                        onClick={() => setActiveTab(prev => ({ ...prev, [shortlist.id]: tab }))}
-                        className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
-                          (activeTab[shortlist.id] || 'status') === tab
-                            ? 'border-primary text-primary'
-                            : 'border-transparent text-muted-foreground hover:text-foreground'
-                        }`}
-                      >
-                        {tab.charAt(0).toUpperCase() + tab.slice(1)}
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* Status Tab */}
-                  {(activeTab[shortlist.id] || 'status') === 'status' && (
-                    <div className="space-y-4">
-                      <h4 className="font-semibold flex items-center gap-2">
-                        <AlertCircle className="w-4 h-4" />
-                        Application Status Updates
-                      </h4>
-                      {shortlist.application_status?.length > 0 ? (
-                        <div className="space-y-3">
-                          {shortlist.application_status
-                            .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime())
-                            .map((update, index) => (
-                            <div key={index} className="p-3 rounded-lg border bg-muted/10">
-                              <div className="flex justify-between items-start mb-2">
-                                <Badge className={`${getStatusColor(update.status)} text-white`}>
-                                  {update.status.replace('_', ' ')}
-                                </Badge>
-                                <span className="text-xs text-muted-foreground">
-                                  {format(new Date(update.updated_at), 'MMM dd, yyyy')}
-                                </span>
-                              </div>
-                              {update.notes && (
-                                <p className="text-sm text-foreground mb-2">{update.notes}</p>
-                              )}
-                              {update.next_action_required && (
-                                <div className="text-sm">
-                                  <strong>Next Action:</strong> {update.next_action_required}
-                                </div>
-                              )}
-                              {update.deadline_date && (
-                                <div className="text-sm text-orange-600">
-                                  <strong>Deadline:</strong> {format(new Date(update.deadline_date), 'MMM dd, yyyy')}
-                                </div>
-                              )}
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="text-muted-foreground text-sm">No status updates yet.</p>
-                      )}
-                    </div>
-                  )}
-
-                  {/* Notes Tab */}
-                  {(activeTab[shortlist.id] || 'status') === 'notes' && (
-                    <div className="space-y-4">
-                      <h4 className="font-semibold flex items-center gap-2">
-                        <MessageCircle className="w-4 h-4" />
-                        Communication Notes
-                      </h4>
-                      
-                      {/* Add new note */}
-                      <div className="flex gap-2">
-                        <Textarea
-                          placeholder="Add a note or question..."
-                          value={newNote[shortlist.id] || ''}
-                          onChange={(e) => setNewNote(prev => ({ ...prev, [shortlist.id]: e.target.value }))}
-                          className="flex-1"
-                          rows={2}
-                        />
-                        <Button
-                          onClick={() => addNote(shortlist.id)}
-                          disabled={!newNote[shortlist.id]?.trim()}
-                          size="sm"
-                        >
-                          <Send className="w-4 h-4" />
-                        </Button>
-                      </div>
-
-                      {/* Display notes */}
-                      <div className="space-y-3">
-                        {(shortlist.shortlist_notes || [])
-                          .filter(note => !note.is_private || note.author_id === user?.id)
-                          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
-                          .map((note) => (
-                          <div key={note.id} className={`p-3 rounded-lg ${
-                            note.author_type === 'student' ? 'bg-primary/5 border-l-4 border-l-primary' : 'bg-muted/20'
-                          }`}>
-                            <div className="flex justify-between items-start mb-2">
-                              <div className="flex items-center gap-2">
-                                <Badge variant={note.author_type === 'student' ? 'default' : 'secondary'}>
-                                  {note.author_type}
-                                </Badge>
-                                <span className="text-sm font-medium">
-                                  {note.profiles
-                                    ? `${note.profiles.first_name || ''} ${note.profiles.last_name || ''}`.trim()
-                                    : note.author_type === 'student' ? 'You' : 'Counselor'}
-                                </span>
-                                {note.is_private && (
-                                  <div className="flex items-center gap-1 text-orange-600">
-                                    <EyeOff className="w-3 h-3" />
-                                    <span className="text-xs">Private</span>
-                                  </div>
-                                )}
-                              </div>
-                              <span className="text-xs text-muted-foreground">
-                                {format(new Date(note.created_at), 'MMM dd, yyyy HH:mm')}
-                              </span>
-                            </div>
-                            <p className="text-sm">{note.note_text}</p>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Checklists Tab */}
-                  {(activeTab[shortlist.id] || 'status') === 'checklists' && (
-                    <div className="space-y-4">
-                      <h4 className="font-semibold flex items-center gap-2">
-                        <FileText className="w-4 h-4" />
-                        Application Checklists
-                      </h4>
-                      
-                      {(shortlist.checklists || []).filter(c => c.is_active).length > 0 ? (
-                        <div className="space-y-4">
-                          {(shortlist.checklists || [])
-                            .filter(checklist => checklist.is_active)
-                            .map((checklist) => {
-                              const completedItems = checklist.items.filter(item => item.completed).length;
-                              const totalItems = checklist.items.length;
-                              const progress = totalItems > 0 ? (completedItems / totalItems) * 100 : 0;
-
-                              return (
-                                <div key={checklist.id} className="p-4 rounded-lg border bg-muted/10">
-                                  <div className="flex justify-between items-start mb-3">
-                                    <div>
-                                      <h5 className="font-medium">{checklist.title}</h5>
-                                      <p className="text-sm text-muted-foreground">{checklist.description}</p>
-                                    </div>
-                                    <Badge variant="outline">
-                                      {checklist.checklist_type}
-                                    </Badge>
-                                  </div>
-                                  
-                                  <div className="mb-4">
-                                    <div className="flex justify-between text-sm mb-1">
-                                      <span>Progress</span>
-                                      <span>{completedItems}/{totalItems} completed</span>
-                                    </div>
-                                    <Progress value={progress} className="h-2" />
-                                  </div>
-
-                                  <div className="space-y-2">
-                                    {checklist.items.map((item, itemIndex) => (
-                                      <div key={itemIndex} className="flex items-center gap-3">
-                                        <input
-                                          type="checkbox"
-                                          checked={item.completed || false}
-                                          onChange={(e) => updateChecklistItem(checklist.id, itemIndex, e.target.checked)}
-                                          className="rounded border-gray-300"
-                                        />
-                                        <span className={`text-sm ${item.completed ? 'line-through text-muted-foreground' : ''}`}>
-                                          {item.title}
-                                        </span>
-                                        {item.description && (
-                                          <span className="text-xs text-muted-foreground">
-                                            - {item.description}
-                                          </span>
-                                        )}
-                                      </div>
-                                    ))}
-                                  </div>
-                                </div>
-                              );
-                            })}
-                        </div>
-                      ) : (
-                        <p className="text-muted-foreground text-sm">No active checklists for this application.</p>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {/* Counselor Notes */}
-                {shortlist.counselor_notes && (
-                  <div className="p-4 rounded-lg border bg-blue-50/50 dark:bg-blue-950/20">
-                    <h4 className="font-semibold text-blue-800 dark:text-blue-200 mb-2">
-                      Counselor Notes
-                    </h4>
-                    <p className="text-sm text-blue-700 dark:text-blue-300">
-                      {shortlist.counselor_notes}
-                    </p>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          ))}
-        </div>
-      )}
+                ) : null}
+                {details.kind === 'saved' && details.uni.website_url ? (
+                  <a href={details.uni.website_url} target="_blank" rel="noopener noreferrer" className="text-primary underline">
+                    University website
+                  </a>
+                ) : null}
+                {detailRow?.course_link ? (
+                  <a href={detailRow.course_link} target="_blank" rel="noopener noreferrer" className="text-primary underline">
+                    Course page
+                  </a>
+                ) : null}
+              </div>
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

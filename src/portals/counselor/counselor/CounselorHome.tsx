@@ -15,7 +15,9 @@ export default function CounselorHome() {
   const [elapsed, setElapsed] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const leads = store.leads.filter((lead) => lead.assigned_counselor_id === user?.id);
+  const leads = store.leads.filter(
+    (lead) => lead.assigned_counselor_id === user?.id || lead.assigned_telecaller_id === user?.id,
+  );
   const today = format(new Date(), "yyyy-MM-dd");
   const todayAttendance = store.attendance.find((row) => row.counselor_id === user?.id && row.date === today) || null;
 

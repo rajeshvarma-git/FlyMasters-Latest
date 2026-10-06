@@ -27,8 +27,7 @@ import Partners from "@admin/admin/Partners";
 import Finance from "@admin/admin/Finance";
 import HR from "@admin/admin/HR";
 import Universities from "@admin/admin/Universities";
-import Checklists from "@admin/admin/Checklists";
-import DocumentMaster from "@admin/admin/DocumentMaster";
+import DocumentSetup from "@shared/components/DocumentSetup";
 import ChecklistBuilder from "@admin/admin/ChecklistBuilder";
 import StatusVocabulary from "@admin/admin/StatusVocabulary";
 import AlertSettings from "@admin/admin/AlertSettings";
@@ -111,9 +110,9 @@ export default function App() {
               <Route path="counselors/:id" element={<CounselorDetail />} />
               <Route path="hr" element={<HR />} />
               <Route path="universities" element={<Universities />} />
-              <Route path="checklists" element={<Checklists />} />
+              <Route path="checklists" element={<Navigate to="/documents-master" replace />} />
               {/* CRM 2.6 — document master, versioned checklists, status words */}
-              <Route path="documents-master" element={<DocumentMaster />} />
+              <Route path="documents-master" element={<DocumentSetup />} />
               <Route path="checklist-builder" element={<ChecklistBuilder />} />
               <Route path="statuses" element={<StatusVocabulary />} />
               <Route path="alert-settings" element={<AlertSettings />} />

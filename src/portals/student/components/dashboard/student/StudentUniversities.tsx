@@ -15,6 +15,7 @@ import {
   ExternalLink
 } from 'lucide-react';
 import { matchesAnyCountry, normalizeCountry } from '@student/lib/universityRecommendations';
+import { shortlistMyPick } from '@student/lib/shortlistDecisions';
 
 interface University {
   id: string;
@@ -38,6 +39,28 @@ export function StudentUniversities() {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCountry, setSelectedCountry] = useState('profile');
   const [savingId, setSavingId] = useState<string | null>(null);
+  const [shortlistingId, setShortlistingId] = useState<string | null>(null);
+  const [shortlistedIds, setShortlistedIds] = useState<Set<string>>(new Set());
+
+  // "Apply" used to open a student application form. The counsellor runs the
+  // application now, so this puts the university on the student's shortlist
+  // (already ticked) and tells their counsellor.
+  const addToShortlist = async (university: University) => {
+    setShortlistingId(university.id);
+    try {
+      await shortlistMyPick({
+        university_id: university.id,
+        university_name: university.name,
+        location: [university.city, university.country].filter(Boolean).join(', '),
+      });
+      setShortlistedIds((current) => new Set(current).add(university.id));
+      toast({ title: 'Added to your shortlist', description: 'Your counsellor will start the application.' });
+    } catch (error: any) {
+      toast({ title: 'Could not shortlist it', description: error?.message || 'Please try again.', variant: 'destructive' });
+    } finally {
+      setShortlistingId(null);
+    }
+  };
 
   useEffect(() => {
     fetchPageData();
@@ -292,11 +315,20 @@ export function StudentUniversities() {
                   )}
 
                   <div className="flex gap-2 pt-2">
-                    <Button size="sm" className="flex-1" asChild>
-                      <Link to={`/student/applications?university=${encodeURIComponent(university.id)}`}>
-                        Apply
-                      </Link>
-                    </Button>
+                    {shortlistedIds.has(university.id) ? (
+                      <Button size="sm" className="flex-1" variant="secondary" asChild>
+                        <Link to="/student/shortlists">On your shortlist</Link>
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        className="flex-1"
+                        disabled={shortlistingId === university.id}
+                        onClick={() => void addToShortlist(university)}
+                      >
+                        {shortlistingId === university.id ? 'Adding…' : 'Shortlist'}
+                      </Button>
+                    )}
                     {university.website_url ? (
                       <Button variant="outline" size="sm" className="flex-1" asChild>
                         <a href={university.website_url} target="_blank" rel="noopener noreferrer">

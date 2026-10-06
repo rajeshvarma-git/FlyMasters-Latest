@@ -20,6 +20,7 @@ type InboxItem = {
   student_user_id: string | null;
   student_name: string;
   channel?: "app" | "whatsapp";
+  whatsapp_unverified?: boolean;
   owner: Owner;
   last_message: { body: string; sender_role: Role; created_at: string } | null;
   last_message_at: string | null;
@@ -43,7 +44,7 @@ type Message = {
   /** Whether this reply reached the student's WhatsApp */
   wa_via?: string | null;
   wa_error?: string | null;
-  wa_status?: "accepted" | "sent" | "delivered" | "read" | "failed" | "window_closed" | "waiting" | "not_configured" | null;
+  wa_status?: "accepted" | "sent" | "delivered" | "read" | "failed" | "window_closed" | "waiting" | "not_configured" | "unverified" | null;
   created_at: string;
 };
 
@@ -56,12 +57,13 @@ const WA_STATUS: Record<string, string> = {
   waiting: " · held — sent free when the student replies (a paid reminder already went out)",
   window_closed: " · app only (WhatsApp 24h window closed, no template set up)",
   not_configured: " · app only (WhatsApp not set up)",
+  unverified: " · app only (student's WhatsApp number is not verified)",
 };
 
 type Thread = {
   can_reply?: boolean;
   owner: Owner;
-  whatsapp: { phone: string; last_inbound_at: string | null } | null;
+  whatsapp: { phone: string; last_inbound_at: string | null; verified?: boolean } | null;
   student: { lead_id: string; name: string; email: string; phone: string };
   known: Record<string, string>;
   /** Answers that look wrong (e.g. a bare "32" budget) and should be confirmed */
@@ -283,6 +285,9 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
                     {item.channel === "whatsapp" && (
                       <span className="shrink-0 rounded bg-emerald-100 px-1 text-[10px] font-semibold text-emerald-700">WhatsApp</span>
                     )}
+                    {item.whatsapp_unverified && (
+                      <span title="This WhatsApp number was never verified for the student's account — replies stay in the app" className="shrink-0 rounded bg-amber-100 px-1 text-[10px] font-semibold text-amber-800">not verified</span>
+                    )}
                     {!item.student_user_id && (
                       <span title="Has not created a student portal account yet" className="shrink-0 rounded bg-slate-100 px-1 text-[10px] text-slate-500">no app</span>
                     )}
@@ -334,7 +339,12 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
                   <p className="truncate text-xs text-slate-500">
                     {[thread?.student.phone, thread?.student.email].filter(Boolean).join(" · ")}
                   </p>
-                  {thread?.whatsapp && (
+                  {thread?.whatsapp && thread.whatsapp.verified === false && (
+                    <p className="mt-0.5 text-[11px] font-medium text-amber-700">
+                      WhatsApp {thread.whatsapp.phone} is not verified for this student — your replies stay in the app until they verify it (they have been told on WhatsApp).
+                    </p>
+                  )}
+                  {thread?.whatsapp && thread.whatsapp.verified !== false && (
                     <p className="mt-0.5 text-[11px] text-emerald-700">
                       On WhatsApp —{" "}
                       {thread.whatsapp.last_inbound_at && Date.now() - Date.parse(thread.whatsapp.last_inbound_at) < 24 * 3600 * 1000

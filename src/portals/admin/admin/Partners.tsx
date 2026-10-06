@@ -69,6 +69,7 @@ export default function Partners() {
 
   const create = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    const formEl = event.currentTarget;
     const form = new FormData(event.currentTarget);
     setError(""); setBusy(true);
     try {
@@ -85,7 +86,7 @@ export default function Partners() {
           commissionRate: Number(form.get("commissionRate") || 0),
         },
       });
-      event.currentTarget.reset();
+      formEl.reset();
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create partner");
@@ -270,17 +271,21 @@ export default function Partners() {
               <Button variant="ghost" onClick={() => setVisibilityFor(null)}>Cancel</Button>
               <Button
                 onClick={async () => {
-                  await api(`/partners/${visibilityFor.id}/visibility`, {
-                    method: "PUT",
-                    body: {
-                      show_application_status: visibilityFor.show_application_status,
-                      show_visa_status: visibilityFor.show_visa_status,
-                      show_next_step: visibilityFor.show_next_step,
-                      show_document_status: visibilityFor.show_document_status,
-                    },
-                  });
-                  setVisibilityFor(null);
-                  await load();
+                  try {
+                    await api(`/partners/${visibilityFor.id}/visibility`, {
+                      method: "PUT",
+                      body: {
+                        show_application_status: visibilityFor.show_application_status,
+                        show_visa_status: visibilityFor.show_visa_status,
+                        show_next_step: visibilityFor.show_next_step,
+                        show_document_status: visibilityFor.show_document_status,
+                      },
+                    });
+                    setVisibilityFor(null);
+                    await load();
+                  } catch (err) {
+                    window.alert(err instanceof Error ? err.message : "Could not save what this partner can see.");
+                  }
                 }}
               >
                 Save

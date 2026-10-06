@@ -21,6 +21,7 @@ export interface LocalLead {
   conversion_date: string | null;
   created_at: string;
   assigned_counselor_id: string | null;
+  assigned_telecaller_id?: string | null;
   entity_type: string;
 }
 
@@ -82,6 +83,8 @@ export interface LocalApplication {
   notes: string;
   counselor_comments: string;
   created_at: string;
+  shortlist_id?: string;
+  started_by?: string;
 }
 
 export interface LocalShortlist {
@@ -95,6 +98,12 @@ export interface LocalShortlist {
   location: string;
   counselor_notes: string;
   created_at: string;
+  status?: string;
+  source?: string;
+  student_consent?: boolean;
+  student_decision?: string | null;
+  student_decision_at?: string | null;
+  application_id?: string | null;
 }
 
 export interface LocalLeave {
@@ -205,6 +214,12 @@ export async function updateLead(id: string, update: Partial<LocalLead>) {
   await refreshStore();
 }
 
+/** Convert a lead this counsellor holds as its telecaller (admin gave them telecalling work). */
+export async function convertLeadAsTelecaller(id: string) {
+  await api(`/leads/${id}/convert`, { method: "POST" });
+  await refreshStore();
+}
+
 export async function claimLead(id: string, _counselorId: string) {
   await api(`/leads/${id}/claim`, { method: "POST" });
   await refreshStore();
@@ -285,6 +300,11 @@ export async function addShortlist(row: Omit<LocalShortlist, "id" | "created_at"
   } catch {
     emit();
   }
+}
+
+export async function startApplicationFromShortlist(id: string, intakeTerm = "") {
+  await api(`/shortlists/${id}/start-application`, { method: "POST", body: { intake_term: intakeTerm } });
+  await refreshStore();
 }
 
 export async function setDocumentStatus(id: string, status: string, comments?: string) {

@@ -184,6 +184,7 @@ export default function Queue() {
 
   const addLead = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    const formEl = e.currentTarget;
     const data = new FormData(e.currentTarget);
     setAddBusy(true);
     setAddError("");
@@ -205,7 +206,7 @@ export default function Queue() {
       });
       await refreshStore();
       setShowAddLead(false);
-      e.currentTarget.reset();
+      formEl.reset();
       navigate(`/leads/${created.id}`);
     } catch (err) {
       setAddError(err instanceof Error ? err.message : "Could not add the lead.");

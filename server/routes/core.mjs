@@ -19,6 +19,7 @@ import { runEvent as runCommsEvent } from "../lib/automation.mjs";
 import { announceCaseOwner } from "./cases.mjs";
 import { raiseAlert } from "../lib/alerts.mjs";
 import { pool, jsonTable, jsonUpsert } from "../lib/db.mjs";
+import { documentAppliesToStudent, studentForTargeting } from "../lib/documentTargeting.mjs";
 import {
   ROOT as root,
   IS_PRODUCTION,
@@ -822,8 +823,8 @@ async function loadUsers() {
   return users;
 }
 
-function loadTelecallers(users) {
-  return users
+function loadTelecallers(users, counselors = []) {
+  const telecallers = users
     .filter((user) => user.role === "telecaller")
     .map((user) => ({
       id: user.id,
@@ -834,6 +835,28 @@ function loadTelecallers(users) {
       is_active: user.is_active !== false,
       created_at: user.created_at || null,
     }));
+  // A counsellor can be given telecalling work too (the client does this
+  // when short of telecallers). They are offered in the telecaller list as
+  // "Counsellor · can telecall", keyed by their LOGIN id so the leads show
+  // up in their counsellor portal (My Leads).
+  const seen = new Set(telecallers.map((t) => String(t.id)));
+  for (const c of counselors) {
+    const id = String(c.auth_user_id || c.user_id || c.id || "");
+    if (!id || seen.has(id) || c.is_active === false) continue;
+    seen.add(id);
+    telecallers.push({
+      id,
+      email: c.email || "",
+      first_name: c.first_name || "",
+      last_name: c.last_name || "",
+      phone: c.phone || "",
+      is_active: true,
+      created_at: c.created_at || null,
+      can_telecall: true,
+      role: "counselor",
+    });
+  }
+  return telecallers;
 }
 
 function studentKeyIds(lead) {
@@ -1347,7 +1370,11 @@ async function loadState(scope = null) {
        FROM counselor_attendance ORDER BY date DESC`,
     ).catch(() => ({ rows: [] })),
     scopedRows("counselor_salary_records", "year DESC, month DESC", scope),
-    jsonTable("notifications", { scope }),
+    // Not branch-scoped: a notification belongs to a person (the callers keep
+    // only the signed-in user's). Most are written without a branch, so a
+    // branch-scoped read hid them from branch staff, who then only ever saw
+    // the SQL copy — which "mark read" never touched.
+    jsonTable("notifications"),
     pool.query("SELECT * FROM notifications ORDER BY created_at DESC").catch(() => ({ rows: [] })),
     jsonTable("universities"),
     jsonTableCount("university_programs"),
@@ -1440,7 +1467,7 @@ async function loadState(scope = null) {
   return {
     users,
     counselors,
-    telecallers: loadTelecallers(users),
+    telecallers: loadTelecallers(users, counselors),
     leads,
     documents: mergeById(sqlDocs.rows.map(asDocument), jsonDocs.map(asDocument)),
     applications: jsonApps.map(asApplication),
@@ -1910,26 +1937,42 @@ router.post("/api/telecaller/whatsapp/messages", telecallerAuth, async (req, res
   }
 });
 
-router.post("/api/telecaller/notifications/read", telecallerAuth, async (req, res) => {
+/**
+ * Mark the signed-in person's notifications read — one id, several, or all.
+ * Notifications live in two places (the JSON store and the older SQL table,
+ * which `notify()` writes a copy to), so both are updated; marking only one
+ * left the other copy showing as unread after the next refresh.
+ */
+async function markNotificationsRead(req, res) {
   try {
-    const all = Boolean(req.body.all);
+    const all = Boolean(req.body?.all);
     const ids = new Set(
-      (Array.isArray(req.body.ids) ? req.body.ids : [req.body.id]).filter(Boolean).map(String),
+      (Array.isArray(req.body?.ids) ? req.body.ids : [req.body?.id]).filter(Boolean).map(String),
     );
+    const userId = String(req.user.id);
     const rows = await jsonTable("notifications");
     let count = 0;
     for (const row of rows) {
-      if (String(row.user_id) !== String(req.user.id)) continue;
+      if (String(row.user_id) !== userId) continue;
       if (row.is_read) continue;
       if (!all && !ids.has(String(row.id))) continue;
       await jsonUpsert("notifications", { ...row, is_read: true });
       count += 1;
     }
+    if (all) {
+      await pool.query("UPDATE notifications SET is_read = true WHERE user_id::text = $1 AND is_read IS DISTINCT FROM true", [userId]).catch(() => null);
+    } else if (ids.size) {
+      await pool.query("UPDATE notifications SET is_read = true WHERE user_id::text = $1 AND id::text = ANY($2::text[])", [userId, [...ids]]).catch(() => null);
+    }
     res.json({ ok: true, count });
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not update notifications" });
   }
-});
+}
+
+router.post("/api/telecaller/notifications/read", telecallerAuth, markNotificationsRead);
+// Admin bell had no way to clear anything; same handler.
+router.post("/api/notifications/read", auth, markNotificationsRead);
 
 router.post("/api/telecaller/conversations", telecallerAuth, async (req, res) => {
   try {
@@ -2137,8 +2180,15 @@ router.post("/api/telecaller/leads/:id/contact", telecallerAuth, async (req, res
   }
 });
 
-router.post("/api/telecaller/leads/:id/convert", telecallerAuth, async (req, res) => {
-  void commissionOnConvert(req, req.params.id);
+router.post("/api/telecaller/leads/:id/convert", telecallerAuth, (req, res) => convertAsTelecaller(req, res));
+
+/**
+ * Convert a lead to a student — by whoever is the lead's telecaller. That is
+ * normally a telecaller, but an admin can give a counsellor telecalling work
+ * on a lead (they appear as "Counsellor · can telecall"), and then the
+ * counsellor converts it from their My Leads.
+ */
+async function convertAsTelecaller(req, res) {
   try {
     const owned = await ownedLead(req.user.id, req.params.id);
     if (owned.error) return res.status(403).json({ error: owned.error });
@@ -2170,6 +2220,9 @@ router.post("/api/telecaller/leads/:id/convert", telecallerAuth, async (req, res
     });
 
     await syncOwnershipOnAssignment(before, updated);
+    // Only after the conversion really happened (it used to run before the
+    // ownership check, so a refused convert still raised a partner commission).
+    void commissionOnConvert(req, req.params.id);
 
     const name = updated.first_name || "A student";
     await notifyAdmins(
@@ -2182,32 +2235,18 @@ router.post("/api/telecaller/leads/:id/convert", telecallerAuth, async (req, res
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not convert the lead" });
   }
-});
+}
 
 /**
  * The checklist a specific student should see, built from their preferred countries and
  * degree level. document_checklists rows carry country/countries and degree_type/degree_types;
  * "All" matches anything. Each item is joined to whatever the student has already uploaded.
  */
-function checklistApplies(item, countries, degree) {
-  const wanted = countries.map((value) => String(value).trim().toLowerCase()).filter(Boolean);
-  const itemCountries = [item.country, ...(item.countries || [])]
-    .filter(Boolean)
-    .map((value) => String(value).trim().toLowerCase());
-  const countryOk =
-    !itemCountries.length ||
-    itemCountries.includes("all") ||
-    (wanted.length > 0 && itemCountries.some((value) => wanted.includes(value)));
-
-  const itemDegrees = [item.degree_type, ...(item.degree_types || [])]
-    .filter(Boolean)
-    .map((value) => String(value).trim().toLowerCase());
-  const degreeOk =
-    !itemDegrees.length ||
-    itemDegrees.includes("all") ||
-    (degree ? itemDegrees.includes(String(degree).trim().toLowerCase()) : true);
-
-  return countryOk && degreeOk;
+function checklistApplies(item, student) {
+  // One rule for every checklist (see lib/documentTargeting.mjs): named
+  // students, a counsellor's own students, countries; staff-only rows are
+  // never asked of a student.
+  return documentAppliesToStudent(item, studentForTargeting(student));
 }
 
 router.get("/api/students/:id/checklist", auth, async (req, res) => {
@@ -2235,7 +2274,7 @@ router.get("/api/students/:id/checklist", auth, async (req, res) => {
 
     const applicable = items
       .filter((item) => item.is_active !== false)
-      .filter((item) => checklistApplies(item, countries, degree))
+      .filter((item) => checklistApplies(item, student))
       .sort((a, b) => Number(a.display_order || 99) - Number(b.display_order || 99));
 
     const checklist = applicable.map((item) => {
@@ -2498,8 +2537,12 @@ async function commissionOnConvert(req, leadId) {
 // If the client wants a WhatsApp-specific fast path back, it needs its own
 // explicit decision — not a quiet exception to the rest of this fix.
 router.post("/api/counselor/leads/:id/convert", counselorAuth, async (req, res) => {
+  // Allowed only when this counsellor is the lead's telecaller (see
+  // convertAsTelecaller); ownedLead refuses every other lead.
+  const owned = await ownedLead(req.user.id, req.params.id);
+  if (!owned.error) return convertAsTelecaller(req, res);
   res.status(403).json({
-    error: "Counselor-side conversion has been removed. Ask the assigned telecaller or an admin to convert this lead.",
+    error: "Only the lead's telecaller (or an admin) can convert it. Ask admin to give you this lead as telecaller.",
   });
 });
 

@@ -1246,6 +1246,7 @@ export default function LeadAlerts() {
               {store.telecallers.map((row) => (
                 <option key={row.id} value={row.id}>
                   {displayName(row.first_name, row.last_name, row.email)}
+                  {row.can_telecall ? " · Counsellor (can telecall)" : " · Telecaller"}
                 </option>
               ))}
             </Select>
@@ -1254,7 +1255,7 @@ export default function LeadAlerts() {
               <option value="">Choose counselor</option>
               {store.counselors.map((row) => (
                 <option key={row.id} value={row.id}>
-                  {displayName(row.first_name, row.last_name, row.email)}
+                  {displayName(row.first_name, row.last_name, row.email)} · Counsellor
                   {row.specializations?.length ? ` · ${row.specializations.join(", ")}` : ""}
                 </option>
               ))}

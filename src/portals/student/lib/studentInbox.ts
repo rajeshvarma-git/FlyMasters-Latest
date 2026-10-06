@@ -25,7 +25,7 @@ export function inboxActionUrl(raw: string, fallback?: string | null) {
   const type = String(raw || "").toLowerCase();
   if (type.includes("chat") || type.includes("message")) return "/student/chat";
   if (type.includes("shortlist")) return "/student/shortlists";
-  if (type.includes("application")) return "/student/applications";
+  if (type.includes("application")) return "/student/shortlists";
   return "/student/documents";
 }
 
@@ -34,11 +34,20 @@ function inboxFingerprint(item: Pick<StudentInboxItem, "title" | "message" | "cr
   return `${item.title.trim().toLowerCase()}|${item.message.trim().toLowerCase()}|${minute}`;
 }
 
+/**
+ * The same notice is often stored twice (once in each table, with different
+ * ids) and shown once. Marking it read must mark every copy, or the hidden
+ * copy brings it back as unread on the next refresh.
+ */
+const copiesOf = new Map<string, string[]>();
+
 function dedupeInboxItems(items: StudentInboxItem[]): StudentInboxItem[] {
   const byFingerprint = new Map<string, StudentInboxItem>();
+  const groups = new Map<string, string[]>();
 
   for (const item of items) {
     const fp = inboxFingerprint(item);
+    groups.set(fp, [...(groups.get(fp) || []), item.id]);
     const existing = byFingerprint.get(fp);
     if (!existing) {
       byFingerprint.set(fp, item);
@@ -52,6 +61,11 @@ function dedupeInboxItems(items: StudentInboxItem[]): StudentInboxItem[] {
       ...preferred,
       is_read: Boolean(preferred.is_read && other.is_read),
     });
+  }
+
+  for (const [fp, ids] of groups) {
+    const shown = byFingerprint.get(fp);
+    if (shown) copiesOf.set(shown.id, [...new Set(ids)]);
   }
 
   return [...byFingerprint.values()].sort(
@@ -137,7 +151,8 @@ export async function loadStudentInbox(userId: string): Promise<StudentInboxItem
   return dedupeInboxItems([...merged.values()]);
 }
 
-export async function markInboxRead(ids: string[]) {
+export async function markInboxRead(shownIds: string[]) {
+  const ids = [...new Set(shownIds.flatMap((id) => copiesOf.get(id) || [id]))];
   if (!ids.length) return;
   await Promise.all([
     supabase.from("notifications").update({ is_read: true }).in("id", ids),

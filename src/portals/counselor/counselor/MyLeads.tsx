@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { format } from "date-fns";
 import { Flame, Mail, Phone, PhoneCall } from "lucide-react";
 import { useAuth } from "@counselor/context/AuthContext";
-import { updateLead, useLocalStore } from "@counselor/lib/store";
+import { convertLeadAsTelecaller, updateLead, useLocalStore } from "@counselor/lib/store";
 import type { LeadStatus } from "@counselor/lib/types";
 import { isOpenLead } from "@counselor/lib/utils";
 import { Badge } from "@counselor/components/ui/Badge";
@@ -30,11 +30,28 @@ export default function MyLeads() {
   const leads = useMemo(
     () =>
       store.leads.filter(
-        (lead) => lead.assigned_counselor_id === user?.id && isOpenLead(lead),
+        (lead) =>
+          (lead.assigned_counselor_id === user?.id || lead.assigned_telecaller_id === user?.id) && isOpenLead(lead),
       ),
     [store.leads, user?.id],
   );
   const selected = leads.find((lead) => lead.id === selectedId) || null;
+  const [converting, setConverting] = useState("");
+  const [convertError, setConvertError] = useState("");
+
+  // A lead admin gave this counsellor as its telecaller: they qualify and
+  // convert it, exactly as a telecaller would.
+  const convert = async (id: string) => {
+    setConvertError("");
+    setConverting(id);
+    try {
+      await convertLeadAsTelecaller(id);
+    } catch (err) {
+      setConvertError(err instanceof Error ? err.message : "Could not convert this lead.");
+    } finally {
+      setConverting("");
+    }
+  };
 
   const save = () => {
     if (!selected) return;
@@ -59,6 +76,7 @@ export default function MyLeads() {
         </div>
       </div>
 
+      {convertError ? <Card className="mb-4 border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{convertError}</Card> : null}
       <div className="grid gap-4">
         {leads.map((lead) => (
           <Card key={lead.id} className="p-5">
@@ -74,8 +92,14 @@ export default function MyLeads() {
                 </div>
                 <p className="mt-2 text-sm">{lead.preferred_countries.join(", ")} · {lead.field_of_interest} · {lead.academic_score}</p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {lead.assigned_telecaller_id === user?.id ? <Badge value="counselor">You are the telecaller</Badge> : null}
                 <Badge value={lead.lead_status || "cold"} />
+                {lead.assigned_telecaller_id === user?.id ? (
+                  <Button size="sm" variant="secondary" disabled={converting === lead.id} onClick={() => void convert(lead.id)}>
+                    {converting === lead.id ? "Converting…" : "Convert to student"}
+                  </Button>
+                ) : null}
                 <Button size="sm" onClick={() => {
                   setSelectedId(lead.id);
                   setNotes("");

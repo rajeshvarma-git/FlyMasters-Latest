@@ -20,6 +20,7 @@ export interface DocumentChecklistRecord {
   university_id?: string | null;
   display_order?: number | null;
   is_active?: boolean;
+  staff_only?: boolean | null;
 }
 
 const DEGREE_ALIASES: Record<string, string> = {
@@ -65,6 +66,9 @@ export function matchesDocumentChecklist(
   profile: StudentDocumentProfile
 ): boolean {
   if (item.is_active === false) return false;
+  // Staff-only documents are never asked of a student (the server already
+  // leaves them out; this is belt and braces).
+  if (item.staff_only) return false;
 
   const profileCountries = profile.countries
     .map((country) => normalizeCountry(country).toLowerCase())

@@ -10,7 +10,10 @@ export function notificationIcon(note: LocalNotification) {
 }
 
 export function notificationUrl(note: LocalNotification) {
-  if (note.action_url) return note.action_url;
+  // Server links are written portal-absolute ("/counselor/chat"); this
+  // router already runs under /counselor, so drop the prefix or the link
+  // lands on /counselor/counselor/… (a blank Not Found page).
+  if (note.action_url) return String(note.action_url).replace(/^\/counselor(?=\/|$)/, "") || "/";
   const title = String(note.title || "").toLowerCase();
   if (note.type === "chat" || title.includes("message")) return "/chat";
   if (title.includes("document")) return "/documents";

@@ -15,7 +15,6 @@ const studentNavItems = [
   { title: 'Universities', url: '/student/universities', icon: BookOpen },
   { title: 'My Shortlists', url: '/student/shortlists', icon: Heart },
   { title: 'Documents', url: '/student/documents', icon: FileText },
-  { title: 'Applications', url: '/student/applications', icon: List },
 ];
 
 export function StudentSidebar() {

@@ -162,7 +162,17 @@ export function NotificationsPage() {
           </div>
         </div>
         {notes.length > 0 && (
-          <Button size="sm" variant="secondary" onClick={() => user && markNotificationsRead(user.id)}>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={unread === 0}
+            onClick={() => {
+              if (!user) return;
+              markNotificationsRead(user.id).catch((err) =>
+                window.alert(err instanceof Error ? err.message : "Could not mark notifications read."),
+              );
+            }}
+          >
             Mark all read
           </Button>
         )}
@@ -217,6 +227,7 @@ export function LeavePage() {
 
   const submit = (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    const formEl = e.currentTarget;
     if (!user) return;
     const data = new FormData(e.currentTarget);
     const from = String(data.get("from"));
@@ -231,7 +242,7 @@ export function LeavePage() {
       total_days: days,
       status: "pending",
     });
-    e.currentTarget.reset();
+    formEl.reset();
   };
 
   return (

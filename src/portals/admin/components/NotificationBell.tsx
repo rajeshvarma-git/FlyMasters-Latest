@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Bell } from "lucide-react";
-import { useAdminStore } from "@admin/lib/store";
+import { refreshStore, useAdminStore } from "@admin/lib/store";
+import { api } from "@admin/lib/api";
 import { Button } from "@admin/components/ui/Button";
 
 function formatWhen(value: string) {
@@ -15,7 +16,17 @@ function formatWhen(value: string) {
 
 export default function NotificationBell() {
   const store = useAdminStore();
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
+
+  const markRead = async (body: { all?: boolean; ids?: string[] }) => {
+    try {
+      await api("/notifications/read", { method: "POST", body });
+      await refreshStore();
+    } catch {
+      // The next refresh shows the real state.
+    }
+  };
   const rootRef = useRef<HTMLDivElement>(null);
 
   const items = useMemo(
@@ -60,7 +71,15 @@ export default function NotificationBell() {
         <div className="absolute right-0 top-full z-50 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
           <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
             <p className="text-sm font-bold text-slate-900">Notifications</p>
-            {unread > 0 && <span className="text-xs font-medium text-rose-600">{unread} unread</span>}
+            {unread > 0 && (
+              <button
+                type="button"
+                className="text-xs font-semibold text-sky-700 hover:text-sky-900"
+                onClick={() => void markRead({ all: true })}
+              >
+                Mark all read ({unread})
+              </button>
+            )}
           </div>
 
           <div className="max-h-80 overflow-y-auto">
@@ -70,7 +89,17 @@ export default function NotificationBell() {
             {items.slice(0, 12).map((row) => (
               <div
                 key={row.id}
-                className={`border-b border-slate-100 px-4 py-3 last:border-b-0 ${
+                role="button"
+                tabIndex={0}
+                onClick={() => {
+                  if (!row.is_read) void markRead({ ids: [row.id] });
+                  const target = String((row as { action_url?: string }).action_url || "").replace(/^\/admin(?=\/|$)/, "");
+                  if (target.startsWith("/")) {
+                    setOpen(false);
+                    navigate(target);
+                  }
+                }}
+                className={`cursor-pointer border-b border-slate-100 px-4 py-3 last:border-b-0 hover:bg-slate-50 ${
                   row.is_read ? "bg-white" : "bg-sky-50/60"
                 }`}
               >

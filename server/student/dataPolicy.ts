@@ -58,8 +58,14 @@ const OWNED = new Set([
   "package_bookings", "package_wishlists", "package_reviews", "travel_document_uploads", "user_roles",
 ]);
 
-/** Read-only for students even when the row is theirs. */
-const READ_ONLY_OWNED = new Set(["user_roles", "university_shortlists_admin"]);
+/**
+ * Read-only for students even when the row is theirs.
+ * Shortlists and applications: the student ticks or crosses a university
+ * through /api/case/me/shortlists (which also tells the counsellor), and the
+ * counsellor runs the application. Writing these rows directly would let a
+ * student mark a shortlist "applied" or invent an application.
+ */
+const READ_ONLY_OWNED = new Set(["user_roles", "university_shortlists_admin", "university_shortlists", "applications", "application_status_updates"]);
 
 const OWNER_ID_FIELDS = ["user_id", "student_id", "student_user_id", "sender_id", "receiver_id"];
 const OWNER_EMAIL_FIELDS = ["email", "student_email", "user_email"];
@@ -115,8 +121,48 @@ async function staffNameRows(rows: any[]) {
 }
 
 /** The rows of `table` this viewer may see, or null when the table is off limits. */
+/**
+ * Required-document rows: public catalogue content, except that a row aimed
+ * at named students is only for them, a counsellor's "all my students" row
+ * only for that counsellor's students, and a staff-only row for nobody here.
+ */
+async function documentChecklistRows(viewer: Viewer | null, rows: any[]) {
+  const list = (value: any) => (Array.isArray(value) ? value : []).map((v) => String(v)).filter(Boolean);
+  let counselorIds: Set<string> | null = null;
+  const myCounselors = async () => {
+    if (counselorIds) return counselorIds;
+    counselorIds = new Set();
+    if (viewer) {
+      const { rows: leads } = await getPool().query(
+        "SELECT data->>'assigned_counselor_id' AS c FROM app_records WHERE table_name = 'student_leads' AND id = ANY($1::text[])",
+        [[...viewer.keys]],
+      ).catch(() => ({ rows: [] as any[] }));
+      leads.forEach((l) => { if (l.c) counselorIds!.add(String(l.c)); });
+    }
+    return counselorIds;
+  };
+  const out: any[] = [];
+  for (const row of rows) {
+    if (row?.staff_only) continue;
+    const targets = list(row?.student_ids);
+    if (targets.length) {
+      if (viewer && targets.some((id) => viewer.keys.has(id))) out.push(row);
+      continue;
+    }
+    const scope = list(row?.counselor_scope_ids);
+    if (scope.length) {
+      const mine = await myCounselors();
+      if (scope.some((id) => mine.has(id))) out.push(row);
+      continue;
+    }
+    out.push(row);
+  }
+  return out;
+}
+
 export async function visibleRows(viewer: Viewer | null, table: string, rows: any[]): Promise<any[] | null> {
   if (viewer?.admin) return rows;
+  if (table === "document_checklists") return documentChecklistRows(viewer, rows);
   if (table === "system_settings") return rows.filter((r) => PUBLIC_SETTINGS.has(String(r.key)));
   if (PUBLIC_READ.has(table) && !OWNED.has(table)) return rows;
   if (table === "package_reviews") return rows; // public reviews; writes still owner-checked
@@ -179,24 +225,6 @@ export async function checkMutation(viewer: Viewer | null, mutation: Mutation, m
     // overwrite someone else's existing row.
     if (!rows.every((row) => ownsRow(viewer, row))) return "You can only save your own records.";
     if (matching.some((row) => !ownsRow(viewer, row))) return "You can only change your own records.";
-    if (table === "applications" && mutation.action === "insert") {
-      // The UI only shows "Start application" once the student has given
-      // consent on the shortlist, but nothing enforced that server-side —
-      // a student could start an application for a shortlist they never
-      // consented to. Belt-and-braces: re-check here too.
-      for (const row of rows) {
-        const shortlistId = row.shortlist_id;
-        if (!shortlistId) continue;
-        const { rows: shortlistRows } = await getPool().query(
-          "SELECT data->>'student_consent' AS consent FROM app_records WHERE table_name = 'university_shortlists' AND id = $1",
-          [String(shortlistId)],
-        );
-        if (!shortlistRows.length) return "That shortlist entry no longer exists.";
-        if (shortlistRows[0].consent !== "true") {
-          return "Give your consent on the shortlist before starting this application.";
-        }
-      }
-    }
     return null;
   }
   if (mutation.action === "update" || mutation.action === "delete") {

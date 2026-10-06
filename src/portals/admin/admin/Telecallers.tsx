@@ -87,7 +87,10 @@ export default function Telecallers() {
       </div>
 
       <Card className="overflow-hidden">
-        {store.telecallers.map((telecaller) => {
+        {store.telecallers
+          // Counsellors who can telecall appear only while they hold telecaller leads.
+          .filter((t) => !t.can_telecall || store.leads.some((lead) => lead.assigned_telecaller_id === t.id))
+          .map((telecaller) => {
           const mine = store.leads.filter((lead) => lead.assigned_telecaller_id === telecaller.id);
           const open = mine.filter((lead) => !isConvertedStudent(lead));
           const converted = mine.filter((lead) => isConvertedStudent(lead));
@@ -127,7 +130,7 @@ export default function Telecallers() {
             </Link>
           );
         })}
-        {store.telecallers.length === 0 && (
+        {store.telecallers.filter((t) => !t.can_telecall).length === 0 && (
           <p className="p-8 text-center text-sm text-slate-500">
             No telecallers yet. Create one from Users with role Telecaller.
           </p>

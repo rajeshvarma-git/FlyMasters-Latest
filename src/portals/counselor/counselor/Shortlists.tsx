@@ -1,6 +1,8 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useAuth } from "@counselor/context/AuthContext";
-import { addShortlist, useLocalStore } from "@counselor/lib/store";
+import { addShortlist, startApplicationFromShortlist, useLocalStore, type LocalShortlist } from "@counselor/lib/store";
+import { Badge } from "@counselor/components/ui/Badge";
+import { Link } from "react-router-dom";
 import { api } from "@counselor/lib/api";
 import { Button } from "@counselor/components/ui/Button";
 import { Card } from "@counselor/components/ui/Card";
@@ -37,6 +39,23 @@ interface CatalogProgram {
 
 const PAGE_SIZE = 20;
 
+type ShortlistGroupId = "accepted" | "waiting" | "applied" | "declined";
+
+const SHORTLIST_GROUPS: { id: ShortlistGroupId; label: string; hint?: string; badge: string; badgeText: string }[] = [
+  { id: "accepted", label: "Accepted by student — start the application", badge: "approved", badgeText: "Accepted ✓" },
+  { id: "waiting", label: "Waiting for the student", hint: "The student sees a green tick and a red cross on each of these.", badge: "pending", badgeText: "Waiting" },
+  { id: "applied", label: "Application started", badge: "uploaded", badgeText: "Applied" },
+  { id: "declined", label: "Declined by student", badge: "rejected", badgeText: "Declined ✗" },
+];
+
+function shortlistGroup(item: LocalShortlist): ShortlistGroupId {
+  const status = String(item.status || "").toLowerCase();
+  if (status === "applied" || item.application_id) return "applied";
+  if (status === "declined" || item.student_decision === "declined") return "declined";
+  if (item.student_consent || status === "consented") return "accepted";
+  return "waiting";
+}
+
 export default function Shortlists() {
   const { user } = useAuth();
   const store = useLocalStore();
@@ -67,6 +86,20 @@ export default function Shortlists() {
     [leads],
   );
   const items = store.shortlists.filter((item) => item.counselor_id === user?.id);
+  const [startingId, setStartingId] = useState("");
+  const [startError, setStartError] = useState("");
+
+  const startApplication = async (item: LocalShortlist) => {
+    setStartError("");
+    setStartingId(item.id);
+    try {
+      await startApplicationFromShortlist(item.id);
+    } catch (err: any) {
+      setStartError(err?.message || "Could not start the application.");
+    } finally {
+      setStartingId("");
+    }
+  };
   const selectedProgram = programs.rows.find((row) => row.id === programId) || null;
 
   useEffect(() => {
@@ -334,33 +367,66 @@ export default function Shortlists() {
           )}
         </Card>
       </div>
-      <div className="space-y-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Sent to students</h2>
+      <div className="space-y-5">
+        {startError ? <Card className="border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{startError}</Card> : null}
         {items.length === 0 ? (
           <Card className="p-4 text-sm text-slate-600">
             No shortlists yet. Pick a program from the admin catalog and it will appear here and in the student portal.
+            Universities your students pick themselves show up here too.
           </Card>
-        ) : (
-          items.map((item) => {
-            const lead = store.leads.find(
-              (row) =>
-                row.user_id === item.student_id ||
-                row.id === item.student_id ||
-                (item.student_email && row.email && row.email.toLowerCase() === String(item.student_email).toLowerCase()),
-            );
-            return (
-              <Card key={item.id} className="p-4">
-                <p className="font-semibold">{item.university_name}</p>
-                <p className="text-sm">{[item.course_name, item.location].filter(Boolean).join(" · ")}</p>
-                <p className="text-xs text-slate-500">
-                  For {lead ? `${lead.first_name} ${lead.last_name}` : "student"}
-                  {lead?.email ? ` · ${lead.email}` : ""}
-                </p>
-                {item.counselor_notes ? <p className="mt-2 text-sm text-slate-600">{item.counselor_notes}</p> : null}
-              </Card>
-            );
-          })
-        )}
+        ) : null}
+        {SHORTLIST_GROUPS.map((group) => {
+          const rows = items.filter((item) => shortlistGroup(item) === group.id);
+          if (!rows.length) return null;
+          return (
+            <div key={group.id} className="space-y-3">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+                {group.label} ({rows.length})
+              </h2>
+              {group.hint ? <p className="-mt-2 text-xs text-slate-500">{group.hint}</p> : null}
+              {rows.map((item) => {
+                const lead = store.leads.find(
+                  (row) =>
+                    row.user_id === item.student_id ||
+                    row.id === item.student_id ||
+                    (item.student_email && row.email && row.email.toLowerCase() === String(item.student_email).toLowerCase()),
+                );
+                return (
+                  <Card key={item.id} className="p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="font-semibold">{item.university_name}</p>
+                        <p className="text-sm">{[item.course_name, item.location].filter(Boolean).join(" · ")}</p>
+                        <p className="text-xs text-slate-500">
+                          For {lead ? `${lead.first_name} ${lead.last_name}` : "student"}
+                          {lead?.email ? ` · ${lead.email}` : ""}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap gap-1">
+                        {item.source === "student" ? <Badge value="student">Student's own pick</Badge> : null}
+                        <Badge value={group.badge}>{group.badgeText}</Badge>
+                      </div>
+                    </div>
+                    {item.counselor_notes ? <p className="mt-2 text-sm text-slate-600">{item.counselor_notes}</p> : null}
+                    {group.id === "accepted" ? (
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <Button size="sm" disabled={startingId === item.id} onClick={() => void startApplication(item)}>
+                          {startingId === item.id ? "Starting…" : "Start application"}
+                        </Button>
+                        <span className="text-xs text-slate-500">The student accepted this. You run the application from here.</span>
+                      </div>
+                    ) : null}
+                    {group.id === "applied" ? (
+                      <p className="mt-2 text-xs text-slate-500">
+                        Track it under <Link to="/applications" className="font-medium text-sky-700 underline">Applications</Link>.
+                      </p>
+                    ) : null}
+                  </Card>
+                );
+              })}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

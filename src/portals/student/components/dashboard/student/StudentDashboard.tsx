@@ -79,17 +79,17 @@ function nextStep(rec: MyRecommendations | null, counts: Counts | null): Step | 
   }
   if (counts.applications === 0) {
     return {
-      title: 'Talk to your advisor about applying',
-      detail: 'Save the universities you like below, then ask your advisor to start the applications.',
-      action: 'Message advisor',
-      to: '/student/messages',
+      title: 'Pick the universities you want',
+      detail: 'Tick the ones you want on My Shortlists — your counsellor starts the application for each tick.',
+      action: 'Open My Shortlists',
+      to: '/student/shortlists',
     };
   }
   return {
     title: 'Track your applications',
-    detail: 'See where each application stands and what is still needed.',
-    action: 'View applications',
-    to: '/student/applications',
+    detail: 'See where each application stands on My Shortlists.',
+    action: 'View progress',
+    to: '/student/shortlists',
   };
 }
 
@@ -320,7 +320,7 @@ export function StudentDashboard() {
         {[
           { icon: Heart, label: 'Saved universities', value: counts?.saved, to: '/student/universities' },
           { icon: FileText, label: 'Documents', value: counts?.documents, to: '/student/documents' },
-          { icon: List, label: 'Applications', value: counts?.applications, to: '/student/applications' },
+          { icon: List, label: 'Applications', value: counts?.applications, to: '/student/shortlists' },
         ].map((s) => (
           <Link key={s.label} to={s.to} className="rounded-xl border border-border/60 bg-card p-4 shadow-sm hover:bg-muted/40">
             <s.icon className="h-4 w-4 text-primary" />

@@ -35,6 +35,7 @@ import commsRoutes, { startCommsScheduler } from "./routes/comms.mjs";
 import { startReminderScheduler } from "./lib/reminders.mjs";
 import caseRoutes, { sweepVerifiedMerges } from "./routes/cases.mjs";
 import knowledgeRoutes from "./routes/knowledge.mjs";
+import documentSetupRoutes from "./routes/documentSetup.mjs";
 
 assertBootConfig();
 
@@ -72,6 +73,7 @@ app.use(configRoutes);
 app.use(commsRoutes);
 // One student conversation: AI advisor -> telecaller -> counselor.
 app.use(caseRoutes);
+app.use(documentSetupRoutes);
 app.use(knowledgeRoutes);
 app.use(coreRoutes);
 app.use(counselorRoutes);

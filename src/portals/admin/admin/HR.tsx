@@ -35,6 +35,7 @@ export default function HR() {
 
   const postSalary = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    const formEl = e.currentTarget;
     const data = new FormData(e.currentTarget);
     setBusy(true);
     try {
@@ -48,7 +49,7 @@ export default function HR() {
           notes: String(data.get("notes") || ""),
         },
       });
-      e.currentTarget.reset();
+      formEl.reset();
       await refreshStore();
     } catch (error) {
       window.alert(error instanceof Error ? error.message : "Could not post salary");

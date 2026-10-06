@@ -18,6 +18,7 @@ for(const assigned of [false,true]) test(`student notification targets ${assigne
  try{
    await handler({user:{id:'student1'},body:{title:'Review request',message:'A student needs review'}},res);
    assert.equal(status,200);assert.equal(body.ok,true);
-   assert.equal(writes.length,2);assert.ok(writes.every(w=>w.user_id===(assigned?'counselor1':'admin1')));
+   assert.equal(writes.length,1); // one notification per person (no duplicate document_notifications copy)
+   assert.ok(writes.every(w=>w.user_id===(assigned?'counselor1':'admin1')));
  }finally{pool.query=original;}
 });

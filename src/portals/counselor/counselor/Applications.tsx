@@ -10,11 +10,23 @@ import { Card } from "@counselor/components/ui/Card";
 import { Input, Label, Select, Textarea } from "@counselor/components/ui/Field";
 
 const FILTERS = [
-  { id: "needs_review", label: "Needs review" },
+  { id: "active", label: "Active" },
   { id: "all", label: "All" },
-  { id: "counselor_approved", label: "Approved" },
-  { id: "returned", label: "Returned" },
+  { id: "needs_review", label: "Sent by student (old flow)" },
+  { id: "closed", label: "Closed" },
 ];
+
+/** The steps a counsellor moves an application through. */
+const STEPS = [
+  { id: "in_progress", label: "In progress" },
+  { id: "submitted_to_university", label: "Submitted to university" },
+  { id: "offer_received", label: "Offer received" },
+  { id: "offer_accepted", label: "Offer accepted" },
+  { id: "enrolled", label: "Enrolled" },
+  { id: "rejected", label: "Unsuccessful" },
+  { id: "withdrawn", label: "Withdrawn" },
+];
+const CLOSED = new Set(["enrolled", "rejected", "withdrawn"]);
 
 function needsReview(status: string) {
   return status === "pending_counselor" || status === "submitted";
@@ -24,7 +36,7 @@ function displayStatus(status: string) {
   if (needsReview(status)) return "needs review";
   if (status === "counselor_approved") return "approved";
   if (status === "returned") return "returned";
-  return status.replaceAll("_", " ");
+  return STEPS.find((step) => step.id === status)?.label.toLowerCase() || status.replaceAll("_", " ");
 }
 
 export default function Applications() {
@@ -32,7 +44,21 @@ export default function Applications() {
   const store = useLocalStore();
   const [query, setQuery] = useState("");
   const [studentId, setStudentId] = useState("all");
-  const [statusFilter, setStatusFilter] = useState("needs_review");
+  const [statusFilter, setStatusFilter] = useState("active");
+  const [stepBusy, setStepBusy] = useState("");
+  const [stepError, setStepError] = useState("");
+
+  const moveTo = async (appId: string, status: string) => {
+    setStepError("");
+    setStepBusy(appId);
+    try {
+      await setApplicationStatus(appId, status);
+    } catch (err: any) {
+      setStepError(err?.message || "Could not update the application.");
+    } finally {
+      setStepBusy("");
+    }
+  };
   const [reviewId, setReviewId] = useState<string | null>(null);
   const [comments, setComments] = useState("");
   const [busy, setBusy] = useState(false);
@@ -57,7 +83,8 @@ export default function Applications() {
       .filter((app) => {
         if (statusFilter === "all") return true;
         if (statusFilter === "needs_review") return needsReview(app.status);
-        return app.status === statusFilter;
+        if (statusFilter === "closed") return CLOSED.has(app.status);
+        return !CLOSED.has(app.status);
       })
       .filter((app) =>
         `${names[app.user_id] || ""} ${app.university_name} ${app.course_name}`.toLowerCase().includes(q),
@@ -84,7 +111,9 @@ export default function Applications() {
       <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">Applications</h1>
-          <p className="text-slate-600">Students send applications here. Approve or return them — they are not sent to universities from the student portal.</p>
+          <p className="text-slate-600">
+            When a student ticks a university on their shortlist, start the application from Shortlists. Move it through each step here — the student sees every change.
+          </p>
         </div>
         <div className="relative w-full max-w-xs">
           <Search className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-slate-400" />
@@ -118,6 +147,7 @@ export default function Applications() {
         </Select>
       </div>
 
+      {stepError ? <Card className="mb-3 border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">{stepError}</Card> : null}
       <div className="space-y-3">
         {filtered.map((app) => (
           <Card key={app.id} className="p-4">
@@ -146,6 +176,20 @@ export default function Applications() {
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <Badge value={displayStatus(app.status)} />
+                {!needsReview(app.status) && app.status !== "returned" ? (
+                  <Select
+                    aria-label="Application step"
+                    className="h-8 w-auto py-0 text-xs"
+                    value={STEPS.some((step) => step.id === app.status) ? app.status : ""}
+                    disabled={stepBusy === app.id}
+                    onChange={(e) => e.target.value && void moveTo(app.id, e.target.value)}
+                  >
+                    {!STEPS.some((step) => step.id === app.status) ? <option value="">Move to…</option> : null}
+                    {STEPS.map((step) => (
+                      <option key={step.id} value={step.id}>{step.label}</option>
+                    ))}
+                  </Select>
+                ) : null}
                 <Badge value={`${app.priority_level || "medium"} priority`} />
                 {needsReview(app.status) && (
                   <Button
@@ -180,7 +224,7 @@ export default function Applications() {
             <p className="font-semibold">{apps.length === 0 ? "No applications yet" : "No applications match this filter"}</p>
             <p className="mt-1 text-sm text-slate-500">
               {apps.length === 0
-                ? "When a student clicks Send to counselor on My Applications, it appears here. It is not sent to the university."
+                ? "When a student accepts a university on their shortlist, start the application from Shortlists and it appears here."
                 : "Try All, or pick a different student."}
             </p>
           </Card>

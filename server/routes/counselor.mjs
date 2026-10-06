@@ -19,6 +19,7 @@ import path from "path";
 import { sendVerificationEmail } from "../lib/email.mjs";
 import { syncConversationFromLead } from "../lib/whatsappStore.mjs";
 import { pool, jsonTable, jsonUpsert } from "../lib/db.mjs";
+import { documentAppliesToStudent, studentForTargeting } from "../lib/documentTargeting.mjs";
 import {
   ROOT as root,
   IS_PRODUCTION,
@@ -266,13 +267,16 @@ async function markNotificationReadForUser(userId, notificationId) {
  * meaning "any counselor") no longer grants access — such students wait in
  * the admin's assignment list.
  */
-async function myAssignedLeads(counselorId) {
+export async function myAssignedLeads(counselorId) {
   const own = await resolveCounselorAliases(counselorId);
   const [sqlLeads, jsonLeads] = await Promise.all([
     pool.query("SELECT * FROM student_leads").catch(() => ({ rows: [] })),
     jsonTable("student_leads").catch(() => []),
   ]);
-  const mine = (row) => own.has(String(row.assigned_counselor_id || ""));
+  // A counsellor can also be given telecaller work on a lead (admin picks
+  // them in the telecaller list), so a lead is theirs either way.
+  const mine = (row) => own.has(String(row.assigned_counselor_id || ""))
+    || own.has(String(row.assigned_telecaller_id || ""));
   const leads = mergeStudents(
     sqlLeads.rows.filter(mine).map((row) => asLead(row, counselorId, own)),
     jsonLeads.filter(mine).map((row) => asLead(row, counselorId, own)),
@@ -303,7 +307,7 @@ function isPortalStudent(row) {
   return SELF_SERVE_SOURCES.includes(source);
 }
 
-async function resolveCounselorAliases(portalCounselorId) {
+export async function resolveCounselorAliases(portalCounselorId) {
   const aliases = new Set([String(portalCounselorId)]);
   // portalCounselorId is req.user.id, i.e. the counselor's real login id
   // (auth_users.id) by construction — look it up there first. A counselor
@@ -372,6 +376,10 @@ function asLead(row, counselorId, counselorAliases = null) {
     academic_score: row.academic_score || "",
     preferred_countries: Array.isArray(row.preferred_countries) ? row.preferred_countries : [],
     assigned_counselor_id: normalizeAssignedCounselorId(row.assigned_counselor_id, counselorId, aliases),
+    // This counsellor may be the lead's telecaller too; show it as their id.
+    assigned_telecaller_id: row.assigned_telecaller_id && aliases.has(String(row.assigned_telecaller_id))
+      ? String(counselorId)
+      : (row.assigned_telecaller_id ?? null),
     entity_type: converted || row.entity_type === "student" ? "student" : "lead",
     lead_status: row.lead_status || (converted ? "converted" : openStatus),
     lead_stage: row.lead_stage || row.lead_status || (converted ? "converted" : openStatus),
@@ -693,7 +701,26 @@ async function publishShortlist(row, options = {}) {
   const directory = await studentDirectory();
   const student = directory.find((person) => person.user_id === studentId)
     || directory.find((person) => emailsMatch(person.email, row.student_email || row.email));
-  const payload = studentShortlistRecord(row, student?.user_id || studentId, student?.email || row.student_email || row.email || "");
+  const built = studentShortlistRecord(row, student?.user_id || studentId, student?.email || row.student_email || row.email || "");
+  // Re-publishing (the counsellor state endpoint does this to repair emails)
+  // must never wipe what the student decided or what the counsellor started:
+  // the SQL row has no status/consent columns, so keep the stored ones.
+  const stored = (await pool.query(
+    "SELECT data FROM app_records WHERE table_name = 'university_shortlists' AND id = $1",
+    [String(built.id)],
+  ).catch(() => ({ rows: [] }))).rows[0]?.data;
+  const payload = stored
+    ? {
+        ...built,
+        status: stored.status || built.status,
+        student_consent: Boolean(stored.student_consent),
+        student_consent_date: stored.student_consent_date || null,
+        student_decision: stored.student_decision || null,
+        student_decision_at: stored.student_decision_at || null,
+        application_id: stored.application_id || null,
+        source: stored.source || built.source,
+      }
+    : built;
   await jsonUpsert("university_shortlists", payload);
   if (row.id && payload.student_id && isUuid(payload.student_id) && String(payload.student_id) !== String(row.student_id)) {
     await pool.query("UPDATE university_shortlists SET student_id = $1 WHERE id = $2", [payload.student_id, row.id]).catch(() => null);
@@ -1164,7 +1191,8 @@ router.patch("/api/counselor/leads/:id", counselorAuth, async (req, res) => {
   const current = jsonLeads.find((row) => String(row.id) === String(req.params.id)) || sqlLeads.rows[0];
   if (!current) return res.status(404).json({ error: "Lead not found." });
 
-  const owned = counselorAliases.has(String(current.assigned_counselor_id || ""));
+  const owned = counselorAliases.has(String(current.assigned_counselor_id || ""))
+    || counselorAliases.has(String(current.assigned_telecaller_id || ""));
   if (!owned) return res.status(403).json({ error: "This lead is not assigned to you." });
 
   // Conversion is no longer a counselor action (28 Sep 2026). In the intended
@@ -1372,11 +1400,52 @@ router.get("/api/counselor/documents/:id/file", counselorAuth, async (req, res) 
   res.json({ fileName: found.file_name || "document", dataUrl: file.rows[0].data_url });
 });
 
+/*
+ * The counsellor runs the application now (the student only ticks or crosses
+ * a university on their shortlist). These are the steps they move it through;
+ * the old approve/return pair stays accepted for applications students
+ * started before the change.
+ */
+const APPLICATION_STEPS = {
+  in_progress: { title: "Application in progress", line: (uni) => `Your counsellor is preparing your application to ${uni}.` },
+  submitted_to_university: { title: "Application submitted", line: (uni) => `Your application to ${uni} has been submitted to the university.` },
+  offer_received: { title: "Offer received", line: (uni) => `Good news — ${uni} has sent you an offer. Your counsellor will walk you through it.` },
+  offer_accepted: { title: "Offer accepted", line: (uni) => `Your offer from ${uni} has been accepted.` },
+  enrolled: { title: "Enrolled", line: (uni) => `You are enrolled at ${uni}. Congratulations!` },
+  rejected: { title: "Application unsuccessful", line: (uni) => `${uni} did not offer a place this time. Your counsellor will discuss next steps.` },
+  withdrawn: { title: "Application withdrawn", line: (uni) => `Your application to ${uni} was withdrawn.` },
+  counselor_approved: { title: "Application approved", line: (uni) => `${uni} was approved by your counsellor.` },
+  returned: { title: "Application returned", line: (uni) => `${uni} was returned by your counsellor.` },
+};
+
+async function tellStudent(studentUserId, title, message, actionUrl = "/student/shortlists") {
+  const now = new Date().toISOString();
+  await jsonUpsert("notifications", {
+    id: crypto.randomUUID(),
+    user_id: studentUserId,
+    title,
+    message,
+    type: "info",
+    action_url: actionUrl,
+    created_at: now,
+    is_read: false,
+  });
+  const portalUrl = String(process.env.PUBLIC_APP_URL || "").trim().replace(/\/$/, "");
+  await import("./cases.mjs")
+    .then(({ notifyStudentChat }) => notifyStudentChat(
+      studentUserId,
+      `🎓 ${title}: ${message}${portalUrl ? ` (${portalUrl}${actionUrl})` : ""}`,
+      `app:${studentUserId}:${title}:${now}`,
+    ))
+    .catch(() => null);
+}
+
 router.patch("/api/counselor/applications/:id", counselorAuth, async (req, res) => {
   const status = String(req.body.status || "").trim();
   const comments = req.body.comments == null ? "" : String(req.body.comments);
-  if (!["counselor_approved", "returned"].includes(status)) {
-    return res.status(400).json({ error: "Approve or return the application to the student." });
+  const step = APPLICATION_STEPS[status];
+  if (!step) {
+    return res.status(400).json({ error: "Choose a valid application status." });
   }
   const now = new Date().toISOString();
   const apps = await jsonTable("applications");
@@ -1394,20 +1463,62 @@ router.patch("/api/counselor/applications/:id", counselorAuth, async (req, res) 
     updated_at: now,
   };
   await jsonUpsert("applications", next);
-  const uni = found.university_name || "your application";
-  await jsonUpsert("document_notifications", {
-    id: crypto.randomUUID(),
-    user_id: found.user_id,
-    notification_type: status,
-    title: status === "counselor_approved" ? "Application approved" : "Application returned",
-    message: comments
-      || (status === "counselor_approved"
-        ? `${uni} was approved by your counselor. It was not sent to the university automatically.`
-        : `${uni} was returned by your counselor. Update it and send it again.`),
-    created_at: now,
-    is_read: false,
-  });
-  res.json({ ok: true });
+  const uni = found.university_name || "your university";
+  await tellStudent(found.user_id, step.title, comments || step.line(uni)).catch(() => null);
+  res.json({ ok: true, application: asApplication(next) });
+});
+
+// The student ticked a university on their shortlist; the counsellor takes it
+// forward. Creates the application (once) and marks the shortlist "applied".
+router.post("/api/counselor/shortlists/:id/start-application", counselorAuth, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      "SELECT id, data FROM app_records WHERE table_name = 'university_shortlists' AND id = $1",
+      [String(req.params.id)],
+    );
+    if (!rows[0]) return res.status(404).json({ error: "Shortlist entry not found." });
+    const shortlist = { ...rows[0].data, id: rows[0].id };
+    const studentId = await resolveStudentUserId(shortlist.student_id, shortlist.student_email || "");
+    if (!(await counselorOwnsStudent(req.user.id, studentId)) && !(await counselorOwnsStudent(req.user.id, shortlist.student_id))) {
+      return res.status(403).json({ error: "This student is not assigned to you." });
+    }
+    if (!shortlist.student_consent) {
+      return res.status(409).json({ error: "The student has not accepted this university yet." });
+    }
+    const apps = await jsonTable("applications");
+    const existing = apps.find((row) => String(row.shortlist_id || "") === String(shortlist.id));
+    if (existing) return res.json({ ok: true, application: asApplication(existing), already: true });
+
+    const now = new Date().toISOString();
+    const location = String(shortlist.location || "");
+    const parts = location.split(",").map((part) => part.trim()).filter(Boolean);
+    const application = {
+      id: crypto.randomUUID(),
+      user_id: String(studentId || shortlist.student_id),
+      shortlist_id: String(shortlist.id),
+      university_id: shortlist.university_id || null,
+      university_name: shortlist.university_name || "",
+      course_name: shortlist.course_name || "",
+      country: parts.length ? parts[parts.length - 1] : "",
+      city: parts.length > 1 ? parts[0] : "",
+      intake_term: String(req.body?.intake_term || "").slice(0, 40),
+      priority_level: shortlist.priority_level || "medium",
+      status: "in_progress",
+      notes: "",
+      counselor_comments: String(req.body?.notes || "").slice(0, 2000),
+      counselor_id: req.user.id,
+      started_by: "counselor",
+      created_at: now,
+      updated_at: now,
+    };
+    await jsonUpsert("applications", application);
+    await jsonUpsert("university_shortlists", { ...shortlist, status: "applied", application_id: application.id, updated_at: now });
+    const uni = [application.university_name, application.course_name].filter(Boolean).join(" — ") || "your university";
+    await tellStudent(application.user_id, "Application started", `Your counsellor has started your application to ${uni}.`).catch(() => null);
+    res.json({ ok: true, application: asApplication(application) });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not start the application." });
+  }
 });
 
 router.post("/api/counselor/notifications/read", counselorAuth, async (req, res) => {
@@ -1716,25 +1827,11 @@ async function catalogDegrees(country, university) {
   }));
 }
 
-function checklistApplies(item, countries, degree) {
-  const wanted = countries.map((value) => String(value).trim().toLowerCase()).filter(Boolean);
-  const itemCountries = [item.country, ...(item.countries || [])]
-    .filter(Boolean)
-    .map((value) => String(value).trim().toLowerCase());
-  const countryOk =
-    !itemCountries.length ||
-    itemCountries.includes("all") ||
-    (wanted.length > 0 && itemCountries.some((value) => wanted.includes(value)));
-
-  const itemDegrees = [item.degree_type, ...(item.degree_types || [])]
-    .filter(Boolean)
-    .map((value) => String(value).trim().toLowerCase());
-  const degreeOk =
-    !itemDegrees.length ||
-    itemDegrees.includes("all") ||
-    (degree ? itemDegrees.includes(String(degree).trim().toLowerCase()) : true);
-
-  return countryOk && degreeOk;
+function checklistApplies(item, student) {
+  // One rule for every checklist (see lib/documentTargeting.mjs): named
+  // students, a counsellor's own students, countries; staff-only rows are
+  // never asked of a student.
+  return documentAppliesToStudent(item, studentForTargeting(student));
 }
 
 async function counselorOwnsStudent(counselorId, studentRef) {
@@ -1828,7 +1925,7 @@ router.get("/api/counselor/students/:id/checklist", counselorAuth, async (req, r
 
     const applicable = items
       .filter((item) => item.is_active !== false)
-      .filter((item) => checklistApplies(item, countries, degree))
+      .filter((item) => checklistApplies(item, student))
       .sort((a, b) => Number(a.display_order || 99) - Number(b.display_order || 99));
 
     const studentUserId = String(student.user_id || student.id);
