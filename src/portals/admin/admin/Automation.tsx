@@ -4,6 +4,7 @@ import { api } from "@admin/lib/api";
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
 import { Input, Label, Select } from "@admin/components/ui/Field";
+import ReminderSettings from "./ReminderSettings";
 
 /**
  * CRM 2.7 — event-driven automation.
@@ -131,6 +132,8 @@ export default function Automation() {
         When something happens, send an approved template. Every rule is capped per day, and a rule that
         fails to deliver switches itself off rather than retrying into a wall.
       </p>
+
+      <ReminderSettings />
 
       <Card className="p-5">
         <h2 className="mb-4 text-sm font-semibold text-navy-900">New rule</h2>

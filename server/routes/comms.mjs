@@ -16,6 +16,7 @@
  * that was sent last March can still be traced back to the exact wording that
  * was live at the time.
  */
+import { getReminderSettings, saveReminderSettings, runAllReminders } from "../lib/reminders.mjs";
 import { Router } from "express";
 import { pool } from "../lib/db.mjs";
 import {
@@ -411,6 +412,19 @@ router.post("/api/comms/send", staffAuth, async (req, res) => {
 // ===========================================================================
 // Automation rules
 // ===========================================================================
+
+// Automatic reminders (document requests still missing, stopped-halfway intake) — see lib/reminders.mjs.
+router.get("/api/comms/reminders", commsAdmin, async (_req, res) => {
+  try { res.json(await getReminderSettings()); } catch (error) { fail(res, error); }
+});
+
+router.put("/api/comms/reminders", commsAdmin, async (req, res) => {
+  try { res.json(await saveReminderSettings(req.body || {})); } catch (error) { fail(res, error); }
+});
+
+router.post("/api/comms/reminders/run", commsAdmin, async (_req, res) => {
+  try { res.json(await runAllReminders({ ignoreHours: true })); } catch (error) { fail(res, error); }
+});
 
 router.get("/api/comms/events", staffAuth, (_req, res) => {
   res.json({ events: AUTOMATION_EVENTS });
