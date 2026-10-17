@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { checkMutation, studentFieldError } from '../server/student/dataPolicy.ts';
+import { checkMutation, studentFieldError, visibleRows } from '../server/student/dataPolicy.ts';
 const viewer={userId:'s1',email:'s1@example.com',role:'student',admin:false,keys:new Set(['s1'])};
 test('students cannot assign counselors, convert leads or approve documents',()=>{
  for(const [table,payload] of [['student_leads',{assigned_counselor_id:'c1'}],['student_leads',{entity_type:'student'}],['documents',{status:'approved'}],['applications',{status:'submitted'}]] as const)
@@ -27,4 +27,15 @@ test('students cannot forge phone verification, foreign identity or delete submi
  assert.ok(studentFieldError({action:'update',table:'profiles',payload:{whatsapp_number:'new-number'}},[{whatsapp_verified:true,whatsapp_number:'old-number'}]));
  assert.ok(await checkMutation(viewer,{action:'insert',table:'student_leads',rows:[{user_id:'s1',email:'s2@example.com'}]},[]));
  assert.ok(studentFieldError({action:'delete',table:'applications'},[{status:'submitted'}]));
+});
+
+test('student portal: named-student documents reach only those students, and never widen to the country',async()=>{
+ const rows=[
+  {id:'a',document_type:'GIC',countries:['Canada'],audience:'students',student_ids:['s1','lead-s1']},
+  {id:'b',document_type:'Other',countries:['Canada'],audience:'students',student_ids:['s2','lead-s2']},
+  {id:'c',document_type:'Emptied',countries:['Canada'],audience:'students',student_ids:[]},
+  {id:'d',document_type:'Passport',countries:['Canada'],student_ids:[]},
+ ];
+ const seen=(await visibleRows(viewer,'document_checklists',rows)) as any[];
+ assert.deepEqual(seen.map((r)=>r.id).sort(),['a','d']);
 });

@@ -6,7 +6,8 @@
  * per-student checklist — so the three can never disagree again.
  *
  * A row can be aimed at:
- *   - specific students       student_ids: [user or lead ids]   (overrides everything else)
+ *   - specific students       student_ids: [user or lead ids]   (overrides everything else;
+ *                             audience: "students" with no ids applies to nobody)
  *   - one counsellor's students counselor_scope_ids: [that counsellor's ids]
  *   - countries                countries: ["Canada", ...] or ["All"]
  *   - staff only               staff_only: true — never shown to or asked of a student
@@ -54,6 +55,11 @@ const list = (value) => (Array.isArray(value) ? value : value == null || value =
   .map((item) => String(item).trim())
   .filter(Boolean);
 
+/** True for a row created as "particular students" (as opposed to an explicit all-students one). */
+export function isStudentAudience(item) {
+  return String(item?.audience || "").toLowerCase() === "students";
+}
+
 /** The countries a row is limited to; [] means every country. */
 export function documentCountries(item) {
   const countries = [...list(item?.countries), ...(list(item?.countries).length ? [] : list(item?.country))];
@@ -73,6 +79,9 @@ export function documentAppliesToStudent(item, student, { includeStaffOnly = fal
   const ids = new Set([...(student?.ids || [])].map(String).filter(Boolean));
   const targets = list(item.student_ids);
   if (targets.length) return targets.some((id) => ids.has(id));
+  // A document created for named students that somehow has none left goes to
+  // nobody — it must never quietly widen to a whole country.
+  if (isStudentAudience(item)) return false;
 
   const scope = list(item.counselor_scope_ids);
   if (scope.length) {

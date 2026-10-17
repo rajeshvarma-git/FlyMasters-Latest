@@ -2183,7 +2183,11 @@ router.patch("/api/counselor/checklists/:id", counselorAuth, async (req, res) =>
     const items = await jsonTable("document_checklists");
     const found = items.find((row) => String(row.id) === String(req.params.id));
     if (!found) return res.status(404).json({ error: "Document type not found." });
-    const next = { ...found, ...req.body, id: found.id };
+    // Switch-style fields only; targeting (countries/students) goes through /api/counselor/document-setup.
+    const patch = {};
+    for (const field of ["is_active", "is_required"]) if (field in (req.body || {})) patch[field] = Boolean(req.body[field]);
+    if ("description" in (req.body || {})) patch.description = String(req.body.description || "").slice(0, 2000);
+    const next = { ...found, ...patch, id: found.id };
     await jsonUpsert("document_checklists", next);
     res.json(next);
   } catch (error) {

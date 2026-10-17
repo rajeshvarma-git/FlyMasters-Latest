@@ -3124,7 +3124,12 @@ router.patch("/api/checklists/:id", auth, async (req, res) => {
   const rows = await jsonTable("document_checklists");
   const found = rows.find((row) => String(row.id) === String(req.params.id));
   if (!found) return res.status(404).json({ error: "Checklist item not found" });
-  await jsonUpsert("document_checklists", { ...found, ...req.body, id: found.id });
+  // Only switch-style fields: who a document is aimed at (countries, students,
+  // counsellor scope) is changed through /api/document-setup, which checks it.
+  const patch = {};
+  for (const field of ["is_active", "is_required"]) if (field in (req.body || {})) patch[field] = Boolean(req.body[field]);
+  if ("description" in (req.body || {})) patch.description = String(req.body.description || "").slice(0, 2000);
+  await jsonUpsert("document_checklists", { ...found, ...patch, id: found.id });
   res.json({ ok: true });
 });
 

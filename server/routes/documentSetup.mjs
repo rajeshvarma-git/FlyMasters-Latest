@@ -14,16 +14,20 @@
  *   Country   — a counsellor picks from their own countries (one country is
  *               chosen for them; several give a choice plus "All my
  *               countries"). Admin picks any country or All.
- *   Students  — "All students" (a counsellor's are only their own), or one or
- *               more named students. A named-student document goes to them
- *               only, and they are told about it straight away.
+ *   Students  — one or more named students (the default and the normal case),
+ *               or — only when the request says `all_students: true` — every
+ *               student (a counsellor's are only their own). A named-student
+ *               document goes to them only, whatever the country, and they
+ *               are told about it straight away. A request that names no
+ *               student and does not ask for "all students" is refused; the
+ *               server never infers "everyone in the country".
  *   Staff only — kept for staff; never shown to or asked of a student.
  */
 import express from "express";
 import crypto from "crypto";
 import { pool, jsonTable, jsonUpsert } from "../lib/db.mjs";
 import { ROLES, ADMIN_ROLES, session, requireRole, branchScope, audit } from "../lib/auth.mjs";
-import { documentCountries, normalizeCountry } from "../lib/documentTargeting.mjs";
+import { documentCountries, normalizeCountry, isStudentAudience } from "../lib/documentTargeting.mjs";
 import { countryDocumentApproval, setCountryDocumentsEnabled } from "../lib/countryDocumentApproval.mjs";
 import { myAssignedLeads, resolveCounselorAliases } from "./counselor.mjs";
 
@@ -190,16 +194,49 @@ function visibleTo(req, row, aliases, studentIds) {
   return true;
 }
 
+/** Unique students (a student can be reached by their user id or lead id). */
+function studentGroup(list) {
+  const seen = new Map();
+  for (const student of list) if (student && !seen.has(student.id)) seen.set(student.id, student);
+  return [...seen.values()];
+}
+
+/** The ids stored on a row for these students: portal user id and lead id. */
+const studentIdPairs = (list) => [...new Set(list.flatMap((s) => [s.id, s.lead_id]).filter(Boolean))];
+
+/** The students a row is aimed at, one entry per student (a student is stored under a user id and a lead id). */
+function targetStudents(row, studentsById) {
+  const seen = new Set();
+  const named = [];
+  let others = false;
+  for (const id of asList(row.student_ids)) {
+    const student = studentsById.get(id);
+    if (!student) { others = true; continue; }
+    if (seen.has(student.id)) continue;
+    seen.add(student.id);
+    named.push({ id: student.id, lead_id: student.lead_id, name: student.name, email: student.email });
+  }
+  return { named, others };
+}
+
 function describe(row, studentsById) {
   const targets = asList(row.student_ids);
   const countries = documentCountries(row);
   const legacyDegrees = asList(row.degree_types).filter((d) => d.toLowerCase() !== "all");
+  const { named, others } = targetStudents(row, studentsById);
+  const studentsLabel = targets.length
+    ? [...named.map((s) => s.name), ...(others ? ["other students"] : [])].join(", ")
+    : isStudentAudience(row) ? "No students selected"
+      : asList(row.counselor_scope_ids).length ? "All students of the counsellor who added it" : "All students";
   return {
     ...row,
     countries_label: countries.length ? countries.join(", ") : "All countries",
-    students_label: targets.length
-      ? [...new Set(targets.map((id) => studentsById.get(id)?.name || "A student"))].join(", ")
-      : asList(row.counselor_scope_ids).length ? "All students of the counsellor who added it" : "All students",
+    students_label: studentsLabel,
+    // "students" = aimed at the named students only; "all" = every student the
+    // country/scope rules allow (older rows without a stored audience too).
+    audience: targets.length || isStudentAudience(row) ? "students" : "all",
+    target_students: named,
+    has_other_target_students: others,
     legacy_degrees: legacyDegrees,
   };
 }
@@ -230,6 +267,32 @@ router.put(["/api/document-setup/students/:id/country-documents-approval", "/api
     res.json({ student_id: student.id, enabled: approval.enabled, approval });
   } catch (error) { fail(res, error, 403); }
 });
+
+/** Tell named students a document is needed: bell + their chat (which reaches WhatsApp). */
+async function notifyTargeted(row, students) {
+  if (row.staff_only || row.is_active === false) return;
+  const now = new Date().toISOString();
+  const portalUrl = String(process.env.PUBLIC_APP_URL || "").trim().replace(/\/$/, "");
+  for (const student of students) {
+    await jsonUpsert("notifications", {
+      id: crypto.randomUUID(),
+      user_id: student.id,
+      title: "New document needed",
+      message: `Please upload ${row.document_type}${row.description ? ` — ${row.description}` : ""}.`,
+      type: "warning",
+      action_url: "/student/documents",
+      created_at: now,
+      is_read: false,
+    });
+    await import("./cases.mjs")
+      .then(({ notifyStudentChat }) => notifyStudentChat(
+        student.id,
+        `📄 Document needed: ${row.document_type}. Please upload it in the Documents section of your Fly Masters student portal${portalUrl ? ` (${portalUrl}/student/documents)` : ""}.`,
+        `doc-setup:${row.id}:${student.id}`,
+      ))
+      .catch(() => null);
+  }
+}
 
 router.get(["/api/document-setup", "/api/counselor/document-setup"], docAuth, async (req, res) => {
   try {
@@ -279,13 +342,18 @@ router.post(["/api/document-setup", "/api/counselor/document-setup"], docAuth, a
       if (outside.length && !isAdmin(req)) throw new Error(`You can only choose your own countries (not ${outside.join(", ")}).`);
     }
 
-    // Students
+    // Students. The server decides who gets the document — never the country,
+    // and never the form's default. Either name the students, or say
+    // explicitly that it is for all students.
     const students = await studentsFor(req);
     const byId = new Map(students.flatMap((s) => [[s.id, s], [s.lead_id, s]]));
-    const studentIds = [...new Set(asList(body.student_ids))];
-    const unknown = studentIds.filter((id) => !byId.has(id));
+    const requested = [...new Set(asList(body.student_ids))];
+    const allStudents = body.all_students === true;
+    if (allStudents && requested.length) throw new Error("Choose either particular students or all students, not both.");
+    if (!allStudents && !requested.length) throw new Error("Choose at least one student for this document (or choose all students).");
+    const unknown = requested.filter((id) => !byId.has(id));
     if (unknown.length) throw new Error("Choose students from your own list.");
-    const targeted = studentIds.map((id) => byId.get(id));
+    const targeted = studentGroup(requested.map((id) => byId.get(id)));
 
     const now = new Date().toISOString();
     const row = {
@@ -303,9 +371,10 @@ router.post(["/api/document-setup", "/api/counselor/document-setup"], docAuth, a
       degree_types: ["All"],
       // A named student is stored by their portal user id (and lead id), so
       // the student portal's own id finds it.
-      student_ids: [...new Set(targeted.flatMap((s) => [s.id, s.lead_id]).filter(Boolean))],
+      student_ids: studentIdPairs(targeted),
+      audience: allStudents ? "all" : "students",
       // "All my students" from a counsellor stays with that counsellor's students.
-      counselor_scope_ids: isCounselor(req) && !targeted.length ? [...aliases] : [],
+      counselor_scope_ids: isCounselor(req) && allStudents ? [...aliases] : [],
       display_order: Number(body.display_order || 99),
       created_by: String(req.user.id),
       created_by_role: isAdmin(req) ? "admin" : req.user.role,
@@ -319,28 +388,7 @@ router.post(["/api/document-setup", "/api/counselor/document-setup"], docAuth, a
     // Named students hear about it straight away (bell + their chat, which
     // reaches WhatsApp). Broad "all students" documents just appear on the
     // Documents page — no blast.
-    if (targeted.length && !row.staff_only) {
-      const portalUrl = String(process.env.PUBLIC_APP_URL || "").trim().replace(/\/$/, "");
-      for (const student of targeted) {
-        await jsonUpsert("notifications", {
-          id: crypto.randomUUID(),
-          user_id: student.id,
-          title: "New document needed",
-          message: `Please upload ${documentType}${row.description ? ` — ${row.description}` : ""}.`,
-          type: "warning",
-          action_url: "/student/documents",
-          created_at: now,
-          is_read: false,
-        });
-        await import("./cases.mjs")
-          .then(({ notifyStudentChat }) => notifyStudentChat(
-            student.id,
-            `📄 Document needed: ${documentType}. Please upload it in the Documents section of your Fly Masters student portal${portalUrl ? ` (${portalUrl}/student/documents)` : ""}.`,
-            `doc-setup:${row.id}:${student.id}`,
-          ))
-          .catch(() => null);
-      }
-    }
+    if (targeted.length) await notifyTargeted(row, targeted);
     res.json({ ok: true, document: describe(row, byId) });
   } catch (error) { fail(res, error); }
 });
@@ -359,10 +407,41 @@ router.patch(["/api/document-setup/:id", "/api/counselor/document-setup/:id"], d
       if (field in (req.body || {})) patch[field] = Boolean(req.body[field]);
     }
     if ("description" in (req.body || {})) patch.description = String(req.body.description || "").slice(0, 2000);
+
+    // Change who a student-specific document is for. Same rules as creating
+    // it: only students this person manages; at least one must remain.
+    // Students outside this person's list who are already on the row are kept
+    // (an editor can't see or remove them). A document that was created for
+    // everyone is not turned into a student-specific one here — add a new one.
+    let added = [];
+    const body = req.body || {};
+    const hasStudentEdit = "student_ids" in body;
+    const students = await studentsFor(req);
+    const byId = new Map(students.flatMap((s) => [[s.id, s], [s.lead_id, s]]));
+    if (hasStudentEdit) {
+      if (!(asList(found.student_ids).length || isStudentAudience(found))) {
+        throw new Error("This document is for all students. Add a new document to aim it at particular students.");
+      }
+      const requested = [...new Set(asList(body.student_ids))];
+      if (!requested.length) throw new Error("Choose at least one student for this document.");
+      const unknown = requested.filter((id) => !byId.has(id));
+      if (unknown.length) throw new Error("Choose students from your own list.");
+      const chosen = studentGroup(requested.map((id) => byId.get(id)));
+      const previous = asList(found.student_ids);
+      const kept = previous.filter((id) => !byId.has(id)); // not manageable by this person: untouched
+      patch.student_ids = [...new Set([...kept, ...studentIdPairs(chosen)])];
+      patch.audience = "students";
+      const before = new Set(previous);
+      added = chosen.filter((s) => !before.has(s.id));
+    }
     const next = { ...found, ...patch, id: found.id, updated_at: new Date().toISOString() };
     await jsonUpsert("document_checklists", next);
     if ("staff_only" in patch) await mirrorToMaster(next, req);
-    res.json({ ok: true, document: next });
+    if (hasStudentEdit) {
+      await audit(req, "document_setup.students", "document_checklists", next.id, { name: next.document_type, added: added.length }).catch(() => null);
+      if (added.length) await notifyTargeted(next, added);
+    }
+    res.json({ ok: true, document: describe(next, byId) });
   } catch (error) { fail(res, error); }
 });
 

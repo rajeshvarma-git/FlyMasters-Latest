@@ -154,6 +154,8 @@ async function documentChecklistRows(viewer: Viewer | null, rows: any[]) {
       if (viewer && targets.some((id) => viewer.keys.has(id))) out.push(row);
       continue;
     }
+    // Created for named students but none left: nobody sees it (never a whole country).
+    if (String(row?.audience || "").toLowerCase() === "students") continue;
     const scope = list(row?.counselor_scope_ids);
     if (scope.length) {
       const mine = await myCounselors();
