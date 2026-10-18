@@ -25,7 +25,7 @@ import {
   DialogTitle,
 } from '@student/components/ui/dialog';
 import { useToast } from '@student/hooks/use-toast';
-import { notifyAssignedCounselors } from '@student/lib/notifyCounselorsOfStudentDocument';
+import { apiUrl } from '@student/lib/apiBase';
 import { collectStudentShortlistKeys, emailsMatch, shortlistBelongsToStudent } from '@student/lib/studentShortlists';
 import { matchesAnyCountry, normalizeCountry } from '@student/lib/universityRecommendations';
 import {
@@ -38,7 +38,6 @@ import {
   Clock,
   AlertTriangle,
   Plus,
-  Send,
   Ban,
 } from 'lucide-react';
 import { format } from 'date-fns';
@@ -322,10 +321,11 @@ export function StudentApplications() {
 
     setSaving(true);
     try {
-      const now = new Date().toISOString();
-      const row = {
-        id: crypto.randomUUID(),
-        user_id: user.id,
+      const { data: { session } } = await supabase.auth.getSession();
+      const response = await fetch(apiUrl('/api/case/me/applications'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token || ''}` },
+        body: JSON.stringify({
         university_id: universityId,
         university_name: name,
         country: uni?.country || locationParts[locationParts.length - 1] || null,
@@ -335,16 +335,14 @@ export function StudentApplications() {
         priority_level: priorityLevel,
         application_deadline: deadline || null,
         notes: notes.trim() || null,
-        status: shortlistId ? 'in_progress' : 'draft',
         shortlist_id: shortlistId,
-        created_at: now,
-        updated_at: now,
-      };
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Could not start the application.');
+      const row = payload.application as Application;
 
-      const { error } = await supabase.from('applications').insert(row);
-      if (error) throw error;
-
-      setApplications((prev) => [row, ...prev]);
+      setApplications((prev) => [row, ...prev.filter((app) => app.id !== row.id)]);
 
       // The shortlist card (University Shortlists / "ready to apply" above)
       // reads its own `status` field to decide whether to still show "Start
@@ -352,34 +350,14 @@ export function StudentApplications() {
       // forever, so the button never reflected that the application had
       // actually been started.
       if (shortlistId) {
-        const { error: shortlistError } = await supabase
-          .from('university_shortlists')
-          .update({ status: 'applied' })
-          .eq('id', shortlistId);
-        if (!shortlistError) {
-          setShortlists((prev) => prev.map((item) => (item.id === shortlistId ? { ...item, status: 'applied' } : item)));
-        }
+        setShortlists((prev) => prev.map((item) => (item.id === shortlistId ? { ...item, status: 'applied' } : item)));
       }
 
       setDialogOpen(false);
 
-      // Best-effort: a failure to notify the counselor must never look like
-      // the application itself failed to start — it already has, by this
-      // point (the insert above succeeded).
-      try {
-        await notifyAssignedCounselors(user, {
-          type: 'info',
-          title: 'Student started an application',
-          message: `${user.email || 'A student'} started an application to ${name} (${courseName.trim()}, ${intakeTerm}).`,
-          actionUrl: '/counselor/applications',
-        });
-      } catch (notifyError) {
-        console.error('Could not notify counselor of new application:', notifyError);
-      }
-
       toast({
-        title: 'Application started',
-        description: `${name} is now on your applications list.`,
+        title: payload.already ? 'Application already started' : 'Application started',
+        description: `${name} is now visible to your counselor.`,
       });
     } catch (error: any) {
       toast({
@@ -392,37 +370,28 @@ export function StudentApplications() {
     }
   };
 
-  const updateStatus = async (application: Application, status: string) => {
+  const withdrawApplication = async (application: Application) => {
     if (!user) return;
     setSaving(true);
     try {
-      const { error } = await supabase
-        .from('applications')
-        .update({ status, updated_at: new Date().toISOString() })
-        .eq('id', application.id)
-        .eq('user_id', user.id);
-      if (error) throw error;
+      const { data: { session } } = await supabase.auth.getSession();
+      const response = await fetch(apiUrl(`/api/case/me/applications/${encodeURIComponent(application.id)}`), {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token || ''}` },
+        body: JSON.stringify({ status: 'withdrawn' }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Could not withdraw the application.');
 
       setApplications((prev) =>
-        prev.map((app) => (app.id === application.id ? { ...app, status } : app))
+        prev.map((app) => (app.id === application.id ? payload.application : app))
       );
 
       const uniName = applicationLabel(application, universities);
-      if (status === 'pending_counselor') {
-        await notifyAssignedCounselors(user, {
-          type: 'info',
-          title: 'Application sent for counselor review',
-          message: `${user.email || 'A student'} sent ${uniName} (${application.course_name || 'course'}) to you. It has not been sent to the university.`,
-          actionUrl: '/counselor/applications',
-        });
-      }
 
       toast({
-        title: status === 'pending_counselor' ? 'Review requested' : 'Application withdrawn',
-        description:
-          status === 'pending_counselor'
-            ? `${uniName} is queued for review. Admin must assign a counselor if you do not have one. It has not been sent to the university.`
-            : uniName,
+        title: 'Application withdrawn',
+        description: uniName,
       });
     } catch (error: any) {
       toast({
@@ -525,7 +494,7 @@ export function StudentApplications() {
           </div>
           <div>
             <h1 className="text-2xl font-bold">My Applications</h1>
-            <p className="text-muted-foreground">Start an application, then send it to your counselor. It is not sent to the university until they approve it.</p>
+            <p className="text-muted-foreground">Start an application to share it with your counselor. It is not sent to the university until they submit it.</p>
           </div>
         </div>
         <Button onClick={() => openStartDialog()}>
@@ -635,7 +604,6 @@ export function StudentApplications() {
               {applications.map((application) => {
                 const name = applicationLabel(application, universities);
                 const place = applicationPlace(application, universities);
-                const canSubmit = application.status === 'draft' || application.status === 'in_progress' || application.status === 'returned';
                 const canWithdraw = OPEN_STATUSES.has(application.status);
 
                 return (
@@ -720,18 +688,12 @@ export function StudentApplications() {
                     ) : null}
 
                     <div className="flex flex-wrap gap-2 pt-2">
-                      {canSubmit ? (
-                        <Button size="sm" disabled={saving} onClick={() => updateStatus(application, 'pending_counselor')}>
-                          <Send className="w-4 h-4 mr-1" />
-                          Send to counselor
-                        </Button>
-                      ) : null}
                       {canWithdraw ? (
                         <Button
                           variant="outline"
                           size="sm"
                           disabled={saving}
-                          onClick={() => updateStatus(application, 'withdrawn')}
+                          onClick={() => withdrawApplication(application)}
                         >
                           <Ban className="w-4 h-4 mr-1" />
                           Withdraw
@@ -757,7 +719,7 @@ export function StudentApplications() {
           <DialogHeader>
             <DialogTitle>Start an application</DialogTitle>
             <DialogDescription>
-              Choose a university and course. When you are ready, send the application to your counselor — not to the university.
+              Choose a university and course. Starting it makes it visible to your counselor — it is not sent to the university.
             </DialogDescription>
           </DialogHeader>
 

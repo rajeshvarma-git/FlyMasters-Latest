@@ -75,6 +75,9 @@ export default function DocumentSetup({ title = "Documents setup", backSlot }: {
   const [staffOnly, setStaffOnly] = useState(false);
   const [allCountries, setAllCountries] = useState(true);
   const [countries, setCountries] = useState<string[]>([]);
+  const [othersOn, setOthersOn] = useState(false);
+  const [customCountries, setCustomCountries] = useState<string[]>([]);
+  const [customDraft, setCustomDraft] = useState("");
   const [everyone, setEveryone] = useState(true);
   const [picked, setPicked] = useState<string[]>([]);
   const [studentQuery, setStudentQuery] = useState("");
@@ -101,7 +104,9 @@ export default function DocumentSetup({ title = "Documents setup", backSlot }: {
     return () => window.clearInterval(poll);
   }, [load]);
 
-  const chosenCountries = singleCountry ? [singleCountry] : allCountries ? data?.countries || [] : countries;
+  // Custom countries count only while Others is ticked (and only admins see it).
+  const pickedCountries = [...countries, ...(isAdmin && othersOn ? customCountries : [])];
+  const chosenCountries = singleCountry ? [singleCountry] : allCountries ? data?.countries || [] : pickedCountries;
 
   const studentChoices = useMemo(() => {
     const q = studentQuery.trim().toLowerCase();
@@ -120,16 +125,32 @@ export default function DocumentSetup({ title = "Documents setup", backSlot }: {
     setStaffOnly(false);
     setAllCountries(true);
     setCountries([]);
+    setOthersOn(false);
+    setCustomCountries([]);
+    setCustomDraft("");
     setEveryone(true);
     setPicked([]);
     setStudentQuery("");
+  };
+
+  const addCustomCountry = () => {
+    const value = customDraft.trim().replace(/\s+/g, " ");
+    if (!value) return;
+    const lower = value.toLowerCase();
+    const exists = [...(data?.countries || []), ...pickedCountries].some((c) => c.toLowerCase() === lower);
+    if (!exists) setCustomCountries((list) => [...list, value]);
+    setCustomDraft("");
   };
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     setError("");
     setNotice("");
-    if (!singleCountry && !allCountries && !countries.length) {
+    if (!allCountries && isAdmin && othersOn && customDraft.trim()) {
+      setError(`Press Add to include "${customDraft.trim()}" as a country, or clear the box.`);
+      return;
+    }
+    if (!singleCountry && !allCountries && !pickedCountries.length) {
       setError("Choose at least one country, or tick all countries.");
       return;
     }
@@ -149,7 +170,7 @@ export default function DocumentSetup({ title = "Documents setup", backSlot }: {
           is_required: required,
           staff_only: staffOnly,
           all_countries: singleCountry ? false : allCountries,
-          countries: singleCountry ? [singleCountry] : allCountries ? [] : countries,
+          countries: singleCountry ? [singleCountry] : allCountries ? [] : pickedCountries,
           student_ids: everyone ? [] : picked,
         },
       });
@@ -234,26 +255,70 @@ export default function DocumentSetup({ title = "Documents setup", backSlot }: {
                 {singleCountry} <span className="text-xs text-slate-500">(your country)</span>
               </p>
             ) : (
-              <div className="rounded-lg border border-slate-200 p-3">
-                <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
-                  <input type="checkbox" checked={allCountries} onChange={(e) => { setAllCountries(e.target.checked); setCountries([]); }} />
-                  {isAdmin ? "All countries" : "All my countries"}
-                </label>
-                {!allCountries ? (
-                  <div className="mt-2 grid grid-cols-2 gap-1">
-                    {(data?.countries || []).map((country) => (
-                      <label key={country} className="flex items-center gap-2 text-sm text-slate-700">
+              <details className="group rounded-lg border border-slate-200 bg-white">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-sm text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-200">
+                  <span>{allCountries ? (isAdmin ? "All countries" : "All my countries") : `${pickedCountries.length} chosen`}</span>
+                  <span aria-hidden="true" className="text-xs text-slate-400 group-open:rotate-180">▼</span>
+                </summary>
+                <div className="space-y-2 border-t border-slate-100 p-3">
+                  <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
+                    <input type="checkbox" checked={allCountries} onChange={(e) => { setAllCountries(e.target.checked); setCountries([]); setOthersOn(false); setCustomCountries([]); }} />
+                    {isAdmin ? "All countries" : "All my countries"}
+                  </label>
+                  {!allCountries ? (
+                    <div className="grid grid-cols-2 gap-1">
+                      {(data?.countries || []).map((country) => (
+                        <label key={country} className="flex items-center gap-2 text-sm text-slate-700">
+                          <input
+                            type="checkbox"
+                            checked={countries.includes(country)}
+                            onChange={(e) => setCountries((list) => e.target.checked ? [...list, country] : list.filter((c) => c !== country))}
+                          />
+                          {country}
+                        </label>
+                      ))}
+                      {isAdmin ? (
+                        <label className="flex items-center gap-2 text-sm text-slate-700">
+                          <input type="checkbox" checked={othersOn} onChange={(e) => setOthersOn(e.target.checked)} />
+                          Others
+                        </label>
+                      ) : null}
+                    </div>
+                  ) : null}
+                  {!allCountries && isAdmin && othersOn ? (
+                    <div className="space-y-2">
+                      <div className="flex gap-2">
                         <input
-                          type="checkbox"
-                          checked={countries.includes(country)}
-                          onChange={(e) => setCountries((list) => e.target.checked ? [...list, country] : list.filter((c) => c !== country))}
+                          className={inputClass}
+                          placeholder="Type a country name"
+                          aria-label="Other country name"
+                          value={customDraft}
+                          onChange={(e) => setCustomDraft(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addCustomCountry(); } }}
                         />
-                        {country}
-                      </label>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
+                        <button type="button" onClick={addCustomCountry} className="shrink-0 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50">Add</button>
+                      </div>
+                      {customCountries.length ? (
+                        <div className="flex flex-wrap gap-2">
+                          {customCountries.map((country) => (
+                            <span key={country} className={`${chip} bg-slate-100 text-slate-700`}>
+                              {country}
+                              <button
+                                type="button"
+                                aria-label={`Remove ${country}`}
+                                className="ml-1 text-slate-500 hover:text-slate-900"
+                                onClick={() => setCustomCountries((list) => list.filter((c) => c !== country))}
+                              >
+                                ×
+                              </button>
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              </details>
             )}
           </div>
 
@@ -272,12 +337,17 @@ export default function DocumentSetup({ title = "Documents setup", backSlot }: {
                 </label>
               </div>
               {!everyone ? (
-                <div className="mt-2">
+                <details className="group mt-2 rounded-lg border border-slate-200 bg-white">
+                  <summary className="flex cursor-pointer list-none items-center justify-between gap-2 px-3 py-2 text-sm text-slate-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-200">
+                    <span>{picked.length ? `${picked.length} student${picked.length === 1 ? "" : "s"} chosen` : "Choose students"}</span>
+                    <span aria-hidden="true" className="text-xs text-slate-400 group-open:rotate-180">▼</span>
+                  </summary>
+                  <div className="space-y-2 border-t border-slate-100 p-3">
                   <div className="relative">
                     <Search className="pointer-events-none absolute left-2 top-2.5 h-4 w-4 text-slate-400" />
                     <input className={`${inputClass} pl-8`} placeholder="Search students" value={studentQuery} onChange={(e) => setStudentQuery(e.target.value)} />
                   </div>
-                  <div className="mt-2 max-h-44 space-y-1 overflow-y-auto">
+                  <div className="max-h-44 space-y-1 overflow-y-auto">
                     {studentChoices.map((student) => (
                       <label key={student.id} className="flex items-center gap-2 text-sm text-slate-700">
                         <input
@@ -297,7 +367,8 @@ export default function DocumentSetup({ title = "Documents setup", backSlot }: {
                     {!studentChoices.length ? <p className="text-xs text-slate-500">No students match.</p> : null}
                   </div>
                   {picked.length ? <p className="mt-1 text-xs text-slate-500">{picked.length} chosen — only they will be asked.</p> : null}
-                </div>
+                  </div>
+                </details>
               ) : null}
             </div>
           </div>

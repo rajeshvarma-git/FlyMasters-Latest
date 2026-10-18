@@ -53,7 +53,9 @@ const WA_STATUS: Record<string, string> = {
   sent: " · sent by WhatsApp",
   delivered: " · delivered on WhatsApp",
   read: " · read on WhatsApp",
-  failed: " · WhatsApp send failed",
+  // This is only the optional WhatsApp relay. The app message was stored and
+  // remains visible in this thread even when WhatsApp cannot deliver it.
+  failed: " · web chat saved; WhatsApp delivery failed",
   waiting: " · held — sent free when the student replies (a paid reminder already went out)",
   window_closed: " · app only (WhatsApp 24h window closed, no template set up)",
   not_configured: " · app only (WhatsApp not set up)",
@@ -121,6 +123,7 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
   const [sending, setSending] = useState(false);
   const [query, setQuery] = useState("");
   const [editing, setEditing] = useState<{ id: string; body: string } | null>(null);
+  const retryRef = useRef<{ body: string; clientMessageId: string } | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const lastCount = useRef(0);
   const [params] = useSearchParams();
@@ -200,17 +203,21 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
   const send = async () => {
     const body = text.trim();
     if (!body || !selected || sending) return;
+    const retry = retryRef.current?.body === body ? retryRef.current : null;
+    const clientMessageId = retry?.clientMessageId || crypto.randomUUID();
     setSending(true);
     try {
       const { message } = await request<{ message: Message }>(`/case/lead/${encodeURIComponent(selected)}/messages`, {
         method: "POST",
-        body: { message: body },
+        body: { message: body, client_message_id: clientMessageId },
       });
+      retryRef.current = null;
       setText("");
       setThread((t) => (t ? { ...t, messages: [...t.messages, message] } : t));
       loadList().catch(() => {});
     } catch (e) {
-      setThreadError(e instanceof Error ? e.message : "Message not sent");
+      retryRef.current = { body, clientMessageId };
+      setThreadError(`${e instanceof Error ? e.message : "Message not sent"} You can retry safely.`);
     } finally {
       setSending(false);
     }

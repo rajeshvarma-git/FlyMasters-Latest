@@ -1,7 +1,7 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useMemo, useState } from "react";
 import { format, formatDistanceToNow } from "date-fns";
 import { useNavigate } from "react-router-dom";
-import { Bell } from "lucide-react";
+import { Bell, ChevronDown, X } from "lucide-react";
 import { useAuth } from "@counselor/context/AuthContext";
 import {
   addAttendance,
@@ -17,6 +17,7 @@ import { Badge } from "@counselor/components/ui/Badge";
 import { Button } from "@counselor/components/ui/Button";
 import { Card } from "@counselor/components/ui/Card";
 import { Input, Label, Select, Textarea } from "@counselor/components/ui/Field";
+import { api } from "@counselor/lib/api";
 
 function phoneDigits(value: string) {
   const digits = value.replace(/\D/g, "");
@@ -37,7 +38,8 @@ export function CounselorProfile() {
   const store = useLocalStore();
   const extra = store.counselorExtras.find((item) => item.user_id === user?.id);
   const [bio, setBio] = useState("");
-  const [specializations, setSpecializations] = useState("");
+  const [specializations, setSpecializations] = useState<string[]>([]);
+  const [specializationOptions, setSpecializationOptions] = useState<string[]>([]);
   const [phone, setPhone] = useState("");
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
@@ -51,14 +53,27 @@ export function CounselorProfile() {
     setFirstName((value) => value || user.firstName);
     setLastName((value) => value || user.lastName);
     setBio((value) => value || extra?.bio || "");
-    setSpecializations((value) => value || (extra?.specializations || []).join(", "));
+    setSpecializations((value) => value.length ? value : Array.isArray(extra?.specializations)
+      ? extra.specializations.map(String).map((item) => item.trim()).filter(Boolean)
+      : String(extra?.specializations || "").split(",").map((item) => item.trim()).filter(Boolean));
     setPhone((value) => value || user.phone || extra?.phone || "");
   }, [user, extra]);
+
+  useEffect(() => {
+    void api<Array<{ name: string }>>("/university-catalog/countries")
+      .then((rows) => setSpecializationOptions(rows.map((row) => String(row.name || "").trim()).filter(Boolean)))
+      .catch(() => setSpecializationOptions([]));
+  }, []);
+
+  const availableSpecializations = useMemo(
+    () => [...new Set([...specializationOptions, ...specializations])].sort((a, b) => a.localeCompare(b)),
+    [specializationOptions, specializations],
+  );
 
   const save = async (e: FormEvent) => {
     e.preventDefault();
     if (!user) return;
-    const specs = specializations.split(",").map((item) => item.trim()).filter(Boolean);
+    const specs = specializations;
     const nextPhone = phoneDigits(phone);
     const phoneIssue = phoneMessage(phone);
     setSaved("");
@@ -120,8 +135,38 @@ export function CounselorProfile() {
             {phoneError && <p className="mt-1 text-sm text-rose-600">{phoneError}</p>}
           </div>
           <div>
-            <Label>Specializations (comma separated)</Label>
-            <Input value={specializations} onChange={(e) => setSpecializations(e.target.value)} placeholder="UK, Canada, Data Science" />
+            <Label>Specializations</Label>
+            <details className="group relative mt-1 rounded-xl border border-slate-200 bg-white">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm text-slate-700">
+                <span className={specializations.length ? "" : "text-slate-400"}>{specializations.length ? `${specializations.length} selected` : "Select countries"}</span>
+                <ChevronDown className="h-4 w-4 text-slate-400 transition group-open:rotate-180" />
+              </summary>
+              <div className="absolute left-0 right-0 z-20 max-h-60 overflow-y-auto rounded-b-xl border border-slate-200 bg-white p-2 shadow-lg">
+                {availableSpecializations.map((option) => (
+                  <label key={option} className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-sm hover:bg-slate-50">
+                    <input
+                      type="checkbox"
+                      checked={specializations.includes(option)}
+                      onChange={(event) => setSpecializations((items) => event.target.checked ? [...items, option] : items.filter((item) => item !== option))}
+                    />
+                    {option}
+                  </label>
+                ))}
+                {availableSpecializations.length === 0 && <p className="px-2 py-1 text-sm text-slate-500">No country options are configured yet.</p>}
+              </div>
+            </details>
+            {specializations.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                {specializations.map((item) => (
+                  <span key={item} className="inline-flex items-center gap-1 rounded-full bg-sky-50 px-2 py-1 text-xs font-medium text-sky-800">
+                    {item}
+                    <button type="button" aria-label={`Remove ${item}`} onClick={() => setSpecializations((items) => items.filter((value) => value !== item))} className="rounded-full text-sky-600 hover:text-sky-900">
+                      <X className="h-3.5 w-3.5" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
           <div><Label>Bio</Label><Textarea value={bio} onChange={(e) => setBio(e.target.value)} placeholder="Short note about how you help students" /></div>
           {error && <p className="text-sm text-rose-600">{error}</p>}

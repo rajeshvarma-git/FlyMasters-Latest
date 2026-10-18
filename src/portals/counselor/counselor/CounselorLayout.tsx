@@ -54,7 +54,7 @@ export default function CounselorLayout() {
   const unread = store.notifications.filter((item) => item.user_id === user?.id && !item.is_read).length;
   const unreadChats = useCaseUnread();
   const pendingApps = (store.applications || []).filter(
-    (item) => item.status === "pending_counselor" || item.status === "submitted",
+    (item) => ["draft", "in_progress", "pending_counselor", "submitted", "returned"].includes(item.status),
   ).length;
 
   const Nav = () => (

@@ -45,6 +45,7 @@ type ShortlistRow = {
   estimated_fees: number | null;
   application_deadline: string | null;
   application_id?: string | null;
+  application_status?: string | null;
   shortlisted_at: string | null;
   created_at: string | null;
   course_link?: string | null;
@@ -52,7 +53,7 @@ type ShortlistRow = {
 
 type SavedUniversity = { id: string; name: string; country: string; city: string | null; website_url: string | null };
 
-type ApplicationRow = { id: string; shortlist_id?: string | null; university_name?: string | null; status: string; counselor_comments?: string | null; updated_at?: string | null };
+type ApplicationRow = { id: string; shortlist_id?: string | null; university_id?: string | null; university_name?: string | null; status: string; counselor_comments?: string | null; updated_at?: string | null; created_at?: string | null };
 
 type Item =
   | { kind: 'shortlist'; key: string; row: ShortlistRow }
@@ -66,7 +67,7 @@ const APPLICATION_LABELS: Record<string, string> = {
   enrolled: 'Enrolled',
   rejected: 'Not successful this time',
   withdrawn: 'Withdrawn',
-  counselor_approved: 'Approved by your counsellor',
+  counselor_approved: 'Approved',
   returned: 'Returned by your counsellor',
   pending_counselor: 'With your counsellor',
   submitted: 'With your counsellor',
@@ -172,8 +173,18 @@ export function UniversityShortlists() {
     return { pending, going, declined };
   }, [items]);
 
-  const applicationFor = (row: ShortlistRow) =>
-    applications.find((app) => (row.application_id && app.id === row.application_id) || String(app.shortlist_id || '') === row.id) || null;
+  const applicationFor = (row: ShortlistRow) => {
+    const linked = applications.find((app) =>
+      (row.application_id && app.id === row.application_id)
+      || String(app.shortlist_id || '') === row.id,
+    );
+    if (linked) return linked;
+    // Legacy rows may predate application_id. Recover only when the stable
+    // university id identifies exactly one of this student's applications.
+    if (!row.university_id) return null;
+    const matches = applications.filter((app) => String(app.university_id || '') === String(row.university_id));
+    return matches.length === 1 ? matches[0] : null;
+  };
 
   const run = async (key: string, action: () => Promise<unknown>, done: string) => {
     setBusyKey(key);
@@ -230,6 +241,7 @@ export function UniversityShortlists() {
     const busy = busyKey === item.key;
     const state = item.kind === 'saved' ? 'pending' : decisionOf(item.row);
     const app = item.kind === 'shortlist' ? applicationFor(item.row) : null;
+    const applicationStatus = app?.status || (item.kind === 'shortlist' ? item.row.application_status || null : null);
     return (
       <Card key={item.key} className="glass-card">
         <CardContent className="flex flex-wrap items-center gap-4 p-4">
@@ -243,7 +255,7 @@ export function UniversityShortlists() {
               <Badge variant="outline">{sourceLabel(item)}</Badge>
               {state === 'accepted' ? <Badge className="bg-emerald-600 text-white">Accepted — your counsellor will start it</Badge> : null}
               {state === 'applied' ? (
-                <Badge className="bg-purple-600 text-white">{APPLICATION_LABELS[app?.status || 'in_progress'] || 'Application in progress'}</Badge>
+                <Badge className="bg-purple-600 text-white">{APPLICATION_LABELS[applicationStatus || 'in_progress'] || 'Application in progress'}</Badge>
               ) : null}
               {state === 'declined' ? <Badge variant="secondary">Not interested</Badge> : null}
             </div>

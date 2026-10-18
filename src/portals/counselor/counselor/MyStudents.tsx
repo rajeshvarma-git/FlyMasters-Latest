@@ -15,7 +15,7 @@ import {
   Users,
 } from "lucide-react";
 import { useAuth } from "@counselor/context/AuthContext";
-import { ensureConversation, fetchStudentChecklist, requestStudentDocuments, useLocalStore } from "@counselor/lib/store";
+import { ensureConversation, fetchCountryDocumentsApproval, fetchStudentChecklist, requestStudentDocuments, setCountryDocumentsApproval, useLocalStore } from "@counselor/lib/store";
 import { displayName, initials, isConvertedStudent } from "@counselor/lib/utils";
 import { Badge } from "@counselor/components/ui/Badge";
 import { Button } from "@counselor/components/ui/Button";
@@ -42,6 +42,8 @@ export default function MyStudents() {
   const [requestingType, setRequestingType] = useState<string | null>(null);
   const [requestingAll, setRequestingAll] = useState(false);
   const [requestNotice, setRequestNotice] = useState("");
+  const [countryDocumentsEnabled, setCountryDocumentsEnabled] = useState(false);
+  const [changingCountryDocuments, setChangingCountryDocuments] = useState(false);
 
   const students = useMemo(() => {
     const seen = new Set<string>();
@@ -93,12 +95,38 @@ export default function MyStudents() {
     void fetchStudentChecklist(selected.user_id || selected.id)
       .then(setChecklist)
       .catch(() => setChecklist(null));
+    void fetchCountryDocumentsApproval(selected.user_id || selected.id)
+      .then((result) => setCountryDocumentsEnabled(result.enabled))
+      .catch(() => setCountryDocumentsEnabled(false));
   }, [selected?.id, selected?.user_id]);
+
+  useEffect(() => {
+    if (!selected) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [selected?.id]);
 
   const refreshChecklist = async () => {
     if (!selected) return;
     const next = await fetchStudentChecklist(selected.user_id || selected.id);
     setChecklist(next);
+  };
+
+  const changeCountryDocuments = async (enabled: boolean) => {
+    if (!selected) return;
+    setChangingCountryDocuments(true);
+    try {
+      const result = await setCountryDocumentsApproval(selected.user_id || selected.id, enabled);
+      setCountryDocumentsEnabled(result.enabled);
+      await refreshChecklist();
+    } catch (error) {
+      setRequestNotice(error instanceof Error ? error.message : "Could not change country document approval.");
+    } finally {
+      setChangingCountryDocuments(false);
+    }
   };
 
   const sendDocumentRequest = async (documentTypes: string[], mode: "single" | "all" = "single") => {
@@ -215,8 +243,16 @@ export default function MyStudents() {
       </div>
 
       {selected && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
-          <Card className="max-h-[85vh] w-full max-w-2xl overflow-y-auto p-6">
+        <div className="fixed inset-0 z-50 overflow-y-auto overscroll-contain bg-white">
+          <button
+            type="button"
+            aria-label="Close student profile"
+            onClick={() => setSelectedId(null)}
+            className="fixed right-4 top-4 z-10 flex h-10 w-10 items-center justify-center rounded-full bg-white text-2xl leading-none text-slate-600 shadow-card ring-1 ring-slate-200 transition hover:bg-slate-100 hover:text-slate-900"
+          >
+            <span aria-hidden="true">×</span>
+          </button>
+          <div className="min-h-full w-full bg-white p-4 pt-16 sm:p-8 sm:pr-20">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <h2 className="text-lg font-bold">{displayName(selected.first_name, selected.last_name, selected.email)}</h2>
@@ -269,6 +305,21 @@ export default function MyStudents() {
                 <p className="text-xs text-slate-500">Messages</p>
               </Card>
             </div>
+
+            <Card className="mt-5 flex flex-wrap items-center justify-between gap-3 p-4">
+              <div>
+                <p className="text-sm font-semibold">Country-wise common documents</p>
+                <p className="text-xs text-slate-500">{countryDocumentsEnabled ? "Enabled for this student." : "Not Enabled — students cannot view or submit country-wise common documents."}</p>
+              </div>
+              <Button
+                size="sm"
+                variant={countryDocumentsEnabled ? "secondary" : "primary"}
+                disabled={changingCountryDocuments}
+                onClick={() => void changeCountryDocuments(!countryDocumentsEnabled)}
+              >
+                {changingCountryDocuments ? "Saving..." : countryDocumentsEnabled ? "Disable documents" : "Enable documents"}
+              </Button>
+            </Card>
 
             {selectedShortlists.length > 0 && (
               <div className="mt-5">
@@ -380,7 +431,7 @@ export default function MyStudents() {
                 <Button>Open chat</Button>
               </Link>
             </div>
-          </Card>
+          </div>
         </div>
       )}
     </div>

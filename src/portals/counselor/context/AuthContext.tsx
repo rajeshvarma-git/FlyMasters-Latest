@@ -2,6 +2,7 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import type { Role } from "@counselor/lib/types";
 import { api, clearAuth, getToken, readStoredUser, setAuth } from "@counselor/lib/api";
 import { refreshStore } from "@counselor/lib/store";
+import { isCounselorPreview } from "@counselor/lib/previewMode";
 
 export interface AppUser {
   id: string;
@@ -55,6 +56,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const boot = async () => {
+      // The preview API is entirely browser-local and is available only from
+      // Vite development with VITE_COUNSELOR_PREVIEW=true. Enter its fictional
+      // counselor directly; no token is minted and no real API is contacted.
+      if (isCounselorPreview()) {
+        const data = await api<{ user: AppUser }>("/me");
+        enter(data.user);
+        await refreshStore();
+        setLoading(false);
+        return;
+      }
       // The stored user is shared by every staff portal: only a counselor's
       // is shown here, and only until the server confirms it.
       const stored = readStoredUser<AppUser & { role?: string }>();

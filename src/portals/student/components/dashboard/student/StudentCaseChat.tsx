@@ -49,7 +49,9 @@ function Avatar({ role }: { role: string }) {
   );
 }
 
-function Bubble({ m }: { m: CaseMessage }) {
+type DisplayMessage = CaseMessage & { local_status?: 'failed'; client_message_id?: string };
+
+function Bubble({ m, onRetry }: { m: DisplayMessage; onRetry?: () => void }) {
   const isUser = m.sender_role === 'student';
   const isStaff = m.sender_role === 'telecaller' || m.sender_role === 'counselor' || m.sender_role === 'admin';
   return (
@@ -85,6 +87,15 @@ function Bubble({ m }: { m: CaseMessage }) {
           {time(m.created_at)}
           {m.channel === 'whatsapp' ? ' · via WhatsApp' : ''}
         </span>
+        {m.local_status === 'failed' && onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="mt-1 text-xs font-medium underline underline-offset-2 opacity-90 hover:opacity-100"
+          >
+            Not sent — Retry
+          </button>
+        )}
       </div>
       {isUser && <Avatar role="student" />}
     </div>
@@ -101,7 +112,7 @@ interface StudentCaseChatProps {
 }
 
 export function StudentCaseChat({ compact = false, onOpenFull, onOwnerChange }: StudentCaseChatProps = {}) {
-  const [messages, setMessages] = useState<CaseMessage[]>([]);
+  const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const [owner, setOwner] = useState<CaseOwner | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
@@ -140,11 +151,12 @@ export function StudentCaseChat({ compact = false, onOpenFull, onOwnerChange }: 
     }
   }, [messages, sending]);
 
-  const send = async (body: string) => {
+  const send = async (body: string, retryId?: string) => {
     if (!body.trim() || sending) return;
     setSending(true);
-    const temp: CaseMessage = {
-      id: `temp-${Date.now()}`,
+    const clientMessageId = retryId || crypto.randomUUID();
+    const temp: DisplayMessage = {
+      id: `temp-${clientMessageId}`,
       kind: 'text',
       sender_role: 'student',
       sender_id: null,
@@ -157,16 +169,17 @@ export function StudentCaseChat({ compact = false, onOpenFull, onOwnerChange }: 
       review_status: null,
       reviewed_by_name: null,
       created_at: new Date().toISOString(),
+      client_message_id: clientMessageId,
     };
-    setMessages((prev) => [...prev, temp]);
+    setMessages((prev) => [...prev.filter((m) => m.client_message_id !== clientMessageId), temp]);
     try {
-      const result = await sendCaseMessage(body);
+      const result = await sendCaseMessage(body, clientMessageId);
       setOwner(result.owner);
       setIntakeDone(Boolean(result.intake_complete));
       setMessages((prev) => [...prev.filter((m) => m.id !== temp.id), ...result.messages]);
     } catch (error) {
-      setMessages((prev) => prev.filter((m) => m.id !== temp.id));
-      toast.error(error instanceof Error ? error.message : 'Message not sent');
+      setMessages((prev) => prev.map((m) => m.id === temp.id ? { ...m, local_status: 'failed' as const } : m));
+      toast.error(error instanceof Error ? error.message : 'Message not sent. Use Retry to send the same message safely.');
     } finally {
       setSending(false);
     }
@@ -257,7 +270,7 @@ export function StudentCaseChat({ compact = false, onOpenFull, onOwnerChange }: 
                   </div>
                 );
               }
-              return <Bubble key={m.id} m={m} />;
+              return <Bubble key={m.id} m={m} onRetry={m.local_status === 'failed' ? () => send(m.body, m.client_message_id) : undefined} />;
             })}
             {sending && <EnhancedTypingIndicator />}
             <div ref={endRef} />

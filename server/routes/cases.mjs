@@ -37,6 +37,7 @@ import { pool, jsonTable, jsonFind, jsonUpsert } from "../lib/db.mjs";
 import { anySession, branchScope, ROLES } from "../lib/auth.mjs";
 import { geminiJson, geminiConfigured } from "../lib/gemini.mjs";
 import { sendWhatsAppText, sendWhatsAppOutreach, outreachTemplateName, outreachButtonText, whatsappSendConfigured, normalizeWaPhone } from "../lib/waSend.mjs";
+import { applicationIdFor, applicationNotificationId, findExistingOpenApplication, shortlistApplicationPatch } from "../lib/applicationWorkflow.mjs";
 
 const router = express.Router();
 
@@ -47,6 +48,18 @@ const STAFF_ROLES = new Set([
 const ADMIN_ROLES = new Set([ROLES.SUPER_ADMIN, ROLES.ADMIN]);
 const MAX_MESSAGE = 2000;
 const AI_NAME = "AI Advisor";
+const CLIENT_MESSAGE_ID = /^[A-Za-z0-9_-]{16,128}$/;
+
+/**
+ * A browser-generated id makes a retry safe when the request timed out after
+ * the database write. It is namespaced by the authenticated sender, so an id
+ * supplied by one account can never refer to another account's message.
+ */
+export function caseMessageSourceId(senderRole, senderId, clientMessageId) {
+  const id = String(clientMessageId || "").trim();
+  if (!CLIENT_MESSAGE_ID.test(id)) return null;
+  return `portal:${senderRole}:${String(senderId)}:${id}`;
+}
 
 // ------------------------------------------------------------ intake steps
 
@@ -1656,7 +1669,7 @@ async function handleStudentMessage(conversation, studentUserId, lead, owner, te
  * `document_notifications` with a different id — which showed up as two
  * entries in the counsellor bell and could not be cleared together).
  */
-export async function notifyStaffAboutStudent(studentUserId, lead, { title, message, counselorUrl = "/counselor/chat", adminUrl = null }) {
+export async function notifyStaffAboutStudent(studentUserId, lead, { title, message, counselorUrl = "/counselor/chat", adminUrl = null, notificationKey = null }) {
   const counselorId = String(lead?.assigned_counselor_id || "");
   let targets = [];
   if (counselorId && counselorId !== SHARED_COUNSELOR_ID) {
@@ -1673,9 +1686,10 @@ export async function notifyStaffAboutStudent(studentUserId, lead, { title, mess
   }
   const now = new Date().toISOString();
   for (const userId of targets) {
-    await jsonUpsert("notifications", { id: crypto.randomUUID(), user_id: userId, title, message, type: "info",
+    const id = notificationKey ? applicationNotificationId(notificationKey, userId) : crypto.randomUUID();
+    await jsonUpsert("notifications", { id, user_id: userId, title, message, type: "info",
       action_url: queuedForAdmin ? (adminUrl || (lead?.id ? `/admin/leads/${lead.id}` : "/admin")) : counselorUrl, is_read: false,
-      additional_data: { student_id: studentUserId, lead_id: lead?.id || null }, created_at: now });
+      additional_data: { student_id: studentUserId, lead_id: lead?.id || null, ...(notificationKey ? { event_key: notificationKey } : {}) }, created_at: now });
   }
   return { queuedForAdmin, targets };
 }
@@ -1774,6 +1788,101 @@ async function shortlistOwnedBy(userId, shortlistId) {
 function shortlistLabel(row) {
   return [row.university_name, row.course_name].filter(Boolean).join(" — ") || "a university";
 }
+
+// Starting an application is a server-side operation.  It persists the
+// record immediately, binds it to the student's existing counselor
+// assignment, and treats retries as reads of the same active application.
+router.post("/api/case/me/applications", anySession, requireStudent, async (req, res) => {
+  try {
+    const universityId = cleanText(req.body?.university_id).slice(0, 120);
+    const universityName = cleanText(req.body?.university_name).slice(0, 200);
+    const courseName = cleanText(req.body?.course_name).slice(0, 200);
+    const shortlistId = cleanText(req.body?.shortlist_id).slice(0, 120) || null;
+    if (!universityId || !universityName || !courseName) {
+      return res.status(400).json({ error: "University and course are required." });
+    }
+
+    const lead = await leadForStudent(req.user.id);
+    const email = await studentEmailFor(req.user.id);
+    let shortlist = null;
+    if (shortlistId) {
+      const found = await shortlistOwnedBy(req.user.id, shortlistId);
+      if (!found.row || !found.owned) return res.status(404).json({ error: "That shortlist entry was not found." });
+      if (!found.row.student_consent) return res.status(409).json({ error: "Give your consent on the Shortlist page before starting this application." });
+      shortlist = found.row;
+    }
+
+    const allApplications = await jsonTable("applications");
+    const existing = findExistingOpenApplication(allApplications, {
+      userId: req.user.id, shortlistId, universityId, universityName,
+    });
+    if (existing) {
+      if (shortlist) {
+        await jsonUpsert("university_shortlists", shortlistApplicationPatch(shortlist, existing, new Date().toISOString()));
+      }
+      return res.json({ ok: true, application: existing, already: true });
+    }
+
+    const now = new Date().toISOString();
+    const application = {
+      id: applicationIdFor({ userId: req.user.id, shortlistId, universityId, universityName }),
+      user_id: String(req.user.id),
+      student_email: email || null,
+      counselor_id: lead?.assigned_counselor_id || null,
+      university_id: universityId,
+      university_name: universityName,
+      country: cleanText(req.body?.country).slice(0, 100) || null,
+      city: cleanText(req.body?.city).slice(0, 100) || null,
+      course_name: courseName,
+      intake_term: cleanText(req.body?.intake_term).slice(0, 80) || null,
+      priority_level: ["high", "medium", "low"].includes(String(req.body?.priority_level)) ? String(req.body.priority_level) : "medium",
+      application_deadline: cleanText(req.body?.application_deadline).slice(0, 20) || null,
+      notes: cleanText(req.body?.notes).slice(0, 2000) || null,
+      status: "in_progress",
+      shortlist_id: shortlistId,
+      created_at: now,
+      updated_at: now,
+    };
+    await jsonUpsert("applications", application);
+    if (shortlist) await jsonUpsert("university_shortlists", shortlistApplicationPatch(shortlist, application, now));
+
+    const who = [lead?.first_name, lead?.last_name].filter(Boolean).join(" ") || email || "A student";
+    await notifyStaffAboutStudent(req.user.id, lead, {
+      title: "Student started an application",
+      message: `${who} started an application to ${universityName}.`,
+      counselorUrl: "/counselor/applications",
+      notificationKey: application.id,
+    }).catch((error) => console.error("[application] staff notify failed:", error));
+    res.status(201).json({ ok: true, application, already: false });
+  } catch (error) {
+    console.error("[application] start failed:", error);
+    res.status(500).json({ error: "Could not start the application." });
+  }
+});
+
+// A student can only withdraw their own still-open application.  Counselor
+// and final-submission status transitions remain counselor-controlled.
+router.patch("/api/case/me/applications/:id", anySession, requireStudent, async (req, res) => {
+  try {
+    if (String(req.body?.status || "") !== "withdrawn") {
+      return res.status(403).json({ error: "Students can only withdraw an application." });
+    }
+    const applications = await jsonTable("applications");
+    const application = applications.find((row) => String(row.id) === String(req.params.id));
+    if (!application || String(application.user_id || "") !== String(req.user.id)) {
+      return res.status(404).json({ error: "Application not found." });
+    }
+    if (!["draft", "in_progress", "pending_counselor", "returned"].includes(String(application.status || ""))) {
+      return res.status(409).json({ error: "This application can no longer be withdrawn." });
+    }
+    const updated = { ...application, status: "withdrawn", updated_at: new Date().toISOString() };
+    await jsonUpsert("applications", updated);
+    res.json({ ok: true, application: updated });
+  } catch (error) {
+    console.error("[application] withdraw failed:", error);
+    res.status(500).json({ error: "Could not withdraw the application." });
+  }
+});
 
 router.post("/api/case/me/shortlists/:id/decision", anySession, requireStudent, async (req, res) => {
   try {
@@ -1875,14 +1984,20 @@ router.post("/api/case/me/messages", anySession, requireStudent, async (req, res
   try {
     const lead = await leadForStudent(req.user.id);
     const { owner, conversation } = await prepareThread(req.user.id, lead);
+    const sourceId = caseMessageSourceId("student", req.user.id, req.body?.client_message_id);
+    const existing = sourceId && (await rawMessages(conversation.id)).find((m) => m.source_id === sourceId);
+    if (existing) {
+      if (existing.body !== text) return res.status(409).json({ error: "This retry id was already used for a different message." });
+      return res.json({ owner, intake_complete: Boolean(conversation.intake_complete), messages: [publicMessage(existing)] });
+    }
     const before = new Set((await rawMessages(conversation.id)).map((m) => m.id));
-    await addMessage(conversation, { senderRole: "student", senderId: req.user.id, body: text });
+    const message = await addMessage(conversation, { senderRole: "student", senderId: req.user.id, body: text, sourceId });
     void notifyStaffOfChat(conversation, lead, text);
     await handleStudentMessage(conversation, req.user.id, lead, owner, text);
     await patchConversation(conversation, { student_last_read_at: new Date().toISOString() });
     const newMessages = (await rawMessages(conversation.id)).filter((m) => !before.has(m.id));
     await deliverToWhatsApp(conversation, newMessages);
-    const created = newMessages.map((m) => publicMessage(m));
+    const created = [message, ...newMessages.filter((m) => m.id !== message.id)].map((m) => publicMessage(m));
     res.json({ owner, intake_complete: Boolean(conversation.intake_complete), messages: created });
   } catch (error) {
     console.error("[case] send failed:", error);
@@ -2054,11 +2169,18 @@ router.post("/api/case/lead/:leadId/messages", anySession, requireStaff, scopeBr
     }
     const conversation = await conversationFor(lead.user_id || null, lead.id);
     const senderRole = staffSenderRole(req.user.role);
+    const sourceId = caseMessageSourceId(senderRole, req.user.id, req.body?.client_message_id);
+    const existing = sourceId && (await rawMessages(conversation.id)).find((m) => m.source_id === sourceId);
+    if (existing) {
+      if (existing.body !== text) return res.status(409).json({ error: "This retry id was already used for a different message." });
+      return res.json({ message: publicMessage(existing, { staff: true }) });
+    }
     const message = await addMessage(conversation, {
       senderRole,
       senderId: req.user.id,
       senderName: await personName(req.user.id, senderRole === "admin" ? "Fly Masters" : senderRole),
       body: text,
+      sourceId,
     });
     await patchConversation(conversation, { staff_last_read_at: new Date().toISOString() });
     await deliverToWhatsApp(conversation, [message]);

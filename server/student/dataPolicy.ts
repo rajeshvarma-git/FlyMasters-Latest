@@ -19,6 +19,7 @@
  */
 import { getPool } from "./postgres";
 import { getSessionByToken, readBearerToken } from "./studentAuth";
+import { commonCountryDocumentsFor, countryDocumentsEnabled, canStudentUseCountryDocument } from "../lib/countryDocumentApproval.mjs";
 
 export type Viewer = {
   userId: string;
@@ -52,6 +53,7 @@ const PUBLIC_INSERT = new Set(["newsletter_subscriptions", "travel_inquiries"]);
 const OWNED = new Set([
   "profiles", "student_leads", "documents", "document_versions", "document_notifications", "document_requests",
   "document_audit_logs", "student_document_progress", "student_checklists", "applications",
+  "student_country_document_approvals",
   "application_status_updates", "user_favorites", "notifications", "chat_sessions", "chat_messages",
   "chat_conversations", "ai_chat_messages", "private_conversations", "private_messages",
   "telecaller_conversations", "telecaller_messages", "university_shortlists", "shortlist_notes",
@@ -65,7 +67,7 @@ const OWNED = new Set([
  * counsellor runs the application. Writing these rows directly would let a
  * student mark a shortlist "applied" or invent an application.
  */
-const READ_ONLY_OWNED = new Set(["user_roles", "university_shortlists_admin", "university_shortlists", "applications", "application_status_updates"]);
+const READ_ONLY_OWNED = new Set(["user_roles", "university_shortlists_admin", "university_shortlists", "applications", "application_status_updates", "student_country_document_approvals"]);
 
 const OWNER_ID_FIELDS = ["user_id", "student_id", "student_user_id", "sender_id", "receiver_id"];
 const OWNER_EMAIL_FIELDS = ["email", "student_email", "user_email"];
@@ -142,8 +144,11 @@ async function documentChecklistRows(viewer: Viewer | null, rows: any[]) {
     return counselorIds;
   };
   const out: any[] = [];
+  const lead = viewer ? await studentLead(viewer) : null;
+  const enabled = lead ? await countryDocumentsEnabled(lead) : false;
   for (const row of rows) {
     if (row?.staff_only) continue;
+    if (lead && !enabled && commonCountryDocumentsFor(lead, [row]).length) continue;
     const targets = list(row?.student_ids);
     if (targets.length) {
       if (viewer && targets.some((id) => viewer.keys.has(id))) out.push(row);
@@ -160,6 +165,41 @@ async function documentChecklistRows(viewer: Viewer | null, rows: any[]) {
   return out;
 }
 
+async function studentLead(viewer: Viewer) {
+  let rows: any[] = [];
+  try {
+    rows = (await getPool().query(
+      "SELECT id, data FROM app_records WHERE table_name = 'student_leads' AND (data->>'user_id' = $1 OR id = ANY($2::text[])) LIMIT 1",
+      [viewer.userId, [...viewer.keys]],
+    )).rows;
+  } catch {
+    // Unit tests intentionally run without PostgreSQL. Production always has
+    // this store; without it no country-common requirement can be identified.
+    rows = [];
+  }
+  const row = rows[0];
+  return row ? { ...(row.data || {}), id: String(row.id) } : { id: viewer.userId, user_id: viewer.userId };
+}
+
+async function countryChecklistItems() {
+  try {
+    return (await getPool().query("SELECT data FROM app_records WHERE table_name = 'document_checklists'"))
+      .rows.map((row) => row.data || {});
+  } catch {
+    return [];
+  }
+}
+
+async function visibleCountryDocumentRows(viewer: Viewer, rows: any[]) {
+  const lead = await studentLead(viewer);
+  const items = await countryChecklistItems();
+  if (!items.length) return rows;
+  const allowed = await Promise.all(rows.map(async (row) =>
+    !row?.document_type || await canStudentUseCountryDocument(lead, row.document_type, items),
+  ));
+  return rows.filter((_row, index) => allowed[index]);
+}
+
 export async function visibleRows(viewer: Viewer | null, table: string, rows: any[]): Promise<any[] | null> {
   if (viewer?.admin) return rows;
   if (table === "document_checklists") return documentChecklistRows(viewer, rows);
@@ -169,6 +209,9 @@ export async function visibleRows(viewer: Viewer | null, table: string, rows: an
   if (!viewer) return PUBLIC_READ.has(table) ? rows : null;
   if (!OWNED.has(table)) return null;
   const mine = rows.filter((row) => ownsRow(viewer, row));
+  if (["documents", "document_requests", "document_versions"].includes(table)) {
+    return visibleCountryDocumentRows(viewer, mine);
+  }
   if (table === "profiles") {
     const others = await staffNameRows(rows.filter((row) => !ownsRow(viewer, row)));
     return [...mine, ...others];
@@ -191,6 +234,16 @@ export async function checkMutation(viewer: Viewer | null, mutation: Mutation, m
   if (!OWNED.has(table) || READ_ONLY_OWNED.has(table)) return "Not allowed.";
   const fieldError = studentFieldError(mutation, matching);
   if (fieldError) return fieldError;
+  if (table === "documents" && (mutation.action === "insert" || mutation.action === "upsert" || mutation.action === "update")) {
+    const lead = await studentLead(viewer);
+    const items = await countryChecklistItems();
+    const incomingDocs = mutation.action === "update" ? matching.map((row) => ({ ...row, ...(mutation.payload || {}) })) : mutation.rows || [];
+    for (const doc of incomingDocs) {
+      if (doc?.document_type && !(await canStudentUseCountryDocument(lead, doc.document_type, items))) {
+        return "Your country-wise common documents are not enabled yet. Please wait for your counselor's approval.";
+      }
+    }
+  }
 
   const rows = Array.isArray(mutation.rows) ? mutation.rows : [];
   const incoming = mutation.action === "update" ? [mutation.payload || {}] : rows;
@@ -310,7 +363,13 @@ export async function canUseFile(viewer: Viewer | null, path: string, mode: "rea
     "SELECT data FROM app_records WHERE table_name IN ('documents','document_versions','travel_document_uploads') AND data->>'file_path' = $1",
     [path],
   ).catch(() => ({ rows: [] as any[] }));
-  return rows.some((r) => ownsRow(viewer, r.data));
+  const owned = rows.map((r) => r.data).filter((row) => ownsRow(viewer, row));
+  if (!owned.length) return false;
+  const lead = await studentLead(viewer);
+  const items = await countryChecklistItems();
+  return (await Promise.all(owned.map((row) =>
+    !row?.document_type || canStudentUseCountryDocument(lead, row.document_type, items),
+  ))).some(Boolean);
 }
 
 /** Rows of `table` matched by a mutation's filters (same matching the store uses). */

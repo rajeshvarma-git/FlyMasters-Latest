@@ -61,10 +61,10 @@ export function getMyCase() {
   return call<{ conversation_id: string; owner: CaseOwner; intake_complete: boolean; messages: CaseMessage[] }>('/case/me');
 }
 
-export function sendCaseMessage(message: string) {
+export function sendCaseMessage(message: string, clientMessageId?: string) {
   return call<{ owner: CaseOwner; intake_complete: boolean; messages: CaseMessage[] }>('/case/me/messages', {
     method: 'POST',
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({ message, ...(clientMessageId ? { client_message_id: clientMessageId } : {}) }),
   });
 }
 

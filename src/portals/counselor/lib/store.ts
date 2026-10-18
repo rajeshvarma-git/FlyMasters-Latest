@@ -293,6 +293,17 @@ export async function requestStudentDocuments(studentId: string, documentTypes: 
   );
 }
 
+export async function fetchCountryDocumentsApproval(studentId: string) {
+  return api<{ student_id: string; enabled: boolean }>(`/document-setup/students/${studentId}/country-documents-approval`);
+}
+
+export async function setCountryDocumentsApproval(studentId: string, enabled: boolean) {
+  return api<{ student_id: string; enabled: boolean }>(`/document-setup/students/${studentId}/country-documents-approval`, {
+    method: "PUT",
+    body: { enabled },
+  });
+}
+
 export async function addShortlist(row: Omit<LocalShortlist, "id" | "created_at">) {
   await api("/shortlists", { method: "POST", body: row });
   try {

@@ -24,6 +24,7 @@ import crypto from "crypto";
 import { pool, jsonTable, jsonUpsert } from "../lib/db.mjs";
 import { ROLES, ADMIN_ROLES, session, requireRole, branchScope, audit } from "../lib/auth.mjs";
 import { documentCountries, normalizeCountry } from "../lib/documentTargeting.mjs";
+import { countryDocumentApproval, setCountryDocumentsEnabled } from "../lib/countryDocumentApproval.mjs";
 import { myAssignedLeads, resolveCounselorAliases } from "./counselor.mjs";
 
 const router = express.Router();
@@ -202,6 +203,33 @@ function describe(row, studentsById) {
     legacy_degrees: legacyDegrees,
   };
 }
+
+async function approvalStudent(req, ref) {
+  const student = (await studentsFor(req)).find((item) => String(item.id) === String(ref) || String(item.lead_id) === String(ref));
+  if (!student) {
+    const error = new Error("This student is not available to you.");
+    error.status = 403;
+    throw error;
+  }
+  return student;
+}
+
+router.get(["/api/document-setup/students/:id/country-documents-approval", "/api/counselor/document-setup/students/:id/country-documents-approval"], docAuth, async (req, res) => {
+  try {
+    const student = await approvalStudent(req, req.params.id);
+    const approval = await countryDocumentApproval(student);
+    res.json({ student_id: student.id, enabled: approval?.enabled === true, approval: approval || null });
+  } catch (error) { fail(res, error, 403); }
+});
+
+router.put(["/api/document-setup/students/:id/country-documents-approval", "/api/counselor/document-setup/students/:id/country-documents-approval"], docAuth, async (req, res) => {
+  try {
+    const student = await approvalStudent(req, req.params.id);
+    const approval = await setCountryDocumentsEnabled(student, req.body?.enabled === true, req.user.id);
+    await audit(req, "document_setup.country_documents_approval", "student_country_document_approvals", approval.id, { student_id: student.id, enabled: approval.enabled }).catch(() => null);
+    res.json({ student_id: student.id, enabled: approval.enabled, approval });
+  } catch (error) { fail(res, error, 403); }
+});
 
 router.get(["/api/document-setup", "/api/counselor/document-setup"], docAuth, async (req, res) => {
   try {

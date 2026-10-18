@@ -1,7 +1,6 @@
 import { useMemo, useState } from "react";
 import { format } from "date-fns";
 import { BookOpen, GraduationCap, MapPin, Search } from "lucide-react";
-import { useAuth } from "@counselor/context/AuthContext";
 import { displayName } from "@counselor/lib/utils";
 import { setApplicationStatus, useLocalStore } from "@counselor/lib/store";
 import { Badge } from "@counselor/components/ui/Badge";
@@ -40,7 +39,6 @@ function displayStatus(status: string) {
 }
 
 export default function Applications() {
-  const { user } = useAuth();
   const store = useLocalStore();
   const [query, setQuery] = useState("");
   const [studentId, setStudentId] = useState("all");
@@ -63,17 +61,16 @@ export default function Applications() {
   const [comments, setComments] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const students = store.leads.filter((lead) => lead.assigned_counselor_id === user?.id);
-  const studentIds = new Set([
-    ...students.map((lead) => lead.user_id),
-    ...store.conversations.filter((item) => item.counselor_id === user?.id).map((item) => item.student_id),
-  ]);
+  const students = store.leads;
   const names: Record<string, string> = {};
   students.forEach((lead) => {
     names[lead.user_id] = displayName(lead.first_name, lead.last_name, lead.email);
   });
 
-  const apps = (store.applications || []).filter((app) => studentIds.has(app.user_id));
+  // The server already returns only applications for this counselor's assigned
+  // students. Avoid a second client-side assignment filter hiding a freshly
+  // created application while the lead list catches up.
+  const apps = store.applications || [];
   const pendingCount = apps.filter((app) => needsReview(app.status)).length;
 
   const filtered = useMemo(() => {
@@ -112,7 +109,7 @@ export default function Applications() {
         <div>
           <h1 className="text-2xl font-bold">Applications</h1>
           <p className="text-slate-600">
-            When a student ticks a university on their shortlist, start the application from Shortlists. Move it through each step here — the student sees every change.
+            Student applications appear here as soon as they are started. Move them through each step here — the student sees every change.
           </p>
         </div>
         <div className="relative w-full max-w-xs">
@@ -224,7 +221,7 @@ export default function Applications() {
             <p className="font-semibold">{apps.length === 0 ? "No applications yet" : "No applications match this filter"}</p>
             <p className="mt-1 text-sm text-slate-500">
               {apps.length === 0
-                ? "When a student accepts a university on their shortlist, start the application from Shortlists and it appears here."
+                ? "Student applications appear here automatically when they are started."
                 : "Try All, or pick a different student."}
             </p>
           </Card>

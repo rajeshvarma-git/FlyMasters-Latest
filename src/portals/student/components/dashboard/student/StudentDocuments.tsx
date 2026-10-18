@@ -86,6 +86,7 @@ export function StudentDocuments() {
    */
   const [assigned, setAssigned] = useState<AssignedChecklist[]>([]);
   const [assignedLoaded, setAssignedLoaded] = useState(false);
+  const [countryDocumentsEnabled, setCountryDocumentsEnabled] = useState(false);
 
   useEffect(() => {
     if (user) {
@@ -123,10 +124,23 @@ export function StudentDocuments() {
     await Promise.all([
       fetchDocuments(),
       fetchDocumentRequests(),
+      fetchCountryDocumentApproval(),
       // Once a checklist is activated, that replaces the profile-derived one.
       assignedData.activated ? Promise.resolve() : fetchChecklistFromProfile(),
     ]);
     if (!silent) setLoading(false);
+  };
+
+  const fetchCountryDocumentApproval = async () => {
+    if (!user) return;
+    const { data, error } = await supabase
+      .from('student_country_document_approvals')
+      .select('enabled')
+      .eq('student_id', user.id)
+      .maybeSingle();
+    // Missing or unreadable approval is intentionally not enabled. The server
+    // separately filters document rows and rejects a direct submission.
+    setCountryDocumentsEnabled(!error && data?.enabled === true);
   };
 
   const fetchDocuments = async (silent = false) => {
@@ -531,6 +545,17 @@ export function StudentDocuments() {
       <p className="text-sm text-muted-foreground md:hidden">
         Upload and manage your application documents
       </p>
+
+      <Card className="glass-card">
+        <CardHeader className="p-4 md:p-6">
+          <CardTitle className="text-base md:text-lg">Country-wise common documents</CardTitle>
+          <CardDescription>
+            {countryDocumentsEnabled
+              ? 'Enabled by your counselor. Documents that match your country are available below.'
+              : 'Not Enabled — Your country-wise common documents will become available after your counselor approves them.'}
+          </CardDescription>
+        </CardHeader>
+      </Card>
 
       {/* Progress Overview */}
       <Card className="glass-card overflow-hidden">

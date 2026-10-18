@@ -20,6 +20,8 @@ import { sendVerificationEmail } from "../lib/email.mjs";
 import { syncConversationFromLead } from "../lib/whatsappStore.mjs";
 import { pool, jsonTable, jsonUpsert } from "../lib/db.mjs";
 import { documentAppliesToStudent, studentForTargeting } from "../lib/documentTargeting.mjs";
+import { shortlistApplicationPatch } from "../lib/applicationWorkflow.mjs";
+import { commonCountryDocumentsFor, countryDocumentsEnabled } from "../lib/countryDocumentApproval.mjs";
 import {
   ROOT as root,
   IS_PRODUCTION,
@@ -1463,6 +1465,12 @@ router.patch("/api/counselor/applications/:id", counselorAuth, async (req, res) 
     updated_at: now,
   };
   await jsonUpsert("applications", next);
+  // The student shortlist is a persisted summary, not a frontend cache. Only
+  // touch the application explicitly linked to this shortlist.
+  const shortlists = await jsonTable("university_shortlists");
+  const shortlist = shortlists.find((row) => String(row.id) === String(found.shortlist_id || ""))
+    || shortlists.find((row) => String(row.application_id || "") === String(found.id));
+  if (shortlist) await jsonUpsert("university_shortlists", shortlistApplicationPatch(shortlist, next, now));
   const uni = found.university_name || "your university";
   await tellStudent(found.user_id, step.title, comments || step.line(uni)).catch(() => null);
   res.json({ ok: true, application: asApplication(next) });
@@ -1487,7 +1495,11 @@ router.post("/api/counselor/shortlists/:id/start-application", counselorAuth, as
     }
     const apps = await jsonTable("applications");
     const existing = apps.find((row) => String(row.shortlist_id || "") === String(shortlist.id));
-    if (existing) return res.json({ ok: true, application: asApplication(existing), already: true });
+    if (existing) {
+      const now = new Date().toISOString();
+      await jsonUpsert("university_shortlists", shortlistApplicationPatch(shortlist, existing, now));
+      return res.json({ ok: true, application: asApplication(existing), already: true });
+    }
 
     const now = new Date().toISOString();
     const location = String(shortlist.location || "");
@@ -1512,7 +1524,7 @@ router.post("/api/counselor/shortlists/:id/start-application", counselorAuth, as
       updated_at: now,
     };
     await jsonUpsert("applications", application);
-    await jsonUpsert("university_shortlists", { ...shortlist, status: "applied", application_id: application.id, updated_at: now });
+    await jsonUpsert("university_shortlists", shortlistApplicationPatch(shortlist, application, now));
     const uni = [application.university_name, application.course_name].filter(Boolean).join(" — ") || "your university";
     await tellStudent(application.user_id, "Application started", `Your counsellor has started your application to ${uni}.`).catch(() => null);
     res.json({ ok: true, application: asApplication(application) });
@@ -1923,9 +1935,12 @@ router.get("/api/counselor/students/:id/checklist", counselorAuth, async (req, r
     const countries = student.preferred_countries || [];
     const degree = student.qualification_level || student.degree_level || "";
 
+    const countryDocumentsAreEnabled = await countryDocumentsEnabled(student);
+    const commonCountry = new Set(commonCountryDocumentsFor(student, items).map((item) => String(item.id)));
     const applicable = items
       .filter((item) => item.is_active !== false)
       .filter((item) => checklistApplies(item, student))
+      .filter((item) => countryDocumentsAreEnabled || !commonCountry.has(String(item.id)))
       .sort((a, b) => Number(a.display_order || 99) - Number(b.display_order || 99));
 
     const studentUserId = String(student.user_id || student.id);
@@ -1960,6 +1975,7 @@ router.get("/api/counselor/students/:id/checklist", counselorAuth, async (req, r
     const required = checklist.filter((row) => row.is_required);
     res.json({
       student_id: studentUserId,
+      country_documents_enabled: countryDocumentsAreEnabled,
       countries,
       degree,
       items: checklist,

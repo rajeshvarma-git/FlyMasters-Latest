@@ -24,6 +24,12 @@ export function readStoredUser<T>() {
 }
 
 export async function api<T = unknown>(path: string, options: { method?: string; body?: unknown; auth?: boolean } = {}) {
+  // LOCAL PREVIEW ONLY: dev server + VITE_COUNSELOR_PREVIEW=true. Compiled out of
+  // production builds. Delete this block and lib/previewMode.ts to remove it.
+  if (import.meta.env.DEV) {
+    const { isCounselorPreview, previewApi } = await import("./previewMode");
+    if (isCounselorPreview()) return (await previewApi(path, options)) as T;
+  }
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (options.auth !== false) {
     const token = getToken();
