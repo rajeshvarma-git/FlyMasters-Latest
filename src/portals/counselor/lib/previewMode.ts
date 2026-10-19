@@ -3,13 +3,14 @@
 //
 // Active only when ALL of these hold:
 //   - the Vite dev server is running (import.meta.env.DEV; false in every build)
-//   - VITE_COUNSELOR_PREVIEW=true is set when starting the dev server
+//   - VITE_COUNSELOR_PREVIEW=true (or VITE_PREVIEW=true, which also previews the
+//     student portal) is set when starting the dev server
 // When active, the counselor portal skips sign-in and every API call is answered
 // from the fictional data below. Nothing is sent to the API, PostgreSQL or Railway,
 // and nothing is saved: writes only change this in-memory preview data.
 
 export function isCounselorPreview() {
-  return import.meta.env.DEV && import.meta.env.VITE_COUNSELOR_PREVIEW === "true";
+  return import.meta.env.DEV && (import.meta.env.VITE_COUNSELOR_PREVIEW === "true" || import.meta.env.VITE_PREVIEW === "true");
 }
 
 const PREVIEW_COUNSELOR_ID = "preview-counselor";

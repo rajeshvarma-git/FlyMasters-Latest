@@ -1,5 +1,6 @@
 import { publicMediaPath, isPublicMediaPath } from '@shared/publicMedia';
 import { apiUrl } from '@student/lib/apiBase';
+import { isStudentPreview, mutatePreview, previewRows, studentPreviewSession } from '@student/lib/previewMode';
 
 export type Json =
   | string
@@ -109,6 +110,7 @@ async function fetchJson(url: string, init?: RequestInit, timeoutMs = 15000) {
 }
 
 async function loadAuth() {
+  if (isStudentPreview()) return { session: studentPreviewSession };
   const local = readBrowserSession();
   if (!local?.access_token) return { session: null };
   try {
@@ -125,6 +127,7 @@ async function loadAuth() {
 }
 
 function readBrowserSession(): Session | null {
+  if (isStudentPreview()) return studentPreviewSession;
   try {
     const raw = localStorage.getItem(SESSION_KEY);
     if (!raw) return null;
@@ -141,6 +144,7 @@ function readBrowserSession(): Session | null {
 }
 
 function writeBrowserSession(session: Session | null) {
+  if (isStudentPreview()) return;
   try {
     if (!session?.user) localStorage.removeItem(SESSION_KEY);
     else localStorage.setItem(SESSION_KEY, JSON.stringify(session));
@@ -150,20 +154,30 @@ function writeBrowserSession(session: Session | null) {
 }
 
 async function loadTable(table: string) {
+  if (isStudentPreview()) return previewRows(table);
   const payload = await fetchJson(`${apiUrl('/__local_db')}?table=${encodeURIComponent(table)}`);
   return Array.isArray(payload.rows) ? payload.rows : [];
 }
 
 async function saveSession(session: Session | null) {
+  if (isStudentPreview()) {
+    notifyListeners();
+    return;
+  }
   writeBrowserSession(session);
   notifyListeners();
 }
 
 async function loadDb() {
+  if (isStudentPreview()) return {};
   return fetchJson(apiUrl("/__local_db"));
 }
 
 async function saveDb(db: any) {
+  if (isStudentPreview()) {
+    notifyListeners();
+    return;
+  }
   const res = await fetch(apiUrl("/__local_db"), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -177,6 +191,11 @@ async function saveDb(db: any) {
 }
 
 async function mutateDb(body: Record<string, any>) {
+  if (isStudentPreview()) {
+    const payload = mutatePreview(body);
+    notifyListeners();
+    return payload;
+  }
   const payload = await fetchJson(
     apiUrl("/__local_db"),
     {
