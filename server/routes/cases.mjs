@@ -37,7 +37,7 @@ import { pool, jsonTable, jsonFind, jsonUpsert } from "../lib/db.mjs";
 import { anySession, branchScope, ROLES } from "../lib/auth.mjs";
 import { geminiJson, geminiConfigured } from "../lib/gemini.mjs";
 import { sendWhatsAppText, sendWhatsAppOutreach, outreachTemplateName, outreachButtonText, whatsappSendConfigured, normalizeWaPhone } from "../lib/waSend.mjs";
-import { applicationIdFor, applicationNotificationId, findExistingOpenApplication, shortlistApplicationPatch } from "../lib/applicationWorkflow.mjs";
+import { applicationNotificationId, buildApplicationEvent, shortlistApplicationPatch, STUDENT_WITHDRAWABLE } from "../lib/applicationWorkflow.mjs";
 
 const router = express.Router();
 
@@ -1789,75 +1789,13 @@ function shortlistLabel(row) {
   return [row.university_name, row.course_name].filter(Boolean).join(" — ") || "a university";
 }
 
-// Starting an application is a server-side operation.  It persists the
-// record immediately, binds it to the student's existing counselor
-// assignment, and treats retries as reads of the same active application.
-router.post("/api/case/me/applications", anySession, requireStudent, async (req, res) => {
-  try {
-    const universityId = cleanText(req.body?.university_id).slice(0, 120);
-    const universityName = cleanText(req.body?.university_name).slice(0, 200);
-    const courseName = cleanText(req.body?.course_name).slice(0, 200);
-    const shortlistId = cleanText(req.body?.shortlist_id).slice(0, 120) || null;
-    if (!universityId || !universityName || !courseName) {
-      return res.status(400).json({ error: "University and course are required." });
-    }
-
-    const lead = await leadForStudent(req.user.id);
-    const email = await studentEmailFor(req.user.id);
-    let shortlist = null;
-    if (shortlistId) {
-      const found = await shortlistOwnedBy(req.user.id, shortlistId);
-      if (!found.row || !found.owned) return res.status(404).json({ error: "That shortlist entry was not found." });
-      if (!found.row.student_consent) return res.status(409).json({ error: "Give your consent on the Shortlist page before starting this application." });
-      shortlist = found.row;
-    }
-
-    const allApplications = await jsonTable("applications");
-    const existing = findExistingOpenApplication(allApplications, {
-      userId: req.user.id, shortlistId, universityId, universityName,
-    });
-    if (existing) {
-      if (shortlist) {
-        await jsonUpsert("university_shortlists", shortlistApplicationPatch(shortlist, existing, new Date().toISOString()));
-      }
-      return res.json({ ok: true, application: existing, already: true });
-    }
-
-    const now = new Date().toISOString();
-    const application = {
-      id: applicationIdFor({ userId: req.user.id, shortlistId, universityId, universityName }),
-      user_id: String(req.user.id),
-      student_email: email || null,
-      counselor_id: lead?.assigned_counselor_id || null,
-      university_id: universityId,
-      university_name: universityName,
-      country: cleanText(req.body?.country).slice(0, 100) || null,
-      city: cleanText(req.body?.city).slice(0, 100) || null,
-      course_name: courseName,
-      intake_term: cleanText(req.body?.intake_term).slice(0, 80) || null,
-      priority_level: ["high", "medium", "low"].includes(String(req.body?.priority_level)) ? String(req.body.priority_level) : "medium",
-      application_deadline: cleanText(req.body?.application_deadline).slice(0, 20) || null,
-      notes: cleanText(req.body?.notes).slice(0, 2000) || null,
-      status: "in_progress",
-      shortlist_id: shortlistId,
-      created_at: now,
-      updated_at: now,
-    };
-    await jsonUpsert("applications", application);
-    if (shortlist) await jsonUpsert("university_shortlists", shortlistApplicationPatch(shortlist, application, now));
-
-    const who = [lead?.first_name, lead?.last_name].filter(Boolean).join(" ") || email || "A student";
-    await notifyStaffAboutStudent(req.user.id, lead, {
-      title: "Student started an application",
-      message: `${who} started an application to ${universityName}.`,
-      counselorUrl: "/counselor/applications",
-      notificationKey: application.id,
-    }).catch((error) => console.error("[application] staff notify failed:", error));
-    res.status(201).json({ ok: true, application, already: false });
-  } catch (error) {
-    console.error("[application] start failed:", error);
-    res.status(500).json({ error: "Could not start the application." });
-  }
+// Applications are started by the student's counselor, never by the student:
+// a saved or recommended university is only an interest. The student's tick on
+// My Shortlists tells the counselor, who starts the application through
+// POST /api/counselor/shortlists/:id/start-application. This route is kept only
+// so an old browser tab gets a clear answer instead of a silent 404.
+router.post("/api/case/me/applications", anySession, requireStudent, (_req, res) => {
+  res.status(403).json({ error: "Your counselor starts applications. Tick the university on My Shortlists and they will take it forward." });
 });
 
 // A student can only withdraw their own still-open application.  Counselor
@@ -1872,11 +1810,27 @@ router.patch("/api/case/me/applications/:id", anySession, requireStudent, async 
     if (!application || String(application.user_id || "") !== String(req.user.id)) {
       return res.status(404).json({ error: "Application not found." });
     }
-    if (!["draft", "in_progress", "pending_counselor", "returned"].includes(String(application.status || ""))) {
+    if (!STUDENT_WITHDRAWABLE.has(String(application.status || ""))) {
       return res.status(409).json({ error: "This application can no longer be withdrawn." });
     }
-    const updated = { ...application, status: "withdrawn", updated_at: new Date().toISOString() };
+    const now = new Date().toISOString();
+    const updated = { ...application, status: "withdrawn", status_changed_at: now, updated_at: now };
     await jsonUpsert("applications", updated);
+    await jsonUpsert("application_status_updates", buildApplicationEvent({
+      application: updated, fromStatus: application.status, status: "withdrawn",
+      note: "Withdrawn by the student.", actor: { id: req.user.id, role: "student", name: "" }, at: now,
+    }));
+    const shortlists = await jsonTable("university_shortlists");
+    const shortlist = shortlists.find((row) => String(row.id) === String(application.shortlist_id || ""))
+      || shortlists.find((row) => String(row.application_id || "") === String(application.id));
+    if (shortlist) await jsonUpsert("university_shortlists", shortlistApplicationPatch(shortlist, updated, now));
+    const lead = await leadForStudent(req.user.id).catch(() => null);
+    await notifyStaffAboutStudent(req.user.id, lead, {
+      title: "Student withdrew an application",
+      message: `${[lead?.first_name, lead?.last_name].filter(Boolean).join(" ") || "A student"} withdrew the application to ${application.university_name || "a university"}.`,
+      counselorUrl: "/counselor/applications",
+      notificationKey: `${application.id}:withdrawn`,
+    }).catch(() => null);
     res.json({ ok: true, application: updated });
   } catch (error) {
     console.error("[application] withdraw failed:", error);

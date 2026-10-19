@@ -17,14 +17,15 @@ import { Calendar, Check, DollarSign, GraduationCap, Info, MapPin, RotateCcw, Us
 import { format } from 'date-fns';
 import { collectStudentShortlistKeys, shortlistBelongsToStudent } from '@student/lib/studentShortlists';
 import { decideShortlist, shortlistMyPick } from '@student/lib/shortlistDecisions';
+import { statusInfo } from '@shared/applicationJourney';
 
 /**
- * My Shortlists — one list of every university on the table for this student:
- * the ones their counsellor recommends, the ones they picked themselves, and
- * the ones they saved with the heart. Each gets a green tick (go ahead) or a
- * red cross (not interested). A tick hands it to the counsellor, who starts
- * and runs the application; the student follows its progress here. There is
- * no student application form any more.
+ * My Shortlists - exactly two lists of universities that are only *interests*:
+ *   A. Saved by you / your interests - hearted or picked by the student.
+ *   B. Recommended by your counselor.
+ * Neither is an application. A tick tells the counselor you want to go ahead;
+ * only the counselor can start an application, and once they do the entry
+ * shows the application's real stage and links to My Applications.
  */
 
 type ShortlistRow = {
@@ -58,21 +59,6 @@ type ApplicationRow = { id: string; shortlist_id?: string | null; university_id?
 type Item =
   | { kind: 'shortlist'; key: string; row: ShortlistRow }
   | { kind: 'saved'; key: string; uni: SavedUniversity };
-
-const APPLICATION_LABELS: Record<string, string> = {
-  in_progress: 'Application in progress',
-  submitted_to_university: 'Submitted to the university',
-  offer_received: 'Offer received 🎉',
-  offer_accepted: 'Offer accepted',
-  enrolled: 'Enrolled',
-  rejected: 'Not successful this time',
-  withdrawn: 'Withdrawn',
-  counselor_approved: 'Approved',
-  returned: 'Returned by your counsellor',
-  pending_counselor: 'With your counsellor',
-  submitted: 'With your counsellor',
-  draft: 'Draft',
-};
 
 function decisionOf(row: ShortlistRow): 'applied' | 'accepted' | 'declined' | 'pending' {
   const status = String(row.status || '').toLowerCase();
@@ -159,18 +145,15 @@ export function UniversityShortlists() {
     return list;
   }, [shortlists, saved]);
 
+  // A: the student's own interest (heart or own pick). B: the counselor's recommendations.
   const groups = useMemo(() => {
-    const pending: Item[] = [];
-    const going: Item[] = [];
-    const declined: Item[] = [];
+    const mine: Item[] = [];
+    const recommended: Item[] = [];
     for (const item of items) {
-      if (item.kind === 'saved') { pending.push(item); continue; }
-      const state = decisionOf(item.row);
-      if (state === 'declined') declined.push(item);
-      else if (state === 'pending') pending.push(item);
-      else going.push(item);
+      if (item.kind === 'saved' || item.row.source === 'student') mine.push(item);
+      else recommended.push(item);
     }
-    return { pending, going, declined };
+    return { mine, recommended };
   }, [items]);
 
   const applicationFor = (row: ShortlistRow) => {
@@ -204,8 +187,8 @@ export function UniversityShortlists() {
         university_id: item.uni.id,
         university_name: item.uni.name,
         location: [item.uni.city, item.uni.country].filter(Boolean).join(', '),
-      }), 'Sent to your counsellor — they will start the application')
-    : run(item.key, () => decideShortlist(item.row.id, 'accept'), 'Accepted — your counsellor will start the application');
+      }), 'Sent to your counsellor - they will decide whether to start an application')
+    : run(item.key, () => decideShortlist(item.row.id, 'accept'), 'Accepted - your counsellor will decide whether to start an application');
 
   const decline = (item: Item) => item.kind === 'saved'
     ? run(item.key, async () => {
@@ -253,14 +236,25 @@ export function UniversityShortlists() {
             {subtitle(item) ? <p className="text-sm text-muted-foreground">{subtitle(item)}</p> : null}
             <div className="mt-1 flex flex-wrap gap-2">
               <Badge variant="outline">{sourceLabel(item)}</Badge>
-              {state === 'accepted' ? <Badge className="bg-emerald-600 text-white">Accepted — your counsellor will start it</Badge> : null}
+              {item.kind === 'saved' ? <Badge variant="secondary">Saved - not an application</Badge> : null}
+              {item.kind === 'shortlist' && state === 'pending' ? <Badge variant="secondary">Waiting for your decision</Badge> : null}
+              {state === 'accepted' ? <Badge className="bg-emerald-600 text-white">Interested - waiting for your counselor</Badge> : null}
               {state === 'applied' ? (
-                <Badge className="bg-purple-600 text-white">{APPLICATION_LABELS[applicationStatus || 'in_progress'] || 'Application in progress'}</Badge>
+                <Badge className="bg-purple-600 text-white">{statusInfo(applicationStatus || 'in_progress').label}</Badge>
               ) : null}
               {state === 'declined' ? <Badge variant="secondary">Not interested</Badge> : null}
             </div>
-            {state === 'applied' && app?.counselor_comments ? (
-              <p className="mt-2 text-sm text-muted-foreground">Counsellor: {app.counselor_comments}</p>
+            {state === 'applied' ? (
+              <p className="mt-2 text-sm text-muted-foreground">
+                {statusInfo(applicationStatus || 'in_progress').summary}{' '}
+                <Link className="font-medium text-primary underline" to={`/student/applications${app ? `#${encodeURIComponent(app.id)}` : ''}`}>View application</Link>
+              </p>
+            ) : null}
+            {item.kind === 'shortlist' && state !== 'applied' && item.row.counselor_notes && item.row.source !== 'student' ? (
+              <p className="mt-2 line-clamp-2 text-sm text-muted-foreground">Counselor: {item.row.counselor_notes}</p>
+            ) : null}
+            {item.kind === 'shortlist' && safeDate(item.row.application_deadline) && state !== 'applied' ? (
+              <p className="mt-1 text-xs text-muted-foreground">Deadline: {safeDate(item.row.application_deadline)}</p>
             ) : null}
           </div>
           <div className="flex items-center gap-2">
@@ -314,48 +308,36 @@ export function UniversityShortlists() {
         <div>
           <h1 className="text-3xl font-bold">My Shortlists</h1>
           <p className="text-muted-foreground">
-            Tick <span className="font-medium text-emerald-700">✓</span> the universities you want to go ahead with, or
-            cross <span className="font-medium text-rose-700">✗</span> the ones you don&apos;t. Your counsellor starts the application for every tick.
+            Universities you are interested in. These are not applications - tick <span className="font-medium text-emerald-700">&#10003;</span> the ones you want to
+            go ahead with, or cross <span className="font-medium text-rose-700">&#10007;</span> the ones you don&apos;t. Only your counselor can start an application, and
+            it then appears under <Link to="/student/applications" className="font-medium text-primary underline">My Applications</Link>.
           </p>
         </div>
       </div>
 
-      {items.length === 0 ? (
-        <Card className="glass-card">
-          <CardContent className="py-12 text-center">
-            <GraduationCap className="mx-auto mb-4 h-16 w-16 text-muted-foreground opacity-50" />
-            <h3 className="mb-2 text-lg font-semibold">Nothing here yet</h3>
-            <p className="mb-4 text-muted-foreground">
-              Shortlist universities on the Universities page, or wait for your counsellor&apos;s recommendations.
-            </p>
-            <div className="flex flex-wrap justify-center gap-2">
-              <Button asChild><Link to="/student/universities">Browse universities</Link></Button>
-              <Button asChild variant="outline"><Link to="/student/messages">Message your advisor</Link></Button>
-            </div>
-          </CardContent>
-        </Card>
-      ) : null}
+      <section className="space-y-3" aria-labelledby="shortlist-mine">
+        <h2 id="shortlist-mine" className="text-lg font-semibold">Saved by you / your interests ({groups.mine.length})</h2>
+        {groups.mine.length === 0 ? (
+          <Card className="glass-card">
+            <CardContent className="flex flex-wrap items-center justify-between gap-3 py-6">
+              <p className="text-sm text-muted-foreground">Universities you save with the heart, or pick yourself, appear here.</p>
+              <Button asChild variant="outline" size="sm"><Link to="/student/universities">Browse universities</Link></Button>
+            </CardContent>
+          </Card>
+        ) : groups.mine.map(renderCard)}
+      </section>
 
-      {groups.pending.length > 0 ? (
-        <section className="space-y-3">
-          <h2 className="text-lg font-semibold">Waiting for your decision ({groups.pending.length})</h2>
-          {groups.pending.map(renderCard)}
-        </section>
-      ) : null}
-
-      {groups.going.length > 0 ? (
-        <section className="space-y-3">
-          <h2 className="text-lg font-semibold">Going ahead ({groups.going.length})</h2>
-          {groups.going.map(renderCard)}
-        </section>
-      ) : null}
-
-      {groups.declined.length > 0 ? (
-        <section className="space-y-3">
-          <h2 className="text-lg font-semibold text-muted-foreground">Not interested ({groups.declined.length})</h2>
-          {groups.declined.map(renderCard)}
-        </section>
-      ) : null}
+      <section className="space-y-3" aria-labelledby="shortlist-recommended">
+        <h2 id="shortlist-recommended" className="text-lg font-semibold">Recommended by your counselor ({groups.recommended.length})</h2>
+        {groups.recommended.length === 0 ? (
+          <Card className="glass-card">
+            <CardContent className="flex flex-wrap items-center justify-between gap-3 py-6">
+              <p className="text-sm text-muted-foreground">Your counselor&apos;s recommendations will appear here.</p>
+              <Button asChild variant="outline" size="sm"><Link to="/student/messages">Message your advisor</Link></Button>
+            </CardContent>
+          </Card>
+        ) : groups.recommended.map(renderCard)}
+      </section>
 
       <Dialog open={Boolean(details)} onOpenChange={(open) => { if (!open) setDetails(null); }}>
         <DialogContent>
@@ -392,9 +374,10 @@ export function UniversityShortlists() {
                 ) : null}
                 {detailApp ? (
                   <div className="rounded-md border p-3">
-                    <p className="font-medium">{APPLICATION_LABELS[detailApp.status] || detailApp.status}</p>
+                    <p className="font-medium">{statusInfo(detailApp.status).label}</p>
                     {detailApp.counselor_comments ? <p className="mt-1 text-muted-foreground">{detailApp.counselor_comments}</p> : null}
                     {safeDate(detailApp.updated_at) ? <p className="mt-1 text-xs text-muted-foreground">Updated {safeDate(detailApp.updated_at)}</p> : null}
+                    <Link className="mt-2 inline-block text-primary underline" to={`/student/applications#${encodeURIComponent(detailApp.id)}`}>View application</Link>
                   </div>
                 ) : null}
                 {details.kind === 'saved' && details.uni.website_url ? (

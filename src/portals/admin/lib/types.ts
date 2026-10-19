@@ -126,6 +126,8 @@ export interface ApplicationRow {
   notes: string;
   counselor_comments: string;
   created_at: string | null;
+  submitted_at?: string | null;
+  started_by?: string | null;
 }
 
 export interface ShortlistRow {
@@ -331,6 +333,7 @@ export interface AdminState {
   leads: Lead[];
   documents: DocumentRow[];
   applications: ApplicationRow[];
+  applicationEvents?: import("@shared/applicationJourney").JourneyEvent[];
   shortlists: ShortlistRow[];
   conversations: ConversationRow[];
   messages: MessageRow[];

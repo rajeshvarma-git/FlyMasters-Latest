@@ -14,6 +14,7 @@ const studentNavItems = [
   { title: 'Dashboard', url: '/student', icon: GraduationCap },
   { title: 'Universities', url: '/student/universities', icon: BookOpen },
   { title: 'My Shortlists', url: '/student/shortlists', icon: Heart },
+  { title: 'My Applications', url: '/student/applications', icon: List },
   { title: 'Documents', url: '/student/documents', icon: FileText },
 ];
 

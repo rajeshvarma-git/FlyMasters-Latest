@@ -11,6 +11,7 @@ import { getMyCaseUnread } from '@student/lib/caseChatApi';
 import { StudentContent } from './StudentContent';
 import { StudentProfileForm } from './StudentProfileForm';
 import { UniversityShortlists } from './UniversityShortlists';
+import { StudentApplications } from './StudentApplications';
 import { StudentUniversities } from './StudentUniversities';
 import { StudentDocuments } from './StudentDocuments';
 import { StudentMessages } from './StudentMessages';
@@ -127,8 +128,12 @@ export function StudentLayout() {
               <StudentDocuments />
             </div>
           } />
-          {/* The counsellor runs applications now; progress shows on My Shortlists. */}
-          <Route path="applications" element={<Navigate to="/student/shortlists" replace />} />
+          {/* Applications are started and run by the counselor; this page is the student's read-only view of them. */}
+          <Route path="applications" element={
+            <div className="mobile-page-content">
+              <StudentApplications />
+            </div>
+          } />
           <Route path="messages" element={
             <div className="mobile-page-content">
               <StudentMessages defaultTab="ai" />

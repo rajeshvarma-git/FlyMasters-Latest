@@ -214,6 +214,8 @@ export async function visibleRows(viewer: Viewer | null, table: string, rows: an
   if (["documents", "document_requests", "document_versions"].includes(table)) {
     return visibleCountryDocumentRows(viewer, mine);
   }
+  // Timeline entries a counselor marked staff-only never reach the student.
+  if (table === "application_status_updates") return mine.filter((row) => row?.is_visible_to_student !== false);
   if (table === "profiles") {
     const others = await staffNameRows(rows.filter((row) => !ownsRow(viewer, row)));
     return [...mine, ...others];

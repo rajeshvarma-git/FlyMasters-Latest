@@ -20,6 +20,8 @@ import { announceCaseOwner } from "./cases.mjs";
 import { raiseAlert } from "../lib/alerts.mjs";
 import { pool, jsonTable, jsonUpsert } from "../lib/db.mjs";
 import { documentAppliesToStudent, studentForTargeting } from "../lib/documentTargeting.mjs";
+import { applyApplicationStatus, buildApplicationEvent, shortlistApplicationPatch } from "../lib/applicationWorkflow.mjs";
+import { STATUS_INFO } from "../../src/shared/applicationJourney.ts";
 import {
   ROOT as root,
   IS_PRODUCTION,
@@ -1329,6 +1331,7 @@ async function loadState(scope = null) {
     sqlDocs,
     jsonDocs,
     jsonApps,
+    jsonAppEvents,
     sqlShort,
     jsonShort,
     sqlConv,
@@ -1358,6 +1361,7 @@ async function loadState(scope = null) {
     scopedRows("documents", "created_at DESC", scope),
     jsonTable("documents", { scope }),
     jsonTable("applications", { scope }),
+    jsonTable("application_status_updates"),
     scopedRows("university_shortlists", "created_at DESC", scope),
     jsonTable("university_shortlists", { scope }),
     pool.query("SELECT * FROM private_conversations ORDER BY last_message_at DESC NULLS LAST").catch(() => ({ rows: [] })),
@@ -1464,6 +1468,7 @@ async function loadState(scope = null) {
     }
   }
 
+  const visibleAppIds = new Set(jsonApps.map((app) => String(app.id)));
   return {
     users,
     counselors,
@@ -1471,6 +1476,8 @@ async function loadState(scope = null) {
     leads,
     documents: mergeById(sqlDocs.rows.map(asDocument), jsonDocs.map(asDocument)),
     applications: jsonApps.map(asApplication),
+    // Only the timeline of applications this caller can already see.
+    applicationEvents: jsonAppEvents.filter((event) => event.application_id && visibleAppIds.has(String(event.application_id))),
     shortlists: mergeById(sqlShort.rows, jsonShort).map((row) => ({
       ...row,
       id: String(row.id),
@@ -2668,10 +2675,15 @@ router.get("/api/documents/:id/file", auth, async (req, res) => {
   res.json({ fileName: found.file_name || "document", dataUrl: file.rows[0].data_url });
 });
 
+// Legacy admin wording -> the statuses the counselor workflow stores.
+const ADMIN_APPLICATION_ALIASES = { offer: "offer_received" };
+const ADMIN_APPLICATION_STATUSES = new Set(["pending_counselor", "submitted", ...Object.keys(STATUS_INFO)]);
+
 router.patch("/api/applications/:id", auth, async (req, res) => {
-  const status = String(req.body.status || "").trim();
+  const requested = String(req.body.status || "").trim();
+  const status = ADMIN_APPLICATION_ALIASES[requested] || requested;
   const comments = req.body.comments == null ? "" : String(req.body.comments);
-  if (!["counselor_approved", "returned", "offer", "rejected", "submitted", "pending_counselor"].includes(status)) {
+  if (!ADMIN_APPLICATION_STATUSES.has(status) || status === "draft") {
     return res.status(400).json({ error: "Invalid application status." });
   }
   const apps = await jsonTable("applications");
@@ -2679,17 +2691,22 @@ router.patch("/api/applications/:id", auth, async (req, res) => {
   if (!found) return res.status(404).json({ error: "Application not found" });
   if (!(await studentInScope(req, found.user_id))) return res.status(403).json({ error: "This student is outside your branches." });
   const now = new Date().toISOString();
-  await jsonUpsert("applications", {
-    ...found,
-    status,
-    counselor_comments: comments || found.counselor_comments,
-    reviewed_at: now,
-    updated_at: now,
-  });
+  const actor = { id: req.user.id, role: "admin", name: "" };
+  const changed = applyApplicationStatus(found, status, { comments: comments || found.counselor_comments || "", actor, at: now });
+  if (changed.error) return res.status(409).json({ error: changed.error });
+  await jsonUpsert("applications", changed.next);
+  await jsonUpsert("application_status_updates", buildApplicationEvent({
+    application: changed.next, fromStatus: found.status, status,
+    type: status === found.status ? "note" : "status", note: comments, actor, at: now,
+  }));
+  const shortlists = await jsonTable("university_shortlists");
+  const shortlist = shortlists.find((row) => String(row.id) === String(found.shortlist_id || ""))
+    || shortlists.find((row) => String(row.application_id || "") === String(found.id));
+  if (shortlist) await jsonUpsert("university_shortlists", shortlistApplicationPatch(shortlist, changed.next, now));
   await notify(
     found.user_id,
     status === "returned" ? "Application returned" : "Application updated",
-    comments || `Your ${found.university_name} application is now ${status.replaceAll("_", " ")}.`,
+    comments || `Your ${found.university_name} application is now ${(STATUS_INFO[status]?.label || status.replaceAll("_", " ")).toLowerCase()}.`,
     status === "returned" ? "warning" : "info",
     "/student/applications",
   );

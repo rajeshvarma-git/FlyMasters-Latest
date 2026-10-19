@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import type { JourneyEvent } from "@shared/applicationJourney";
 import { api } from "@counselor/lib/api";
 
 export interface LocalLead {
@@ -85,6 +86,8 @@ export interface LocalApplication {
   created_at: string;
   shortlist_id?: string;
   started_by?: string;
+  submitted_at?: string | null;
+  status_changed_at?: string | null;
 }
 
 export interface LocalShortlist {
@@ -144,6 +147,7 @@ export interface CounselorExtra {
 }
 
 interface AppStore {
+  application_events: JourneyEvent[];
   leads: LocalLead[];
   conversations: LocalConversation[];
   messages: LocalMessage[];
@@ -159,6 +163,7 @@ interface AppStore {
 
 const listeners = new Set<() => void>();
 let cache: AppStore = {
+  application_events: [],
   leads: [],
   conversations: [],
   messages: [],

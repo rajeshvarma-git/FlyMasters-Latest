@@ -9,6 +9,7 @@ const empty: AdminState = {
   leads: [],
   documents: [],
   applications: [],
+  applicationEvents: [],
   shortlists: [],
   conversations: [],
   messages: [],

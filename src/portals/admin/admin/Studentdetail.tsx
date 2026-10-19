@@ -1953,6 +1953,7 @@ import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
 import type { DocumentRow } from "@admin/lib/types";
 import StudentChecklistPanel from "@shared/components/StudentChecklistPanel";
+import { buildTimeline, statusInfo, universitySubmitted } from "@shared/applicationJourney";
 
 interface ChecklistItem {
   document_type: string;
@@ -2124,7 +2125,8 @@ export default function StudentDetail() {
   const silence = daysSince(lastMessage?.created_at || convertedAt || student.created_at);
   const progress = docProgress(docs);
   const pendingDocs = docs.filter((doc) => isPendingDoc(doc.status));
-  const hasOffer = apps.some((app) => app.status === "offer");
+  const hasOffer = apps.some((app) => ["offer", "offer_received", "offer_accepted", "enrolled"].includes(app.status));
+  const submittedApps = apps.filter((app) => universitySubmitted(app));
 
   const counselor = store.counselors.find((row) => counselorOwns(row, student.assigned_counselor_id)) || null;
   const counselorLoad = (counselorId: string) =>
@@ -2215,7 +2217,12 @@ export default function StudentDetail() {
       `${progress}% approved · ${docs.filter((d) => !isPendingDoc(d.status) && d.status !== "approved" && d.status !== "rejected").length} not uploaded`,
       progress > 0,
     ],
-    ["Applications sent", apps.length ? `${apps.length} submitted` : "None yet", apps.length > 0],
+    ["Applications started", apps.length ? `${apps.length} started by the counselor` : "None yet", apps.length > 0],
+    [
+      "Submitted to universities",
+      submittedApps.length ? `${submittedApps.length} of ${apps.length} sent to the university` : "None sent to a university yet",
+      submittedApps.length > 0,
+    ],
     ["Outcome", hasOffer ? "Offer received" : "No decision yet", hasOffer],
   ];
 
@@ -2498,7 +2505,7 @@ export default function StudentDetail() {
 
         {tab === "applications" &&
           (apps.length === 0 ? (
-            <Card className="p-8 text-center text-sm text-slate-500">No applications submitted yet.</Card>
+            <Card className="p-8 text-center text-sm text-slate-500">No applications started yet. The counselor starts one from Shortlists.</Card>
           ) : (
             <Card className="overflow-hidden">
               {apps.map((app) => (
@@ -2517,12 +2524,27 @@ export default function StudentDetail() {
                     )}
                     {app.created_at && (
                       <p className="mt-0.5 text-xs text-slate-400">
-                        Submitted {format(new Date(app.created_at), "PP")}
+                        Started {format(new Date(app.created_at), "PP")}
+                        {universitySubmitted(app)
+                          ? app.submitted_at ? ` · Submitted to university ${format(new Date(app.submitted_at), "PP")}` : " · Submitted to university"
+                          : " · Not yet submitted to the university"}
                       </p>
                     )}
+                    <ol className="relative ml-1.5 mt-3 border-l border-slate-200" data-testid="application-journey">
+                      {buildTimeline(app, store.applicationEvents || []).map((item) => (
+                        <li key={item.id} className="relative pb-3 pl-6 last:pb-0">
+                          <span className="absolute -left-[5px] top-1 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-white" />
+                          <p className="text-sm font-semibold">{item.title}</p>
+                          {item.detail ? <p className="mt-0.5 text-xs text-slate-500">{item.detail}</p> : null}
+                          <p className="mt-0.5 text-xs text-slate-400">
+                            {item.at && !Number.isNaN(new Date(item.at).getTime()) ? format(new Date(item.at), "PP p") : "Date not recorded"} · {item.actorName}
+                          </p>
+                        </li>
+                      ))}
+                    </ol>
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge value={isPendingApp(app.status) ? "needs review" : app.status} />
+                    <Badge value={isPendingApp(app.status) ? "needs review" : statusInfo(app.status).label.toLowerCase()} />
                     {isPendingApp(app.status) && (
                       <>
                         <Button

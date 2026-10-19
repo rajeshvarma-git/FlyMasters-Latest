@@ -20,7 +20,9 @@ import { sendVerificationEmail } from "../lib/email.mjs";
 import { syncConversationFromLead } from "../lib/whatsappStore.mjs";
 import { pool, jsonTable, jsonUpsert } from "../lib/db.mjs";
 import { documentAppliesToStudent, studentForTargeting } from "../lib/documentTargeting.mjs";
-import { shortlistApplicationPatch } from "../lib/applicationWorkflow.mjs";
+import {
+  applyApplicationStatus, applicationIdFor, buildApplicationEvent, findExistingOpenApplication, shortlistApplicationPatch,
+} from "../lib/applicationWorkflow.mjs";
 import { commonCountryDocumentsFor, countryDocumentsEnabled } from "../lib/countryDocumentApproval.mjs";
 import {
   ROOT as root,
@@ -799,7 +801,7 @@ async function syncCounselorNameToStudentChat(counselorId) {
 }
 
 async function loadSharedChat(counselorId) {
-  const [jsonLeads, jsonConversations, jsonMessages, jsonDocuments, jsonShortlists, jsonRoles, jsonDocNotes, jsonApplications, directory] = await Promise.all([
+  const [jsonLeads, jsonConversations, jsonMessages, jsonDocuments, jsonShortlists, jsonRoles, jsonDocNotes, jsonApplications, jsonApplicationEvents, directory] = await Promise.all([
     jsonTable("student_leads"),
     jsonTable("private_conversations"),
     jsonTable("private_messages"),
@@ -808,6 +810,7 @@ async function loadSharedChat(counselorId) {
     jsonTable("user_roles"),
     jsonTable("document_notifications"),
     jsonTable("applications"),
+    jsonTable("application_status_updates"),
     studentDirectory(),
   ]);
 
@@ -865,6 +868,7 @@ async function loadSharedChat(counselorId) {
     documents: jsonDocuments.map(asDocument),
     shortlists: jsonShortlists.map((row) => asShortlist(row, counselorId)),
     applications: jsonApplications.map(asApplication),
+    application_events: jsonApplicationEvents.filter((row) => row.application_id),
     notifications: jsonDocNotes
       .filter((row) => remapSharedCounselorId(row.user_id, counselorId) === counselorId)
       .map((row) => asNotification({
@@ -1049,7 +1053,7 @@ router.get("/api/counselor/state", counselorAuth, async (req, res) => {
   const id = req.user.id;
   const counselorAliases = await resolveCounselorAliases(id);
   await syncCounselorNameToStudentChat(id).catch(() => {});
-  const shared = await loadSharedChat(id).catch(() => ({ leads: [], conversations: [], messages: [], documents: [], shortlists: [], notifications: [], applications: [] }));
+  const shared = await loadSharedChat(id).catch(() => ({ leads: [], conversations: [], messages: [], documents: [], shortlists: [], notifications: [], applications: [], application_events: [] }));
   const [leads, conversations, messages, notifications, documents, shortlists, leave, attendance, salary, extras] = await Promise.all([
     pool.query("SELECT * FROM student_leads ORDER BY created_at DESC"),
     pool.query("SELECT * FROM private_conversations WHERE counselor_id = $1 ORDER BY last_message_at DESC NULLS LAST", [id]),
@@ -1147,6 +1151,7 @@ router.get("/api/counselor/state", counselorAuth, async (req, res) => {
       shared.shortlists,
     ).filter((sl) => ownsStudent(sl.student_id, sl.student_email)),
     applications: (shared.applications || []).filter((a) => ownsStudent(a.user_id)),
+    application_events: (shared.application_events || []).filter((e) => ownsStudent(e.student_id)),
     leave: leave.rows,
     attendance: attendance.rows.map((row) => ({
       ...row,
@@ -1409,18 +1414,18 @@ router.get("/api/counselor/documents/:id/file", counselorAuth, async (req, res) 
  * started before the change.
  */
 const APPLICATION_STEPS = {
-  in_progress: { title: "Application in progress", line: (uni) => `Your counsellor is preparing your application to ${uni}.` },
+  in_progress: { title: "Application in progress", line: (uni) => `Your counsellor is preparing your application to ${uni}. Nothing has been sent to the university yet.` },
   submitted_to_university: { title: "Application submitted", line: (uni) => `Your application to ${uni} has been submitted to the university.` },
   offer_received: { title: "Offer received", line: (uni) => `Good news — ${uni} has sent you an offer. Your counsellor will walk you through it.` },
   offer_accepted: { title: "Offer accepted", line: (uni) => `Your offer from ${uni} has been accepted.` },
   enrolled: { title: "Enrolled", line: (uni) => `You are enrolled at ${uni}. Congratulations!` },
   rejected: { title: "Application unsuccessful", line: (uni) => `${uni} did not offer a place this time. Your counsellor will discuss next steps.` },
   withdrawn: { title: "Application withdrawn", line: (uni) => `Your application to ${uni} was withdrawn.` },
-  counselor_approved: { title: "Application approved", line: (uni) => `${uni} was approved by your counsellor.` },
+  counselor_approved: { title: "Application approved by your counsellor", line: (uni) => `Your application to ${uni} was approved by your counsellor. It has not been submitted to the university yet.` },
   returned: { title: "Application returned", line: (uni) => `${uni} was returned by your counsellor.` },
 };
 
-async function tellStudent(studentUserId, title, message, actionUrl = "/student/shortlists") {
+async function tellStudent(studentUserId, title, message, actionUrl = "/student/applications") {
   const now = new Date().toISOString();
   await jsonUpsert("notifications", {
     id: crypto.randomUUID(),
@@ -1456,15 +1461,19 @@ router.patch("/api/counselor/applications/:id", counselorAuth, async (req, res) 
   if (!(await counselorOwnsStudent(req.user.id, found.user_id))) {
     return res.status(403).json({ error: "This student is not assigned to you." });
   }
-  const next = {
-    ...found,
-    status,
-    counselor_comments: comments,
-    reviewed_by: req.user.id,
-    reviewed_at: now,
-    updated_at: now,
-  };
+  const actor = { id: req.user.id, role: "counselor", name: "" };
+  const changed = applyApplicationStatus(found, status, { comments, actor, at: now });
+  if (changed.error) return res.status(409).json({ error: changed.error });
+  const next = changed.next;
   await jsonUpsert("applications", next);
+  // Every change is written to the application's own timeline, which the
+  // student, counselor and admin all read.
+  if (status !== found.status || comments.trim()) {
+    await jsonUpsert("application_status_updates", buildApplicationEvent({
+      application: next, fromStatus: found.status, status,
+      type: status === found.status ? "note" : "status", note: comments, actor, at: now,
+    }));
+  }
   // The student shortlist is a persisted summary, not a frontend cache. Only
   // touch the application explicitly linked to this shortlist.
   const shortlists = await jsonTable("university_shortlists");
@@ -1476,8 +1485,11 @@ router.patch("/api/counselor/applications/:id", counselorAuth, async (req, res) 
   res.json({ ok: true, application: asApplication(next) });
 });
 
-// The student ticked a university on their shortlist; the counsellor takes it
-// forward. Creates the application (once) and marks the shortlist "applied".
+// The only way an application is created. The student ticked a university
+// (or picked it themselves); the counsellor takes it forward. Creates the
+// application (once per student and university), writes its first timeline
+// event and marks the shortlist "applied". A save or a recommendation alone
+// never reaches this.
 router.post("/api/counselor/shortlists/:id/start-application", counselorAuth, async (req, res) => {
   try {
     const { rows } = await pool.query(
@@ -1493,8 +1505,17 @@ router.post("/api/counselor/shortlists/:id/start-application", counselorAuth, as
     if (!shortlist.student_consent) {
       return res.status(409).json({ error: "The student has not accepted this university yet." });
     }
+    if (String(shortlist.status || "") === "declined" || shortlist.student_decision === "declined") {
+      return res.status(409).json({ error: "The student declined this university." });
+    }
     const apps = await jsonTable("applications");
-    const existing = apps.find((row) => String(row.shortlist_id || "") === String(shortlist.id));
+    const studentKey = String(studentId || shortlist.student_id);
+    // One application per student and university: a retry, a second click or a
+    // second shortlist row for the same university reuses the existing one.
+    const existing = apps.find((row) => String(row.shortlist_id || "") === String(shortlist.id))
+      || findExistingOpenApplication(apps, {
+        userId: studentKey, shortlistId: shortlist.id, universityId: shortlist.university_id, universityName: shortlist.university_name,
+      });
     if (existing) {
       const now = new Date().toISOString();
       await jsonUpsert("university_shortlists", shortlistApplicationPatch(shortlist, existing, now));
@@ -1505,8 +1526,9 @@ router.post("/api/counselor/shortlists/:id/start-application", counselorAuth, as
     const location = String(shortlist.location || "");
     const parts = location.split(",").map((part) => part.trim()).filter(Boolean);
     const application = {
-      id: crypto.randomUUID(),
-      user_id: String(studentId || shortlist.student_id),
+      id: applicationIdFor({ userId: studentKey, shortlistId: shortlist.id }),
+      user_id: studentKey,
+      student_email: shortlist.student_email || null,
       shortlist_id: String(shortlist.id),
       university_id: shortlist.university_id || null,
       university_name: shortlist.university_name || "",
@@ -1520,10 +1542,15 @@ router.post("/api/counselor/shortlists/:id/start-application", counselorAuth, as
       counselor_comments: String(req.body?.notes || "").slice(0, 2000),
       counselor_id: req.user.id,
       started_by: "counselor",
+      status_changed_at: now,
       created_at: now,
       updated_at: now,
     };
     await jsonUpsert("applications", application);
+    await jsonUpsert("application_status_updates", buildApplicationEvent({
+      application, status: "in_progress", type: "started", key: "started",
+      note: application.counselor_comments, actor: { id: req.user.id, role: "counselor", name: "" }, at: now,
+    }));
     await jsonUpsert("university_shortlists", shortlistApplicationPatch(shortlist, application, now));
     const uni = [application.university_name, application.course_name].filter(Boolean).join(" — ") || "your university";
     await tellStudent(application.user_id, "Application started", `Your counsellor has started your application to ${uni}.`).catch(() => null);

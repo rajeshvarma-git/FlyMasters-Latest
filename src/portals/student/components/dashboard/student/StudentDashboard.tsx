@@ -80,16 +80,16 @@ function nextStep(rec: MyRecommendations | null, counts: Counts | null): Step | 
   if (counts.applications === 0) {
     return {
       title: 'Pick the universities you want',
-      detail: 'Tick the ones you want on My Shortlists — your counsellor starts the application for each tick.',
+      detail: 'Tick the ones you want on My Shortlists — your counsellor decides when to start an application and you follow it under Applications.',
       action: 'Open My Shortlists',
       to: '/student/shortlists',
     };
   }
   return {
     title: 'Track your applications',
-    detail: 'See where each application stands on My Shortlists.',
+    detail: 'See where each application stands and what happens next.',
     action: 'View progress',
-    to: '/student/shortlists',
+    to: '/student/applications',
   };
 }
 
@@ -320,7 +320,7 @@ export function StudentDashboard() {
         {[
           { icon: Heart, label: 'Saved universities', value: counts?.saved, to: '/student/universities' },
           { icon: FileText, label: 'Documents', value: counts?.documents, to: '/student/documents' },
-          { icon: List, label: 'Applications', value: counts?.applications, to: '/student/shortlists' },
+          { icon: List, label: 'Applications', value: counts?.applications, to: '/student/applications' },
         ].map((s) => (
           <Link key={s.label} to={s.to} className="rounded-xl border border-border/60 bg-card p-4 shadow-sm hover:bg-muted/40">
             <s.icon className="h-4 w-4 text-primary" />

@@ -319,7 +319,15 @@ async function mergeCounselorSqlShortlists(
     return findStudentInDirectory(directory, id, { ...lead, email: emailHint || lead?.email });
   };
 
-  if (!tables.university_shortlists) tables.university_shortlists = [];
+  // The caller may have asked for another table only (the student portal reads
+  // student_leads constantly). The stored shortlist records still have to be in
+  // hand, or every SQL row below would overwrite what the student decided and
+  // what the counselor started - the consent, the decision and the link to the
+  // application - with a blank "recommended" copy.
+  if (!tables.university_shortlists) {
+    const stored = await pool.query("SELECT id, data FROM app_records WHERE table_name = 'university_shortlists'");
+    tables.university_shortlists = stored.rows.map((item) => parseRecord(item.id, item.data));
+  }
   for (const row of sql.rows) {
     const existing = tables.university_shortlists.find((item) => String(item.id) === String(row.id));
     const student = resolveStudent(row.student_id, existing?.student_email || existing?.email || "");
@@ -347,11 +355,14 @@ async function mergeCounselorSqlShortlists(
       updated_at: now,
     };
     const index = tables.university_shortlists.findIndex((item) => String(item.id) === mapped.id);
+    let persisted = mapped;
     if (index >= 0) {
-      tables.university_shortlists[index] = {
-        ...tables.university_shortlists[index],
-        ...mapped,
-      };
+      // The SQL row only mirrors the recommendation. Everything the student and
+      // counselor have done since (consent, decision, application link and
+      // status) lives on the stored record and is kept.
+      const stored = tables.university_shortlists[index];
+      persisted = { ...stored, ...mapped, updated_at: stored.updated_at || mapped.updated_at };
+      tables.university_shortlists[index] = persisted;
     } else {
       tables.university_shortlists.push(mapped);
     }
@@ -360,7 +371,7 @@ async function mergeCounselorSqlShortlists(
         `INSERT INTO app_records (id, table_name, data)
          VALUES ($1, 'university_shortlists', $2::jsonb)
          ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, table_name = EXCLUDED.table_name, updated_at = now()`,
-        [mapped.id, JSON.stringify(mapped)]
+        [persisted.id, JSON.stringify(persisted)]
       );
     } catch (error) {
       console.error("Could not persist counselor shortlist", mapped.id, error);

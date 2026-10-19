@@ -7,6 +7,7 @@ import { Badge } from "@counselor/components/ui/Badge";
 import { Button } from "@counselor/components/ui/Button";
 import { Card } from "@counselor/components/ui/Card";
 import { Input, Label, Select, Textarea } from "@counselor/components/ui/Field";
+import { buildTimeline, statusInfo, universitySubmitted } from "@shared/applicationJourney";
 
 const FILTERS = [
   { id: "active", label: "Active" },
@@ -17,7 +18,8 @@ const FILTERS = [
 
 /** The steps a counsellor moves an application through. */
 const STEPS = [
-  { id: "in_progress", label: "In progress" },
+  { id: "in_progress", label: "Preparing" },
+  { id: "counselor_approved", label: "Approved by you (not sent)" },
   { id: "submitted_to_university", label: "Submitted to university" },
   { id: "offer_received", label: "Offer received" },
   { id: "offer_accepted", label: "Offer accepted" },
@@ -31,11 +33,14 @@ function needsReview(status: string) {
   return status === "pending_counselor" || status === "submitted";
 }
 
+// A university can only have answered an application recorded as submitted.
+const NEEDS_SUBMISSION = new Set(["offer_received", "offer_accepted", "enrolled", "rejected"]);
+
 function displayStatus(status: string) {
   if (needsReview(status)) return "needs review";
-  if (status === "counselor_approved") return "approved";
+  if (status === "counselor_approved") return "approved (not sent)";
   if (status === "returned") return "returned";
-  return STEPS.find((step) => step.id === status)?.label.toLowerCase() || status.replaceAll("_", " ");
+  return statusInfo(status).label.toLowerCase();
 }
 
 export default function Applications() {
@@ -45,6 +50,7 @@ export default function Applications() {
   const [statusFilter, setStatusFilter] = useState("active");
   const [stepBusy, setStepBusy] = useState("");
   const [stepError, setStepError] = useState("");
+  const [openJourney, setOpenJourney] = useState<string | null>(null);
 
   const moveTo = async (appId: string, status: string) => {
     setStepError("");
@@ -71,6 +77,7 @@ export default function Applications() {
   // students. Avoid a second client-side assignment filter hiding a freshly
   // created application while the lead list catches up.
   const apps = store.applications || [];
+  const events = store.application_events || [];
   const pendingCount = apps.filter((app) => needsReview(app.status)).length;
 
   const filtered = useMemo(() => {
@@ -109,7 +116,7 @@ export default function Applications() {
         <div>
           <h1 className="text-2xl font-bold">Applications</h1>
           <p className="text-slate-600">
-            Student applications appear here as soon as they are started. Move them through each step here — the student sees every change.
+            Applications you start for your students (from Shortlists). Move each one through its steps here - approving internally does not send it to the university, and the student sees every change.
           </p>
         </div>
         <div className="relative w-full max-w-xs">
@@ -168,6 +175,10 @@ export default function Applications() {
                     ? ` · Started ${format(new Date(app.created_at), "MMM d, yyyy")}`
                     : ""}
                 </p>
+                <p className="mt-1 text-xs text-slate-400">
+                  {universitySubmitted(app) ? "Submitted to the university" : "Not yet submitted to the university"}
+                  {app.submitted_at && !Number.isNaN(new Date(app.submitted_at).getTime()) ? ` on ${format(new Date(app.submitted_at), "MMM d, yyyy")}` : ""}
+                </p>
                 {app.notes && <p className="mt-2 text-sm text-slate-500">Student note: {app.notes}</p>}
                 {app.counselor_comments && <p className="mt-1 text-sm text-slate-500">Your note: {app.counselor_comments}</p>}
               </div>
@@ -183,7 +194,9 @@ export default function Applications() {
                   >
                     {!STEPS.some((step) => step.id === app.status) ? <option value="">Move to…</option> : null}
                     {STEPS.map((step) => (
-                      <option key={step.id} value={step.id}>{step.label}</option>
+                      <option key={step.id} value={step.id} disabled={NEEDS_SUBMISSION.has(step.id) && !universitySubmitted(app) && step.id !== app.status}>
+                        {step.label}
+                      </option>
                     ))}
                   </Select>
                 ) : null}
@@ -213,6 +226,30 @@ export default function Applications() {
                 )}
               </div>
             </div>
+            <div className="mt-3 border-t border-slate-100 pt-2">
+              <button
+                type="button"
+                className="text-xs font-semibold text-sky-700 hover:underline"
+                onClick={() => setOpenJourney(openJourney === app.id ? null : app.id)}
+              >
+                {openJourney === app.id ? "Hide journey" : "Show journey"}
+              </button>
+              {openJourney === app.id ? (
+                <ol className="relative ml-1.5 mt-3 border-l border-slate-200" data-testid="application-journey">
+                  {buildTimeline(app, events).map((item) => (
+                    <li key={item.id} className="relative pb-4 pl-6 last:pb-0">
+                      <span className="absolute -left-[5px] top-1 h-2.5 w-2.5 rounded-full bg-emerald-500 ring-2 ring-white" />
+                      <p className="text-sm font-semibold">{item.title}</p>
+                      {item.detail ? <p className="mt-0.5 text-xs text-slate-500">{item.detail}</p> : null}
+                      <p className="mt-0.5 text-xs text-slate-400">
+                        {item.at && !Number.isNaN(new Date(item.at).getTime()) ? format(new Date(item.at), "MMM d, yyyy h:mm a") : "Date not recorded"} · {item.actorName}
+                        {item.derived ? " · rebuilt from the application record" : ""}
+                      </p>
+                    </li>
+                  ))}
+                </ol>
+              ) : null}
+            </div>
           </Card>
         ))}
         {filtered.length === 0 && (
@@ -221,7 +258,7 @@ export default function Applications() {
             <p className="font-semibold">{apps.length === 0 ? "No applications yet" : "No applications match this filter"}</p>
             <p className="mt-1 text-sm text-slate-500">
               {apps.length === 0
-                ? "Student applications appear here automatically when they are started."
+                ? "Start one from Shortlists once a student has accepted a university. It then appears here and for the student."
                 : "Try All, or pick a different student."}
             </p>
           </Card>

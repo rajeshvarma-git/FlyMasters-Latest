@@ -23,6 +23,7 @@ const primaryTabs: MobileNavItem[] = [
 const morePaths = [
   '/student/profile',
   '/student/shortlists',
+  '/student/applications',
   '/student/notifications',
 ];
 
@@ -51,6 +52,7 @@ export function StudentMobileNav({ unreadCount = 0 }: StudentMobileNavProps) {
         <MobileMoreSection>
           <MobileMoreLink icon={User} label="My Profile" to="/student/profile" onClick={close} />
           <MobileMoreLink icon={Heart} label="My Shortlists" to="/student/shortlists" onClick={close} />
+          <MobileMoreLink icon={List} label="My Applications" to="/student/applications" onClick={close} />
         </MobileMoreSection>
 
         <MobileMoreSection>
@@ -75,6 +77,7 @@ export function getStudentHeaderTitle(pathname: string): {
   }
   if (pathname.includes('/universities')) return { title: 'Universities', showBack: true, backTo: '/student' };
   if (pathname.includes('/shortlists')) return { title: 'My Shortlists', showBack: true, backTo: '/student' };
+  if (pathname.includes('/applications')) return { title: 'My Applications', showBack: true, backTo: '/student' };
   if (pathname.includes('/documents')) return { title: 'Documents', showBack: true, backTo: '/student' };
   if (pathname.includes('/messages')) return { title: 'Messages', showBack: true, backTo: '/student' };
   if (pathname.includes('/telecaller')) return { title: 'Messages', showBack: true, backTo: '/student' };

@@ -1,21 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '@student/hooks/useAuth';
 import { supabase } from '@student/integrations/supabase/client';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@student/components/ui/card';
+import { Card, CardContent } from '@student/components/ui/card';
 import { Button } from '@student/components/ui/button';
 import { Badge } from '@student/components/ui/badge';
-import { Input } from '@student/components/ui/input';
-import { Label } from '@student/components/ui/label';
-import { Textarea } from '@student/components/ui/textarea';
-import { Progress } from '@student/components/ui/progress';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@student/components/ui/select';
 import {
   Dialog,
   DialogContent,
@@ -26,785 +15,302 @@ import {
 } from '@student/components/ui/dialog';
 import { useToast } from '@student/hooks/use-toast';
 import { apiUrl } from '@student/lib/apiBase';
-import { collectStudentShortlistKeys, emailsMatch, shortlistBelongsToStudent } from '@student/lib/studentShortlists';
-import { matchesAnyCountry, normalizeCountry } from '@student/lib/universityRecommendations';
-import {
-  BookOpen,
-  Calendar,
-  GraduationCap,
-  MapPin,
-  FileText,
-  CheckCircle,
-  Clock,
-  AlertTriangle,
-  Plus,
-  Ban,
-} from 'lucide-react';
+import { BookOpen, Calendar, CheckCircle2, Circle, GraduationCap, MapPin } from 'lucide-react';
 import { format } from 'date-fns';
+import {
+  JOURNEY_STEPS,
+  STUDENT_WITHDRAWABLE,
+  buildTimeline,
+  journeyStepIndex,
+  nextAction,
+  statusInfo,
+  universitySubmitted,
+  type JourneyEvent,
+} from '@shared/applicationJourney';
 
 /**
- * The next four intakes that haven't started yet (Spring = Jan, Summer = May,
- * Fall = Sep), soonest first, plus Rolling. Computed from today's date so the
- * form never offers — or defaults to — an intake that has already begun.
+ * My Applications - the student's read-only view of applications their
+ * counselor has started. A saved or recommended university never shows up
+ * here until the counselor starts it. Every stage and timeline entry comes
+ * from the stored application and its stored events (the same records the
+ * counselor and admin see), so a refresh shows exactly the same thing.
  */
-function upcomingIntakes(today = new Date()): string[] {
-  const seasons: [string, number][] = [['Spring', 0], ['Summer', 4], ['Fall', 8]];
-  const out: string[] = [];
-  for (let year = today.getFullYear(); out.length < 4; year += 1) {
-    for (const [name, month] of seasons) {
-      if (new Date(year, month, 1) > today && out.length < 4) out.push(`${name} ${year}`);
-    }
-  }
-  return [...out, 'Rolling'];
-}
-const INTAKE_OPTIONS = upcomingIntakes();
-const DEFAULT_INTAKE = INTAKE_OPTIONS[0];
-const PRIORITY_OPTIONS = ['high', 'medium', 'low'];
-const OPEN_STATUSES = new Set(['draft', 'in_progress', 'pending_counselor', 'counselor_approved', 'returned', 'submitted', 'waitlisted']);
-
-type UniversityOption = {
-  id: string;
-  name: string;
-  country: string;
-  city: string | null;
-  isFallback?: boolean;
-};
 
 type Application = {
   id: string;
   status: string;
-  priority_level: string;
-  application_deadline: string | null;
-  intake_term: string;
-  notes: string | null;
+  priority_level?: string | null;
+  application_deadline?: string | null;
+  intake_term?: string | null;
+  notes?: string | null;
   counselor_comments?: string | null;
-  created_at: string;
-  university_id: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+  university_id?: string | null;
   university_name?: string | null;
   course_name?: string | null;
   country?: string | null;
   city?: string | null;
   shortlist_id?: string | null;
+  started_by?: string | null;
+  submitted_at?: string | null;
+  status_changed_at?: string | null;
 };
 
-type ShortlistRow = {
-  id: string;
-  university_id: string | null;
-  university_name: string | null;
-  course_name: string | null;
-  location: string | null;
-  application_deadline: string | null;
-  priority_level: string | null;
-  counselor_notes: string | null;
-  status: string;
-  student_consent: boolean;
+function safeDate(value: string | null | undefined, pattern = 'MMM d, yyyy') {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : format(date, pattern);
+}
+
+const OWNER_LABEL: Record<string, string> = {
+  counselor: 'Your counselor',
+  student: 'You',
+  university: 'The university',
+  none: '',
 };
 
-function progressFor(status: string) {
-  switch (status.toLowerCase()) {
-    case 'draft':
-      return 20;
-    case 'in_progress':
-    case 'returned':
-      return 45;
-    case 'pending_counselor':
-      return 55;
-    case 'counselor_approved':
-    case 'submitted':
-      return 80;
-    case 'waitlisted':
-      return 85;
-    case 'accepted':
-      return 100;
-    case 'rejected':
-    case 'withdrawn':
-      return 100;
-    default:
-      return 15;
+function JourneyBar({ status }: { status: string }) {
+  const index = journeyStepIndex(status);
+  if (index < 0) {
+    return <p className="rounded-md bg-muted/60 px-3 py-2 text-sm text-muted-foreground">This application was withdrawn.</p>;
   }
-}
-
-function applicationLabel(app: Application, universities: UniversityOption[]) {
-  const match = universities.find((uni) => uni.id === app.university_id);
-  return app.university_name || match?.name || 'University';
-}
-
-function applicationPlace(app: Application, universities: UniversityOption[]) {
-  const match = universities.find((uni) => uni.id === app.university_id);
-  const city = app.city || match?.city;
-  const country = app.country || match?.country;
-  return [city, country].filter(Boolean).join(', ');
+  const rejected = status === 'rejected';
+  return (
+    <ol className="grid grid-cols-5 gap-1" aria-label="Application progress">
+      {JOURNEY_STEPS.map((step, i) => {
+        const done = i < index || (i === index && status === 'enrolled');
+        const current = i === index && !done;
+        const label = i === 3 && rejected ? 'Not successful' : step.label;
+        return (
+          <li key={step.id} className="flex flex-col items-center text-center" aria-current={current ? 'step' : undefined}>
+            <span className={`flex h-6 w-6 items-center justify-center rounded-full ${done ? 'text-emerald-600' : current ? (rejected ? 'text-rose-600' : 'text-primary') : 'text-muted-foreground/50'}`}>
+              {done ? <CheckCircle2 className="h-5 w-5" /> : <Circle className={`h-5 w-5 ${current ? 'fill-current' : ''}`} />}
+            </span>
+            <span className={`mt-1 text-[11px] leading-tight ${current ? 'font-semibold text-foreground' : 'text-muted-foreground'}`}>{label}</span>
+          </li>
+        );
+      })}
+    </ol>
+  );
 }
 
 export function StudentApplications() {
   const { user } = useAuth();
-  const navigate = useNavigate();
-  const location = useLocation();
   const { toast } = useToast();
-
+  const location = useLocation();
   const [applications, setApplications] = useState<Application[]>([]);
-  const [universities, setUniversities] = useState<UniversityOption[]>([]);
-  const [shortlists, setShortlists] = useState<ShortlistRow[]>([]);
+  const [events, setEvents] = useState<JourneyEvent[]>([]);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [dialogOpen, setDialogOpen] = useState(false);
+  const [loadError, setLoadError] = useState('');
+  const [withdrawing, setWithdrawing] = useState<Application | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  const [universityId, setUniversityId] = useState('');
-  const [courseName, setCourseName] = useState('');
-  const [intakeTerm, setIntakeTerm] = useState(DEFAULT_INTAKE);
-  const [priorityLevel, setPriorityLevel] = useState('medium');
-  const [deadline, setDeadline] = useState('');
-  const [notes, setNotes] = useState('');
-  const [shortlistId, setShortlistId] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (user) {
-      fetchPageData();
-      const poll = window.setInterval(() => {
-        void fetchPageData(true);
-      }, 4000);
-      return () => window.clearInterval(poll);
+  const load = useCallback(async (silent = false) => {
+    if (!user) return;
+    try {
+      const [appsRes, eventsRes] = await Promise.all([
+        supabase.from('applications').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
+        supabase.from('application_status_updates').select('*').eq('student_id', user.id),
+      ]);
+      if (appsRes.error) throw appsRes.error;
+      setApplications((appsRes.data || []) as Application[]);
+      setEvents(((eventsRes.error ? [] : eventsRes.data) || []) as JourneyEvent[]);
+      setLoadError('');
+    } catch (error: any) {
+      if (!silent) setLoadError(error?.message || 'Could not load your applications.');
+    } finally {
+      setLoading(false);
     }
   }, [user]);
 
   useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    const requested = params.get('university') || params.get('shortlist');
-    if (!requested || loading) return;
-    const shortlistMatch = shortlists.find(
-      (row) => row.id === requested || row.university_id === requested
-    );
-    const universityMatch = universities.find((uni) => uni.id === requested);
-    if (!shortlistMatch && !universityMatch) return;
-    openStartDialog(universityMatch, shortlistMatch);
-    navigate('/student/applications', { replace: true });
-  }, [location.search, universities, shortlists, loading]);
-
-  const fetchPageData = async (silent = false) => {
     if (!user) return;
+    void load();
+    // The counselor moves applications forward while you are here.
+    const poll = window.setInterval(() => void load(true), 8000);
+    return () => window.clearInterval(poll);
+  }, [user, load]);
 
-    try {
-      if (!silent) setLoading(true);
+  const focusId = decodeURIComponent((location.hash || '').replace(/^#/, ''));
+  useEffect(() => {
+    if (!focusId || loading) return;
+    document.getElementById(`application-${focusId}`)?.scrollIntoView({ block: 'start' });
+  }, [focusId, loading, applications.length]);
 
-      const [appsRes, unisRes, shortlistsRes, leadsRes, favoritesRes, profileRes] = await Promise.all([
-        supabase
-          .from('applications')
-          .select('*')
-          .eq('user_id', user.id)
-          .order('created_at', { ascending: false }),
-        supabase.from('universities').select('id, name, country, city, is_active').eq('is_active', true),
-        supabase
-          .from('university_shortlists')
-          .select('id, student_id, student_email, email, university_id, university_name, course_name, location, application_deadline, priority_level, counselor_notes, status, student_consent'),
-        supabase.from('student_leads').select('id, user_id, email, preferred_countries'),
-        supabase.from('user_favorites').select('university_id').eq('user_id', user.id),
-        supabase.from('profiles').select('interested_countries').eq('user_id', user.id).maybeSingle(),
-      ]);
+  const timelines = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof buildTimeline>>();
+    for (const app of applications) map.set(app.id, buildTimeline(app, events, { forStudent: true }).reverse());
+    return map;
+  }, [applications, events]);
 
-      if (appsRes.error) throw appsRes.error;
-
-      const keys = collectStudentShortlistKeys(user, leadsRes.data || []);
-      const mine = (shortlistsRes.data || []).filter((row: any) => shortlistBelongsToStudent(row, user, keys));
-      const myLead = (leadsRes.data || []).find((lead: any) => String(lead.user_id) === String(user.id))
-        || (leadsRes.data || []).find((lead: any) => emailsMatch(lead.email, user.email));
-      const preferredCountries = Array.isArray(myLead?.preferred_countries)
-        ? myLead.preferred_countries.map((item) => normalizeCountry(item)).filter(Boolean)
-        : (profileRes.data?.interested_countries || []).map((item: string) => normalizeCountry(item)).filter(Boolean);
-
-      const catalog = ((unisRes.data || []) as UniversityOption[]).filter((uni) =>
-        preferredCountries.length === 0 || matchesAnyCountry(uni.country, preferredCountries)
-      );
-      const favoriteIds = new Set((favoritesRes.data || []).map((row: any) => row.university_id));
-      const combined = [...catalog].sort((a, b) => {
-        const aFav = favoriteIds.has(a.id) ? 0 : 1;
-        const bFav = favoriteIds.has(b.id) ? 0 : 1;
-        if (aFav !== bFav) return aFav - bFav;
-        return a.name.localeCompare(b.name);
-      });
-
-      setApplications((appsRes.data || []) as Application[]);
-      setUniversities(combined);
-      setShortlists(mine as ShortlistRow[]);
-    } catch (error: any) {
-      if (!silent) {
-        toast({
-          title: 'Could not load applications',
-          description: error.message || 'Please try again.',
-          variant: 'destructive',
-        });
-        setApplications([]);
-      }
-    } finally {
-      if (!silent) setLoading(false);
-    }
-  };
-
-  const openStartDialog = (uni?: UniversityOption, shortlist?: ShortlistRow) => {
-    const locationParts = (shortlist?.location || '').split(',').map((part) => part.trim()).filter(Boolean);
-    const fromShortlist: UniversityOption | undefined = shortlist
-      ? {
-          id: shortlist.university_id || `shortlist-${shortlist.id}`,
-          name: shortlist.university_name || 'University',
-          country: locationParts[locationParts.length - 1] || '',
-          city: locationParts.length > 1 ? locationParts[0] : null,
-        }
-      : undefined;
-    const selected = uni || fromShortlist;
-
-    if (selected && !universities.some((item) => item.id === selected.id)) {
-      setUniversities((prev) => [selected, ...prev]);
-    }
-
-    setUniversityId(selected?.id || '');
-    setCourseName(shortlist?.course_name || '');
-    setIntakeTerm(DEFAULT_INTAKE);
-    setPriorityLevel(shortlist?.priority_level || 'medium');
-    setDeadline(shortlist?.application_deadline ? shortlist.application_deadline.slice(0, 10) : '');
-    setNotes(shortlist?.counselor_notes || '');
-    setShortlistId(shortlist?.id || null);
-    setDialogOpen(true);
-  };
-
-  const alreadyAppliedIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const app of applications) {
-      if (!OPEN_STATUSES.has(app.status)) continue;
-      if (app.university_id) ids.add(app.university_id);
-      if (app.university_name) ids.add(app.university_name.toLowerCase());
-      if (app.shortlist_id) ids.add(app.shortlist_id);
-    }
-    return ids;
-  }, [applications]);
-
-  const pendingShortlists = shortlists.filter((row) => {
-    if (alreadyAppliedIds.has(row.id)) return false;
-    if (row.university_id && alreadyAppliedIds.has(row.university_id)) return false;
-    if (row.university_name && alreadyAppliedIds.has(row.university_name.toLowerCase())) return false;
-    return true;
-  });
-
-  const startApplication = async () => {
-    if (!user) return;
-    const uni = universities.find((item) => item.id === universityId);
-    const fromShortlist = shortlists.find((row) => row.id === shortlistId);
-    const locationParts = (fromShortlist?.location || '').split(',').map((part) => part.trim()).filter(Boolean);
-    const name = uni?.name || fromShortlist?.university_name;
-    if (!universityId || !name) {
-      toast({ title: 'Choose a university', variant: 'destructive' });
-      return;
-    }
-    if (!courseName.trim()) {
-      toast({ title: 'Enter a course or program', variant: 'destructive' });
-      return;
-    }
-    if (fromShortlist && !fromShortlist.student_consent) {
-      toast({
-        title: 'Give your consent first',
-        description: 'Give your consent on the Shortlist page before starting this application.',
-        variant: 'destructive',
-      });
-      return;
-    }
-
-    const duplicate = applications.some(
-      (app) =>
-        OPEN_STATUSES.has(app.status) &&
-        (app.university_id === universityId || app.university_name?.toLowerCase() === name.toLowerCase())
-    );
-    if (duplicate) {
-      toast({
-        title: 'Application already started',
-        description: `You already have an open application for ${name}.`,
-      });
-      return;
-    }
-
-    setSaving(true);
+  const withdraw = async () => {
+    if (!withdrawing) return;
+    setBusy(true);
     try {
       const { data: { session } } = await supabase.auth.getSession();
-      const response = await fetch(apiUrl('/api/case/me/applications'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token || ''}` },
-        body: JSON.stringify({
-        university_id: universityId,
-        university_name: name,
-        country: uni?.country || locationParts[locationParts.length - 1] || null,
-        city: uni?.city || (locationParts.length > 1 ? locationParts[0] : null),
-        course_name: courseName.trim(),
-        intake_term: intakeTerm,
-        priority_level: priorityLevel,
-        application_deadline: deadline || null,
-        notes: notes.trim() || null,
-        shortlist_id: shortlistId,
-        }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || 'Could not start the application.');
-      const row = payload.application as Application;
-
-      setApplications((prev) => [row, ...prev.filter((app) => app.id !== row.id)]);
-
-      // The shortlist card (University Shortlists / "ready to apply" above)
-      // reads its own `status` field to decide whether to still show "Start
-      // application" — without this it stayed on the original status
-      // forever, so the button never reflected that the application had
-      // actually been started.
-      if (shortlistId) {
-        setShortlists((prev) => prev.map((item) => (item.id === shortlistId ? { ...item, status: 'applied' } : item)));
-      }
-
-      setDialogOpen(false);
-
-      toast({
-        title: payload.already ? 'Application already started' : 'Application started',
-        description: `${name} is now visible to your counselor.`,
-      });
-    } catch (error: any) {
-      toast({
-        title: 'Could not start application',
-        description: error.message || 'Please try again.',
-        variant: 'destructive',
-      });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const withdrawApplication = async (application: Application) => {
-    if (!user) return;
-    setSaving(true);
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const response = await fetch(apiUrl(`/api/case/me/applications/${encodeURIComponent(application.id)}`), {
+      const response = await fetch(apiUrl(`/api/case/me/applications/${encodeURIComponent(withdrawing.id)}`), {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token || ''}` },
         body: JSON.stringify({ status: 'withdrawn' }),
       });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || 'Could not withdraw the application.');
-
-      setApplications((prev) =>
-        prev.map((app) => (app.id === application.id ? payload.application : app))
-      );
-
-      const uniName = applicationLabel(application, universities);
-
-      toast({
-        title: 'Application withdrawn',
-        description: uniName,
-      });
+      toast({ title: 'Application withdrawn', description: withdrawing.university_name || undefined });
+      setWithdrawing(null);
+      await load(true);
     } catch (error: any) {
-      toast({
-        title: 'Could not update application',
-        description: error.message || 'Please try again.',
-        variant: 'destructive',
-      });
+      toast({ title: 'Could not withdraw', description: error?.message || 'Please try again.', variant: 'destructive' });
     } finally {
-      setSaving(false);
+      setBusy(false);
     }
   };
-
-  const getStatusColor = (status: string) => {
-    switch (status.toLowerCase()) {
-      case 'pending_counselor':
-        return 'bg-amber-500';
-      case 'counselor_approved':
-        return 'bg-emerald-600';
-      case 'returned':
-        return 'bg-orange-500';
-      case 'submitted':
-        return 'bg-blue-500';
-      case 'accepted':
-        return 'bg-green-500';
-      case 'rejected':
-        return 'bg-red-500';
-      case 'waitlisted':
-        return 'bg-yellow-500';
-      case 'in_progress':
-        return 'bg-purple-500';
-      case 'withdrawn':
-        return 'bg-gray-400';
-      default:
-        return 'bg-gray-500';
-    }
-  };
-
-  const getPriorityColor = (priority: string) => {
-    switch ((priority || '').toLowerCase()) {
-      case 'high':
-        return 'destructive' as const;
-      case 'medium':
-        return 'default' as const;
-      case 'low':
-        return 'secondary' as const;
-      default:
-        return 'outline' as const;
-    }
-  };
-
-  const getStatusIcon = (status: string) => {
-    switch (status.toLowerCase()) {
-      case 'accepted':
-      case 'counselor_approved':
-        return <CheckCircle className="w-4 h-4" />;
-      case 'rejected':
-      case 'withdrawn':
-      case 'returned':
-        return <AlertTriangle className="w-4 h-4" />;
-      case 'waitlisted':
-      case 'in_progress':
-      case 'pending_counselor':
-        return <Clock className="w-4 h-4" />;
-      default:
-        return <FileText className="w-4 h-4" />;
-    }
-  };
-
-  const statusLabel = (status: string) => {
-    switch (status) {
-      case 'pending_counselor':
-        return 'review requested';
-      case 'counselor_approved':
-        return 'counselor approved';
-      case 'returned':
-        return 'returned by counselor';
-      default:
-        return status.replace('_', ' ');
-    }
-  };
-
-  const withCounselorCount = applications.filter((app) => app.status === 'pending_counselor').length;
-  const approvedCount = applications.filter((app) => app.status === 'counselor_approved' || app.status === 'submitted').length;
-  const rejectedCount = applications.filter((app) => app.status === 'rejected' || app.status === 'returned').length;
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center min-h-[400px]">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+      <div className="flex min-h-[400px] items-center justify-center">
+        <div className="h-8 w-8 animate-spin rounded-full border-b-2 border-primary" />
       </div>
     );
   }
 
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-full bg-gradient-primary flex items-center justify-center">
-            <BookOpen className="w-5 h-5 text-white" />
-          </div>
-          <div>
-            <h1 className="text-2xl font-bold">My Applications</h1>
-            <p className="text-muted-foreground">Start an application to share it with your counselor. It is not sent to the university until they submit it.</p>
-          </div>
-        </div>
-        <Button onClick={() => openStartDialog()}>
-          <Plus className="w-4 h-4 mr-2" />
-          Start application
-        </Button>
-      </div>
+  const open = applications.filter((app) => !['enrolled', 'rejected', 'withdrawn'].includes(app.status));
+  const closed = applications.filter((app) => ['enrolled', 'rejected', 'withdrawn'].includes(app.status));
 
-      <div className="grid gap-4 md:grid-cols-4">
-        <Card className="glass-card">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-2">
-              <FileText className="w-4 h-4 text-muted-foreground" />
-              <div>
-                <div className="text-2xl font-bold">{applications.length}</div>
-                <div className="text-xs text-muted-foreground">Total Applications</div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="glass-card">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-2">
-              <Clock className="w-4 h-4 text-blue-500" />
-              <div>
-                <div className="text-2xl font-bold text-blue-600">{withCounselorCount}</div>
-                <div className="text-xs text-muted-foreground">With counselor</div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="glass-card">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-2">
-              <CheckCircle className="w-4 h-4 text-green-500" />
-              <div>
-                <div className="text-2xl font-bold text-green-600">{approvedCount}</div>
-                <div className="text-xs text-muted-foreground">Counselor approved</div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-        <Card className="glass-card">
-          <CardContent className="p-4">
-            <div className="flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 text-red-500" />
-              <div>
-                <div className="text-2xl font-bold text-red-600">{rejectedCount}</div>
-                <div className="text-xs text-muted-foreground">Rejected</div>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-
-      {pendingShortlists.length > 0 && (
-        <Card className="glass-card">
-          <CardHeader>
-            <CardTitle>Counselor shortlists ready to apply</CardTitle>
-            <CardDescription>Your counselor recommended these universities. Start an application when you are ready.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {pendingShortlists.map((row) => (
-              <div key={row.id} className="flex flex-col gap-3 rounded-lg border p-4 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <div className="font-medium">{row.university_name || 'University'}</div>
-                  <div className="text-sm text-muted-foreground">
-                    {[row.course_name, row.location].filter(Boolean).join(' · ') || 'Course details from your counselor'}
-                  </div>
-                </div>
-                <Button
-                  size="sm"
-                  disabled={!row.student_consent}
-                  title={row.student_consent ? undefined : 'Give your consent on the Shortlist page first'}
-                  onClick={() => openStartDialog(undefined, row)}
-                >
-                  {row.student_consent ? 'Start application' : 'Consent needed'}
-                </Button>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
-      )}
-
-      <Card className="glass-card">
-        <CardHeader>
-          <CardTitle>Application Status</CardTitle>
-          <CardDescription>Applications go to your counselor first. They are not sent directly to universities.</CardDescription>
-        </CardHeader>
-        <CardContent>
-          {applications.length === 0 ? (
-            <div className="text-center py-8 text-muted-foreground">
-              <BookOpen className="w-12 h-12 mx-auto mb-4 opacity-50" />
-              <h3 className="text-lg font-semibold text-foreground mb-2">No applications yet</h3>
-              <p className="text-sm mb-4">
-                Start an application from this page, or browse universities and save a shortlist with your counselor.
+  const renderApplication = (app: Application) => {
+    const info = statusInfo(app.status);
+    const timeline = timelines.get(app.id) || [];
+    const latest = events
+      .filter((e) => String(e.application_id) === app.id && e.is_visible_to_student !== false)
+      .sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')))[0];
+    const next = nextAction(app, latest);
+    const submittedOn = safeDate(app.submitted_at);
+    const place = [app.city, app.country].filter(Boolean).join(', ');
+    const decided = ['waitlisted', 'offer_received', 'offer_accepted', 'enrolled', 'rejected'].includes(app.status);
+    const highlighted = focusId === app.id;
+    return (
+      <Card key={app.id} id={`application-${app.id}`} className={`glass-card ${highlighted ? 'ring-2 ring-primary' : ''}`}>
+        <CardContent className="space-y-4 p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <h3 className="text-lg font-semibold leading-snug">{app.university_name || 'University'}</h3>
+              <p className="flex items-center gap-1 text-sm text-muted-foreground"><GraduationCap className="h-4 w-4" /> {app.course_name || 'Program not set'}</p>
+              {place ? <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground"><MapPin className="h-3 w-3" /> {place}</p> : null}
+              <p className="mt-0.5 flex items-center gap-1 text-xs text-muted-foreground">
+                <Calendar className="h-3 w-3" /> {app.intake_term || 'Intake not set'}
+                {safeDate(app.application_deadline) ? ` · Deadline ${safeDate(app.application_deadline)}` : ''}
               </p>
-              <div className="flex justify-center gap-2">
-                <Button onClick={() => openStartDialog()}>Start application</Button>
-                <Button variant="outline" onClick={() => navigate('/student/universities')}>
-                  Browse Universities
-                </Button>
-              </div>
             </div>
-          ) : (
-            <div className="space-y-6">
-              {applications.map((application) => {
-                const name = applicationLabel(application, universities);
-                const place = applicationPlace(application, universities);
-                const canWithdraw = OPEN_STATUSES.has(application.status);
+            <Badge className={app.status === 'rejected' ? 'bg-rose-600 text-white' : app.status === 'withdrawn' ? 'bg-slate-500 text-white' : 'bg-purple-600 text-white'}>{info.label}</Badge>
+          </div>
 
-                return (
-                  <div key={application.id} className="border rounded-lg p-6 space-y-4">
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="flex-1">
-                        <h3 className="font-semibold text-lg">{name}</h3>
-                        {place ? (
-                          <p className="text-muted-foreground flex items-center gap-1">
-                            <MapPin className="w-4 h-4" />
-                            {place}
-                          </p>
-                        ) : null}
-                        <p className="text-sm text-muted-foreground flex items-center gap-1 mt-1">
-                          <GraduationCap className="w-4 h-4" />
-                          {application.course_name || 'Course to be confirmed'}
-                        </p>
-                      </div>
-                      <div className="flex flex-col items-end gap-2">
-                        <Badge className={`${getStatusColor(application.status)} text-white`}>
-                          {getStatusIcon(application.status)}
-                          <span className="ml-1">{statusLabel(application.status)}</span>
-                        </Badge>
-                        <Badge variant={getPriorityColor(application.priority_level)}>
-                          {application.priority_level || 'medium'} priority
-                        </Badge>
-                      </div>
-                    </div>
+          <JourneyBar status={app.status} />
 
-                    <div>
-                      <div className="mb-1 flex justify-between text-xs text-muted-foreground">
-                        <span>Progress</span>
-                        <span>{progressFor(application.status)}%</span>
-                      </div>
-                      <Progress value={progressFor(application.status)} />
-                    </div>
+          <div className="rounded-lg border bg-muted/30 p-3 text-sm">
+            <p className="font-medium">{info.label}</p>
+            <p className="text-muted-foreground">{info.summary}</p>
+            {next ? (
+              <p className="mt-2">
+                <span className="font-medium">What&apos;s next{OWNER_LABEL[next.owner] ? ` - ${OWNER_LABEL[next.owner]}` : ''}: </span>
+                <span className="text-muted-foreground">{next.text}</span>
+              </p>
+            ) : null}
+            {latest?.documents_required?.length && latest.status === app.status ? (
+              <p className="mt-1"><span className="font-medium">Still needed: </span><span className="text-muted-foreground">{latest.documents_required.join(', ')}</span></p>
+            ) : null}
+            {app.counselor_comments ? <p className="mt-2 text-muted-foreground">Counselor note: {app.counselor_comments}</p> : null}
+          </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
-                      <div className="flex items-center gap-2">
-                        <Calendar className="w-4 h-4 text-muted-foreground" />
-                        <div>
-                          <div className="font-medium">Intake</div>
-                          <div className="text-muted-foreground">{application.intake_term || 'Not set'}</div>
-                        </div>
-                      </div>
-                      {application.application_deadline ? (
-                        <div className="flex items-center gap-2">
-                          <Clock className="w-4 h-4 text-muted-foreground" />
-                          <div>
-                            <div className="font-medium">Deadline</div>
-                            <div className="text-muted-foreground">
-                              {format(new Date(application.application_deadline), 'MMM dd, yyyy')}
-                            </div>
-                          </div>
-                        </div>
-                      ) : null}
-                      <div className="flex items-center gap-2">
-                        <FileText className="w-4 h-4 text-muted-foreground" />
-                        <div>
-                          <div className="font-medium">Started</div>
-                          <div className="text-muted-foreground">
-                            {application.created_at
-                              ? format(new Date(application.created_at), 'MMM dd, yyyy')
-                              : '—'}
-                          </div>
-                        </div>
-                      </div>
-                    </div>
+          <dl className="grid gap-x-6 gap-y-1 text-sm sm:grid-cols-2">
+            <div className="flex justify-between gap-3"><dt className="text-muted-foreground">Sent to the university</dt><dd className="font-medium">{universitySubmitted(app) ? (submittedOn || 'Yes') : 'Not yet'}</dd></div>
+            <div className="flex justify-between gap-3"><dt className="text-muted-foreground">University decision</dt><dd className="font-medium">{decided ? info.label : 'Not yet'}</dd></div>
+          </dl>
 
-                    {application.notes ? (
-                      <div className="p-3 bg-muted/50 rounded-lg">
-                        <div className="font-medium text-sm mb-1">Notes</div>
-                        <p className="text-sm text-muted-foreground">{application.notes}</p>
-                      </div>
-                    ) : null}
+          <div>
+            <p className="mb-2 text-sm font-semibold">Timeline</p>
+            {timeline.length === 0 ? (
+              <p className="text-sm text-muted-foreground">No updates yet.</p>
+            ) : (
+              <ol className="relative ml-1.5 border-l border-border" data-testid="application-timeline">
+                {timeline.map((item, i) => (
+                  <li key={item.id} className="relative pb-4 pl-6 last:pb-0">
+                    <span className={`absolute -left-[5px] top-1.5 h-2.5 w-2.5 rounded-full ring-2 ring-background ${i === 0 ? 'bg-primary' : 'bg-emerald-500'}`} />
+                    <p className="text-sm font-semibold">{item.title}</p>
+                    {item.detail ? <p className="text-sm text-muted-foreground">{item.detail}</p> : null}
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      {safeDate(item.at, 'MMM d, yyyy · h:mm a') || 'Date not recorded'} · {item.actorName}
+                    </p>
+                  </li>
+                ))}
+              </ol>
+            )}
+          </div>
 
-                    {application.counselor_comments ? (
-                      <div className="p-3 bg-muted/50 rounded-lg">
-                        <div className="font-medium text-sm mb-1">Counselor note</div>
-                        <p className="text-sm text-muted-foreground">{application.counselor_comments}</p>
-                      </div>
-                    ) : null}
-
-                    <div className="flex flex-wrap gap-2 pt-2">
-                      {canWithdraw ? (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          disabled={saving}
-                          onClick={() => withdrawApplication(application)}
-                        >
-                          <Ban className="w-4 h-4 mr-1" />
-                          Withdraw
-                        </Button>
-                      ) : null}
-                      <Button variant="ghost" size="sm" onClick={() => navigate('/student/documents')}>
-                        Documents
-                      </Button>
-                      <Button variant="ghost" size="sm" onClick={() => navigate('/student/chat')}>
-                        Ask counselor
-                      </Button>
-                    </div>
-                  </div>
-                );
-              })}
+          {STUDENT_WITHDRAWABLE.has(app.status) ? (
+            <div className="flex justify-end">
+              <Button variant="outline" size="sm" onClick={() => setWithdrawing(app)}>Withdraw application</Button>
             </div>
-          )}
+          ) : null}
         </CardContent>
       </Card>
+    );
+  };
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center gap-4">
+        <div className="flex h-12 w-12 items-center justify-center rounded-full bg-gradient-primary">
+          <BookOpen className="h-6 w-6 text-white" />
+        </div>
+        <div>
+          <h1 className="text-3xl font-bold">My Applications</h1>
+          <p className="text-muted-foreground">
+            Applications your counselor has started for you. Saving or being recommended a university does not start one - tick it on{' '}
+            <Link to="/student/shortlists" className="font-medium text-primary underline">My Shortlists</Link> and your counselor takes it from there.
+          </p>
+        </div>
+      </div>
+
+      {loadError ? <Card className="border-destructive/40"><CardContent className="p-4 text-sm text-destructive">{loadError}</CardContent></Card> : null}
+
+      {applications.length === 0 && !loadError ? (
+        <Card className="glass-card">
+          <CardContent className="py-12 text-center">
+            <BookOpen className="mx-auto mb-4 h-16 w-16 text-muted-foreground opacity-50" />
+            <h3 className="mb-2 text-lg font-semibold">No applications yet</h3>
+            <p className="mb-4 text-muted-foreground">When your counselor starts an application for you it appears here, with every step.</p>
+            <div className="flex flex-wrap justify-center gap-2">
+              <Button asChild><Link to="/student/shortlists">Go to My Shortlists</Link></Button>
+              <Button asChild variant="outline"><Link to="/student/messages">Message your advisor</Link></Button>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {open.length > 0 ? (
+        <section className="space-y-4">
+          <h2 className="text-lg font-semibold">In progress ({open.length})</h2>
+          {open.map(renderApplication)}
+        </section>
+      ) : null}
+      {closed.length > 0 ? (
+        <section className="space-y-4">
+          <h2 className="text-lg font-semibold text-muted-foreground">Finished ({closed.length})</h2>
+          {closed.map(renderApplication)}
+        </section>
+      ) : null}
+
+      <Dialog open={Boolean(withdrawing)} onOpenChange={(openState) => { if (!openState) setWithdrawing(null); }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Start an application</DialogTitle>
+            <DialogTitle>Withdraw this application?</DialogTitle>
             <DialogDescription>
-              Choose a university and course. Starting it makes it visible to your counselor — it is not sent to the university.
+              {withdrawing?.university_name || 'This application'} has not been sent to the university. Your counselor will be told you withdrew it.
             </DialogDescription>
           </DialogHeader>
-
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label>University</Label>
-              <Select value={universityId} onValueChange={setUniversityId}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select a university" />
-                </SelectTrigger>
-                <SelectContent>
-                  {universities.map((uni) => (
-                    <SelectItem key={uni.id} value={uni.id}>
-                      {uni.name}
-                      {uni.country ? ` · ${uni.country}` : ''}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Course / program</Label>
-              <Input
-                value={courseName}
-                onChange={(event) => setCourseName(event.target.value)}
-                placeholder="e.g. MSc Computer Science"
-              />
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <Label>Intake</Label>
-                <Select value={intakeTerm} onValueChange={setIntakeTerm}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {INTAKE_OPTIONS.map((intake) => (
-                      <SelectItem key={intake} value={intake}>
-                        {intake}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Priority</Label>
-                <Select value={priorityLevel} onValueChange={setPriorityLevel}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {PRIORITY_OPTIONS.map((priority) => (
-                      <SelectItem key={priority} value={priority}>
-                        {priority}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Application deadline (optional)</Label>
-              <Input type="date" value={deadline} onChange={(event) => setDeadline(event.target.value)} />
-            </div>
-
-            <div className="space-y-2">
-              <Label>Notes (optional)</Label>
-              <Textarea
-                value={notes}
-                onChange={(event) => setNotes(event.target.value)}
-                placeholder="Anything your counselor should know"
-              />
-            </div>
-          </div>
-
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={startApplication} disabled={saving}>
-              {saving ? 'Saving...' : 'Start application'}
-            </Button>
+            <Button variant="outline" onClick={() => setWithdrawing(null)}>Keep it</Button>
+            <Button variant="destructive" disabled={busy} onClick={() => void withdraw()}>Withdraw</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
