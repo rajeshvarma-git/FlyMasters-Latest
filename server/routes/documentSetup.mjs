@@ -29,6 +29,7 @@ import { pool, jsonTable, jsonUpsert } from "../lib/db.mjs";
 import { ROLES, ADMIN_ROLES, session, requireRole, branchScope, audit } from "../lib/auth.mjs";
 import { documentCountries, normalizeCountry, isStudentAudience } from "../lib/documentTargeting.mjs";
 import { countryDocumentApproval, setCountryDocumentsEnabled } from "../lib/countryDocumentApproval.mjs";
+import { documentUploadAuthorization, setDocumentUploadAuthorization } from "../lib/documentUploadAuthorization.mjs";
 import { myAssignedLeads, resolveCounselorAliases } from "./counselor.mjs";
 
 const router = express.Router();
@@ -265,6 +266,49 @@ router.put(["/api/document-setup/students/:id/country-documents-approval", "/api
     const approval = await setCountryDocumentsEnabled(student, req.body?.enabled === true, req.user.id);
     await audit(req, "document_setup.country_documents_approval", "student_country_document_approvals", approval.id, { student_id: student.id, enabled: approval.enabled }).catch(() => null);
     res.json({ student_id: student.id, enabled: approval.enabled, approval });
+  } catch (error) { fail(res, error, 403); }
+});
+
+/**
+ * Document-upload authorisation. Until the counsellor has reviewed the
+ * student's profile and enabled this, the student cannot upload anything
+ * (enforced in the student data policy, not just on the page). Optional
+ * `document_types` limits it to chosen documents; leaving it out authorises
+ * every applicable one. Separate from the country-wise approval above.
+ */
+router.get(["/api/document-setup/students/:id/document-upload-authorization", "/api/counselor/document-setup/students/:id/document-upload-authorization"], docAuth, async (req, res) => {
+  try {
+    const student = await approvalStudent(req, req.params.id);
+    const authorization = await documentUploadAuthorization(student);
+    res.json({
+      student_id: student.id,
+      enabled: authorization?.enabled === true,
+      scope: authorization?.enabled === true ? authorization.scope || "all" : null,
+      document_types: authorization?.enabled === true ? authorization.document_types || [] : [],
+      authorization: authorization || null,
+    });
+  } catch (error) { fail(res, error, 403); }
+});
+
+router.put(["/api/document-setup/students/:id/document-upload-authorization", "/api/counselor/document-setup/students/:id/document-upload-authorization"], docAuth, async (req, res) => {
+  try {
+    const student = await approvalStudent(req, req.params.id);
+    const enabled = req.body?.enabled === true;
+    const documentTypes = Array.isArray(req.body?.document_types) ? req.body.document_types : null;
+    const authorization = await setDocumentUploadAuthorization(student, { enabled, documentTypes }, req.user.id);
+    await audit(req, "document_setup.document_upload_authorization", "student_document_upload_authorizations", authorization.id, {
+      student_id: student.id,
+      enabled: authorization.enabled,
+      scope: authorization.scope,
+      document_types: authorization.document_types,
+    }).catch(() => null);
+    res.json({
+      student_id: student.id,
+      enabled: authorization.enabled,
+      scope: authorization.enabled ? authorization.scope : null,
+      document_types: authorization.enabled ? authorization.document_types : [],
+      authorization,
+    });
   } catch (error) { fail(res, error, 403); }
 });
 

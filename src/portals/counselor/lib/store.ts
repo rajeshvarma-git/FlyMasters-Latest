@@ -309,6 +309,25 @@ export async function setCountryDocumentsApproval(studentId: string, enabled: bo
   });
 }
 
+export type DocumentUploadAuthorization = {
+  student_id: string;
+  enabled: boolean;
+  scope: "all" | "selected" | null;
+  document_types: string[];
+};
+
+export async function fetchDocumentUploadAuthorization(studentId: string) {
+  return api<DocumentUploadAuthorization>(`/document-setup/students/${studentId}/document-upload-authorization`);
+}
+
+/** `documentTypes` omitted → every applicable document; a list → only those. */
+export async function setDocumentUploadAuthorization(studentId: string, enabled: boolean, documentTypes?: string[]) {
+  return api<DocumentUploadAuthorization>(`/document-setup/students/${studentId}/document-upload-authorization`, {
+    method: "PUT",
+    body: { enabled, ...(documentTypes ? { document_types: documentTypes } : {}) },
+  });
+}
+
 export async function addShortlist(row: Omit<LocalShortlist, "id" | "created_at">) {
   await api("/shortlists", { method: "POST", body: row });
   try {

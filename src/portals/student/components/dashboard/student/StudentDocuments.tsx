@@ -14,7 +14,8 @@ import {
   Clock,
   Download,
   Trash2,
-  AlertTriangle
+  AlertTriangle,
+  Lock
 } from 'lucide-react';
 import { validateDocumentFile } from '@student/lib/documentTypeValidation';
 import { notifyCounselorsOfStudentDocument } from '@student/lib/notifyCounselorsOfStudentDocument';
@@ -45,6 +46,8 @@ interface DocumentChecklist {
   already_available?: boolean;
   rejection_reason?: string;
   next_step_note?: string;
+  // Set when the counselor aimed this document at named students.
+  student_ids?: string[] | null;
 }
 
 interface DocumentRequest {
@@ -58,6 +61,16 @@ interface DocumentRequest {
 }
 
 const MIN_UPLOAD_SIZE_MB = 20;
+
+/** The counselor's document-upload authorization for this student (read-only here). */
+interface UploadAuthorization {
+  enabled: boolean;
+  scope: 'all' | 'selected' | null;
+  document_types: string[];
+}
+
+const sameType = (a?: string | null, b?: string | null) =>
+  String(a || '').trim().toLowerCase() === String(b || '').trim().toLowerCase();
 
 const withPracticalUploadLimit = <T extends { max_file_size_mb?: number | null }>(item: T): T => ({
   ...item,
@@ -87,12 +100,19 @@ export function StudentDocuments() {
   const [assigned, setAssigned] = useState<AssignedChecklist[]>([]);
   const [assignedLoaded, setAssignedLoaded] = useState(false);
   const [countryDocumentsEnabled, setCountryDocumentsEnabled] = useState(false);
+  /**
+   * Whether the counselor has enabled uploads for this student. Missing,
+   * unreadable or disabled all mean "not enabled": nothing is assumed. The
+   * server enforces the same rule, so this only decides what the page shows.
+   */
+  const [uploadAuth, setUploadAuth] = useState<UploadAuthorization>({ enabled: false, scope: null, document_types: [] });
 
   useEffect(() => {
     if (user) {
       fetchAllData();
       const poll = window.setInterval(() => {
         void fetchDocuments(true);
+        void fetchUploadAuthorization();
       }, 4000);
       return () => window.clearInterval(poll);
     }
@@ -125,6 +145,7 @@ export function StudentDocuments() {
       fetchDocuments(),
       fetchDocumentRequests(),
       fetchCountryDocumentApproval(),
+      fetchUploadAuthorization(),
       // Once a checklist is activated, that replaces the profile-derived one.
       assignedData.activated ? Promise.resolve() : fetchChecklistFromProfile(),
     ]);
@@ -141,6 +162,24 @@ export function StudentDocuments() {
     // Missing or unreadable approval is intentionally not enabled. The server
     // separately filters document rows and rejects a direct submission.
     setCountryDocumentsEnabled(!error && data?.enabled === true);
+  };
+
+  const fetchUploadAuthorization = async () => {
+    if (!user) return;
+    const { data, error } = await supabase
+      .from('student_document_upload_authorizations')
+      .select('enabled, scope, document_types')
+      .eq('student_id', user.id)
+      .maybeSingle();
+    if (error || !data || data.enabled !== true) {
+      setUploadAuth({ enabled: false, scope: null, document_types: [] });
+      return;
+    }
+    setUploadAuth({
+      enabled: true,
+      scope: data.scope === 'selected' ? 'selected' : 'all',
+      document_types: Array.isArray(data.document_types) ? data.document_types : [],
+    });
   };
 
   const fetchDocuments = async (silent = false) => {
@@ -257,6 +296,15 @@ export function StudentDocuments() {
 
   const uploadFile = async (file: File, documentType: string, requestId?: string) => {
     if (!user) return;
+
+    if (!canUploadType(documentType)) {
+      toast({
+        title: 'Uploads are not enabled yet',
+        description: 'Your counselor must enable uploads for this document first. Please contact your assigned counselor.',
+        variant: 'destructive'
+      });
+      return;
+    }
 
     const checklistItem = checklist.find(item => item.document_type === documentType);
     const requestItem = requests.find(req => req.id === requestId);
@@ -434,6 +482,14 @@ export function StudentDocuments() {
   };
 
   const deleteDocument = async (document: Document) => {
+    if (!canUploadType(document.document_type)) {
+      toast({
+        title: 'Not enabled',
+        description: 'Your counselor has not enabled changes to this document.',
+        variant: 'destructive'
+      });
+      return;
+    }
     if (document.status === 'rejected') {
       toast({
         title: 'Cannot delete',
@@ -498,8 +554,22 @@ export function StudentDocuments() {
       || documents.find((doc) => doc.document_type === documentType);
   };
 
+  // Upload permission, in the same terms the server uses: a document request
+  // the counselor sent, a document the counselor aimed at this student by name,
+  // or the counselor's upload authorization (all applicable, or chosen types).
+  const namedForMe = (item: DocumentChecklist) => Array.isArray(item.student_ids) && item.student_ids.length > 0;
+  function canUploadType(documentType: string) {
+    if (requests.some((req) => sameType(req.document_type, documentType))) return true;
+    if (checklist.some((item) => namedForMe(item) && sameType(item.document_type, documentType))) return true;
+    if (!uploadAuth.enabled) return false;
+    return uploadAuth.scope !== 'selected' || uploadAuth.document_types.some((type) => sameType(type, documentType));
+  }
+  // Before the counselor enables uploads the requirement list is not shown at
+  // all (a document aimed at this student by name is already an explicit ask).
+  const shownChecklist = uploadAuth.enabled ? checklist : checklist.filter(namedForMe);
+
   const requiredTypes = new Set([
-    ...checklist.filter((item) => item.is_required).map((item) => item.document_type),
+    ...shownChecklist.filter((item) => item.is_required).map((item) => item.document_type),
     ...requests.filter((req) => req.is_mandatory).map((req) => req.document_type),
   ]);
   const submittedTypes = new Set(
@@ -509,7 +579,7 @@ export function StudentDocuments() {
   );
   const submittedCount = submittedTypes.size;
   const rejectedCount = documents.filter((doc) => doc.status === 'rejected' && !submittedTypes.has(doc.document_type)).length;
-  const totalRequired = checklist.filter((item) => item.is_required).length + requests.filter((req) => req.is_mandatory).length;
+  const totalRequired = shownChecklist.filter((item) => item.is_required).length + requests.filter((req) => req.is_mandatory).length;
   const remainingCount = Math.max(totalRequired - submittedCount, 0);
   const completionPercentage = totalRequired > 0 ? (submittedCount / totalRequired) * 100 : submittedCount > 0 ? 100 : 0;
   // A request's own status stays 'pending'/'uploaded' even after the linked
@@ -557,7 +627,8 @@ export function StudentDocuments() {
         </CardHeader>
       </Card>
 
-      {/* Progress Overview */}
+      {/* Progress Overview — only once there is a list or request to track */}
+      {(shownChecklist.length > 0 || visibleRequests.length > 0) && (
       <Card className="glass-card overflow-hidden">
         <CardHeader className="p-4 md:p-6">
           <CardTitle className="flex items-center gap-2 text-base md:text-lg">
@@ -597,6 +668,7 @@ export function StudentDocuments() {
           </div>
         </CardContent>
       </Card>
+      )}
 
       {/* Additional Document Requests */}
       {visibleRequests.length > 0 && (
@@ -681,7 +753,7 @@ export function StudentDocuments() {
       )}
 
       {/* Required Documents Checklist */}
-      {checklist.length > 0 && (
+      {shownChecklist.length > 0 && (
         <Card className="glass-card overflow-hidden">
           <CardHeader className="p-4 md:p-6">
             <CardTitle className="text-base md:text-lg">
@@ -696,9 +768,10 @@ export function StudentDocuments() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3 p-4 pt-0 md:p-6 md:pt-0">
-            {checklist.map((item) => {
+            {shownChecklist.map((item) => {
               const uploadedDoc = getUploadedDocument(item.document_type);
               const isUploaded = !!uploadedDoc;
+              const uploadsEnabled = canUploadType(item.document_type);
 
               return (
                 <div
@@ -783,17 +856,26 @@ export function StudentDocuments() {
                           <Download className="w-4 h-4 sm:mr-0 mr-2" />
                           <span className="sm:hidden">Download</span>
                         </Button>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => deleteDocument(uploadedDoc)}
-                          className="flex-1 sm:flex-none hover:bg-destructive/10 hover:text-destructive"
-                        >
-                          <Trash2 className="w-4 h-4 sm:mr-0 mr-2" />
-                          <span className="sm:hidden">Delete</span>
-                        </Button>
+                        {uploadsEnabled && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => deleteDocument(uploadedDoc)}
+                            className="flex-1 sm:flex-none hover:bg-destructive/10 hover:text-destructive"
+                          >
+                            <Trash2 className="w-4 h-4 sm:mr-0 mr-2" />
+                            <span className="sm:hidden">Delete</span>
+                          </Button>
+                        )}
                       </div>
                     )}
+                    {!uploadsEnabled && (
+                      <div className="flex items-center gap-2 rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground sm:max-w-[220px]" data-testid="upload-not-enabled">
+                        <Lock className="h-3.5 w-3.5 shrink-0" />
+                        <span>Uploads for this document are not enabled yet. Contact your assigned counselor.</span>
+                      </div>
+                    )}
+                    {uploadsEnabled && (
                     <div className="relative w-full sm:w-auto">
                       <input
                         type="file"
@@ -818,6 +900,7 @@ export function StudentDocuments() {
                               : 'Upload'}
                       </Button>
                     </div>
+                    )}
                   </div>
                 </div>
               );
@@ -826,7 +909,48 @@ export function StudentDocuments() {
         </Card>
       )}
 
-      {checklist.length === 0 && visibleRequests.length === 0 && (
+      {/* Nothing is actionable yet: the counselor has not enabled uploads for this student. */}
+      {!uploadAuth.enabled && shownChecklist.length === 0 && visibleRequests.length === 0 && (
+        <Card className="glass-card" data-testid="documents-not-enabled">
+          <CardContent className="p-8 md:p-12 text-center">
+            <Lock className="w-14 h-14 text-muted-foreground mx-auto mb-4 opacity-50" />
+            <h3 className="text-xl font-semibold mb-2">Document uploads are not enabled yet</h3>
+            <p className="text-muted-foreground max-w-xl mx-auto">
+              Your counselor needs to review your profile first and then enable document uploads for you.
+              Once they do, the documents you need to provide will appear here.
+            </p>
+            <p className="text-muted-foreground max-w-xl mx-auto mt-3">
+              Please contact your assigned counselor if you would like to start uploading documents.
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Documents already on file stay visible (download only) when uploads are not enabled. */}
+      {!uploadAuth.enabled && shownChecklist.length === 0 && visibleRequests.length === 0 && documents.length > 0 && (
+        <Card className="glass-card overflow-hidden">
+          <CardHeader className="p-4 md:p-6">
+            <CardTitle className="text-base md:text-lg">Documents on file</CardTitle>
+            <CardDescription className="text-xs md:text-sm">Documents you already submitted. Changes are not enabled right now.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3 p-4 pt-0 md:p-6 md:pt-0">
+            {documents.map((doc) => (
+              <div key={doc.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/20 p-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium break-words">{doc.document_type}</p>
+                  <p className="text-xs text-muted-foreground break-all">{doc.file_name}</p>
+                  <div className="mt-1">{getStatusBadge(doc.status)}</div>
+                </div>
+                <Button variant="outline" size="sm" onClick={() => downloadFile(doc)}>
+                  <Download className="w-4 h-4 mr-2" />Download
+                </Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {uploadAuth.enabled && shownChecklist.length === 0 && visibleRequests.length === 0 && (
         <Card className="glass-card">
           <CardContent className="p-12 text-center">
             <FileText className="w-16 h-16 text-muted-foreground mx-auto mb-4 opacity-50" />

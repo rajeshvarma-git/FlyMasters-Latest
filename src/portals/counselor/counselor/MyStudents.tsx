@@ -15,7 +15,7 @@ import {
   Users,
 } from "lucide-react";
 import { useAuth } from "@counselor/context/AuthContext";
-import { ensureConversation, fetchCountryDocumentsApproval, fetchStudentChecklist, requestStudentDocuments, setCountryDocumentsApproval, useLocalStore } from "@counselor/lib/store";
+import { ensureConversation, fetchCountryDocumentsApproval, fetchDocumentUploadAuthorization, fetchStudentChecklist, requestStudentDocuments, setCountryDocumentsApproval, setDocumentUploadAuthorization, useLocalStore, type DocumentUploadAuthorization } from "@counselor/lib/store";
 import { displayName, initials, isConvertedStudent } from "@counselor/lib/utils";
 import { Badge } from "@counselor/components/ui/Badge";
 import { Button } from "@counselor/components/ui/Button";
@@ -44,6 +44,10 @@ export default function MyStudents() {
   const [requestNotice, setRequestNotice] = useState("");
   const [countryDocumentsEnabled, setCountryDocumentsEnabled] = useState(false);
   const [changingCountryDocuments, setChangingCountryDocuments] = useState(false);
+  const [uploadAuth, setUploadAuth] = useState<DocumentUploadAuthorization | null>(null);
+  const [uploadAuthLoaded, setUploadAuthLoaded] = useState(false);
+  const [pickedTypes, setPickedTypes] = useState<string[]>([]);
+  const [savingUploadAuth, setSavingUploadAuth] = useState(false);
 
   const students = useMemo(() => {
     const seen = new Set<string>();
@@ -98,6 +102,14 @@ export default function MyStudents() {
     void fetchCountryDocumentsApproval(selected.user_id || selected.id)
       .then((result) => setCountryDocumentsEnabled(result.enabled))
       .catch(() => setCountryDocumentsEnabled(false));
+    setUploadAuthLoaded(false);
+    void fetchDocumentUploadAuthorization(selected.user_id || selected.id)
+      .then((result) => {
+        setUploadAuth(result);
+        setPickedTypes(result.enabled && result.scope === "selected" ? result.document_types : []);
+      })
+      .catch(() => setUploadAuth(null))
+      .finally(() => setUploadAuthLoaded(true));
   }, [selected?.id, selected?.user_id]);
 
   useEffect(() => {
@@ -126,6 +138,21 @@ export default function MyStudents() {
       setRequestNotice(error instanceof Error ? error.message : "Could not change country document approval.");
     } finally {
       setChangingCountryDocuments(false);
+    }
+  };
+
+  const changeUploadAuthorization = async (enabled: boolean, documentTypes?: string[]) => {
+    if (!selected) return;
+    setSavingUploadAuth(true);
+    try {
+      const result = await setDocumentUploadAuthorization(selected.user_id || selected.id, enabled, documentTypes);
+      setUploadAuth(result);
+      setPickedTypes(result.enabled && result.scope === "selected" ? result.document_types : []);
+      setRequestNotice(enabled ? "Document uploads enabled for this student." : "Document uploads disabled for this student.");
+    } catch (error) {
+      setRequestNotice(error instanceof Error ? error.message : "Could not change document upload authorization.");
+    } finally {
+      setSavingUploadAuth(false);
     }
   };
 
@@ -305,6 +332,68 @@ export default function MyStudents() {
                 <p className="text-xs text-slate-500">Messages</p>
               </Card>
             </div>
+
+            <Card className="mt-5 p-4" data-testid="document-upload-authorization">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold">Document uploads</p>
+                  <p className="text-xs text-slate-500">
+                    {!uploadAuthLoaded
+                      ? "Checking..."
+                      : uploadAuth?.enabled
+                        ? uploadAuth.scope === "selected"
+                          ? `Enabled for: ${uploadAuth.document_types.join(", ")}.`
+                          : "Enabled for every document that applies to this student."
+                        : "Not enabled — review this student's profile first. Until you enable uploads the student cannot upload documents."}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    size="sm"
+                    variant={uploadAuth?.enabled && uploadAuth.scope !== "selected" ? "secondary" : "primary"}
+                    disabled={savingUploadAuth || !uploadAuthLoaded}
+                    onClick={() => void changeUploadAuthorization(true)}
+                  >
+                    {savingUploadAuth ? "Saving..." : "Enable uploads (all applicable)"}
+                  </Button>
+                  {uploadAuth?.enabled && (
+                    <Button size="sm" variant="secondary" disabled={savingUploadAuth} onClick={() => void changeUploadAuthorization(false)}>
+                      Disable uploads
+                    </Button>
+                  )}
+                </div>
+              </div>
+              {checklist && checklist.items.length > 0 && (
+                <div className="mt-3 border-t border-slate-100 pt-3">
+                  <p className="mb-2 text-xs font-medium text-slate-600">Or enable only these documents:</p>
+                  <div className="flex flex-wrap gap-x-4 gap-y-1">
+                    {checklist.items.filter((item, index, all) => all.findIndex((other) => other.document_type === item.document_type) === index).map((item) => (
+                      <label key={item.document_type} className="flex items-center gap-1.5 text-xs text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={pickedTypes.includes(item.document_type)}
+                          onChange={(event) =>
+                            setPickedTypes((current) =>
+                              event.target.checked ? [...current, item.document_type] : current.filter((type) => type !== item.document_type),
+                            )
+                          }
+                        />
+                        {item.document_type}
+                      </label>
+                    ))}
+                  </div>
+                  <Button
+                    size="sm"
+                    className="mt-2"
+                    variant="secondary"
+                    disabled={savingUploadAuth || pickedTypes.length === 0}
+                    onClick={() => void changeUploadAuthorization(true, pickedTypes)}
+                  >
+                    Enable selected documents only
+                  </Button>
+                </div>
+              )}
+            </Card>
 
             <Card className="mt-5 flex flex-wrap items-center justify-between gap-3 p-4">
               <div>

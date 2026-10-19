@@ -20,6 +20,7 @@
 import { getPool } from "./postgres";
 import { getSessionByToken, readBearerToken } from "./studentAuth";
 import { commonCountryDocumentsFor, countryDocumentsEnabled, canStudentUseCountryDocument } from "../lib/countryDocumentApproval.mjs";
+import { canStudentUploadAnything, canStudentUploadDocument } from "../lib/documentUploadAuthorization.mjs";
 
 export type Viewer = {
   userId: string;
@@ -53,7 +54,7 @@ const PUBLIC_INSERT = new Set(["newsletter_subscriptions", "travel_inquiries"]);
 const OWNED = new Set([
   "profiles", "student_leads", "documents", "document_versions", "document_notifications", "document_requests",
   "document_audit_logs", "student_document_progress", "student_checklists", "applications",
-  "student_country_document_approvals",
+  "student_country_document_approvals", "student_document_upload_authorizations",
   "application_status_updates", "user_favorites", "notifications", "chat_sessions", "chat_messages",
   "chat_conversations", "ai_chat_messages", "private_conversations", "private_messages",
   "telecaller_conversations", "telecaller_messages", "university_shortlists", "shortlist_notes",
@@ -67,7 +68,7 @@ const OWNED = new Set([
  * counsellor runs the application. Writing these rows directly would let a
  * student mark a shortlist "applied" or invent an application.
  */
-const READ_ONLY_OWNED = new Set(["user_roles", "university_shortlists_admin", "university_shortlists", "applications", "application_status_updates", "student_country_document_approvals"]);
+const READ_ONLY_OWNED = new Set(["user_roles", "university_shortlists_admin", "university_shortlists", "applications", "application_status_updates", "student_country_document_approvals", "student_document_upload_authorizations"]);
 
 const OWNER_ID_FIELDS = ["user_id", "student_id", "student_user_id", "sender_id", "receiver_id"];
 const OWNER_EMAIL_FIELDS = ["email", "student_email", "user_email"];
@@ -249,6 +250,25 @@ export async function checkMutation(viewer: Viewer | null, mutation: Mutation, m
     }
   }
 
+  // A student may not add, replace or remove a document until the counselor
+  // has authorised uploads for that kind of document (see
+  // lib/documentUploadAuthorization.mjs). Existing rows are judged by their
+  // own type too, so a document cannot be re-labelled into an allowed type.
+  if ((table === "documents" || table === "document_versions") && ["insert", "upsert", "update", "delete"].includes(mutation.action)) {
+    const lead = await studentLead(viewer);
+    const types = new Set<string>();
+    for (const row of mutation.action === "update" ? matching.map((m) => ({ ...m, ...(mutation.payload || {}) })) : mutation.rows || []) {
+      types.add(String(row?.document_type || ""));
+    }
+    for (const row of mutation.action === "update" || mutation.action === "delete" || mutation.action === "upsert" ? matching : []) {
+      types.add(String(row?.document_type || ""));
+    }
+    for (const type of types) {
+      const decision = await canStudentUploadDocument(lead, type, { extraIds: [...viewer.keys] });
+      if (!decision.allowed) return decision.reason || "Document uploads are not enabled yet.";
+    }
+  }
+
   const rows = Array.isArray(mutation.rows) ? mutation.rows : [];
   const incoming = mutation.action === "update" ? [mutation.payload || {}] : rows;
   for (const row of incoming) {
@@ -359,8 +379,13 @@ export async function canUseFile(viewer: Viewer | null, path: string, mode: "rea
   if (!path) return false;
   if (viewer?.admin) return true;
   if (!viewer) return false;
-  // Students upload under "<their user id>/…".
-  if (path.split("/")[0] === viewer.userId) return true;
+  // Students upload under "<their user id>/…" — but only once the counselor
+  // has enabled uploads for them (an authorisation, or a request/document the
+  // counselor aimed at them). Reading their own folder is unaffected.
+  if (path.split("/")[0] === viewer.userId) {
+    if (mode === "read") return true;
+    return (await canStudentUploadAnything(await studentLead(viewer), [...viewer.keys])) === true;
+  }
   if (mode === "write") return false;
   // Older files are matched through the document row that points at them.
   const { rows } = await getPool().query(
