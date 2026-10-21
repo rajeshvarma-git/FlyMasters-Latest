@@ -29,7 +29,7 @@ import {
 } from "./studentAuth";
 import { handleWhatsAppRequest, isWhatsAppConfigured, isWhatsAppPath } from "./whatsapp";
 import { rowMatches } from "./postgres";
-import { canUseFile, checkMutation, rowsForFilters, viewerFromRequest, visibleRows } from "./dataPolicy";
+import { canUseFile, checkMutation, rowsForFilters, viewerFromRequest, visibleRows, visibleStorageListing } from "./dataPolicy";
 
 const API_PATHS = new Set(["/__local_db", "/__db_health", "/__auth", "/__session", "/__storage", "/__public_media"]);
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
@@ -247,7 +247,8 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
           "SELECT path, length(data_url) AS encoded_size FROM app_storage WHERE starts_with(path, $1) ORDER BY path LIMIT 200",
           [prefix],
         );
-        sendJson(res, 200, { files: rows.map((row) => ({ name: row.path, created_at: null, metadata: { size: Math.floor(Number(row.encoded_size) * 3 / 4) } })) });
+        const listed = await visibleStorageListing(viewer, rows);
+        sendJson(res, 200, { files: listed.map((row) => ({ name: row.path, created_at: null, metadata: { size: Math.floor(Number(row.encoded_size) * 3 / 4) } })) });
         return;
       }
 

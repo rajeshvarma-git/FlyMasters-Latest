@@ -19,7 +19,8 @@ import path from "path";
 import { sendVerificationEmail } from "../lib/email.mjs";
 import { syncConversationFromLead } from "../lib/whatsappStore.mjs";
 import { pool, jsonTable, jsonUpsert } from "../lib/db.mjs";
-import { documentAppliesToStudent, studentForTargeting } from "../lib/documentTargeting.mjs";
+import { documentAppliesToStudent, staffOnlyDocumentTypes, studentForTargeting } from "../lib/documentTargeting.mjs";
+import { staffOnlyForStudentRef } from "../lib/staffOnlyDocuments.mjs";
 import {
   applyApplicationStatus, applicationIdFor, buildApplicationEvent, findExistingOpenApplication, shortlistApplicationPatch,
 } from "../lib/applicationWorkflow.mjs";
@@ -721,7 +722,13 @@ async function publishShortlist(row, options = {}) {
         student_consent_date: stored.student_consent_date || null,
         student_decision: stored.student_decision || null,
         student_decision_at: stored.student_decision_at || null,
+        // A repair pass re-publishes the SQL row, which has no university_id or priority
+        // column: keep the catalogue programme id the counselor chose, or View University
+        // would lose the record it points at.
+        university_id: row.university_id || stored.university_id || built.university_id,
+        priority_level: row.priority_level || stored.priority_level || built.priority_level,
         application_id: stored.application_id || null,
+        application_start_requested_at: stored.application_start_requested_at || null,
         source: stored.source || built.source,
       }
     : built;
@@ -1368,6 +1375,8 @@ router.patch("/api/counselor/documents/:id", counselorAuth, async (req, res) => 
       updated_at: now,
     };
     await jsonUpsert("documents", next);
+    // A staff-only document is reviewed quietly: the student is not told it exists.
+    if (await staffOnlyForStudentRef(found.user_id, found.document_type)) return res.json({ ok: true, notified: false });
   await jsonUpsert("document_notifications", {
       id: crypto.randomUUID(),
       user_id: found.user_id,
@@ -2053,6 +2062,18 @@ router.post("/api/counselor/students/:id/document-requests", counselorAuth, asyn
       (String(ownerId) === studentUserId || String(ownerId) === String(student.id));
     const docs = mergeById(sqlDocs.rows.map(asDocument), jsonDocs.map(asDocument))
       .filter((doc) => !doc.archived && ownsDoc(doc.user_id));
+
+    // A staff-only document is never asked of a student. Reject the whole
+    // request (nothing is created) rather than quietly dropping it, so a
+    // counselor is told - and so this does not depend on the UI hiding it.
+    const staffOnlyNow = staffOnlyDocumentTypes(checklistItems, studentForTargeting(student));
+    const refused = requestedTypes.filter((type) => staffOnlyNow.has(type.trim().toLowerCase()));
+    if (refused.length) {
+      return res.status(400).json({
+        error: `${refused.join(", ")} ${refused.length === 1 ? "is a staff-only document" : "are staff-only documents"} and cannot be requested from the student.`,
+        staff_only: refused,
+      });
+    }
 
     const now = new Date().toISOString();
     const created = [];

@@ -107,6 +107,7 @@ export interface LocalShortlist {
   student_decision?: string | null;
   student_decision_at?: string | null;
   application_id?: string | null;
+  application_start_requested_at?: string | null;
 }
 
 export interface LocalLeave {

@@ -1858,6 +1858,8 @@ router.post("/api/case/me/shortlists/:id/decision", anySession, requireStudent, 
       student_decision: decision === "undo" ? null : decision === "accept" ? "accepted" : "declined",
       student_decision_at: decision === "undo" ? null : now,
       status: accepted ? "consented" : decision === "decline" ? "declined" : "recommended",
+      // Withdrawing consent also withdraws a pending "please start my application".
+      application_start_requested_at: accepted ? row.application_start_requested_at || null : null,
       updated_at: now,
     };
     await jsonUpsert("university_shortlists", next);
@@ -1873,6 +1875,113 @@ router.post("/api/case/me/shortlists/:id/decision", anySession, requireStudent, 
   } catch (error) {
     console.error("[shortlist] decision failed:", error);
     res.status(500).json({ error: "Could not save your choice." });
+  }
+});
+
+// What the student may ask of their counselor about a university they have
+// agreed to: "please start my application". It records the request and tells
+// the counselor — it never creates an application. Only the assigned
+// counselor can do that (POST /api/counselor/shortlists/:id/start-application).
+router.post("/api/case/me/shortlists/:id/request-application", anySession, requireStudent, async (req, res) => {
+  try {
+    const { row, owned, lead } = await shortlistOwnedBy(req.user.id, req.params.id);
+    if (!row || !owned) return res.status(404).json({ error: "That shortlist entry was not found." });
+    if (String(row.status || "") === "applied" || row.application_id) {
+      return res.status(409).json({ error: "Your counsellor has already started this application." });
+    }
+    if (!row.student_consent || String(row.student_decision || "") === "declined" || String(row.status || "") === "declined") {
+      return res.status(409).json({ error: "Please give your consent for this university first. Your counselor can start the application once you have." });
+    }
+    if (row.application_start_requested_at) {
+      return res.json({ ok: true, shortlist: row, already: true });
+    }
+    const now = new Date().toISOString();
+    const next = { ...row, application_start_requested_at: now, updated_at: now };
+    await jsonUpsert("university_shortlists", next);
+    const email = await studentEmailFor(req.user.id);
+    const who = [lead?.first_name, lead?.last_name].filter(Boolean).join(" ") || email || "A student";
+    await notifyStaffAboutStudent(req.user.id, lead, {
+      title: "Student asked to start an application",
+      message: `${who} gave consent and asked you to start the application for ${shortlistLabel(row)}.`,
+      counselorUrl: "/counselor/shortlists",
+    }).catch((error) => console.error("[shortlist] staff notify failed:", error));
+    res.json({ ok: true, shortlist: next });
+  } catch (error) {
+    console.error("[shortlist] application request failed:", error);
+    res.status(500).json({ error: "Could not send your request." });
+  }
+});
+
+const UNIVERSITY_FIELDS = ["id", "name", "country", "city", "state_province", "description", "established_year", "ranking", "university_type", "website_url", "is_tie_up", "logo_url"];
+const PROGRAM_FIELDS = ["id", "university_id", "university_name", "program_name", "country", "degree", "course", "specialization", "location", "city", "region", "duration", "fee", "language", "program_description", "eligibility", "career", "deadline"];
+const pick = (source, fields) => Object.fromEntries(fields.filter((key) => source?.[key] != null && source[key] !== "").map((key) => [key, source[key]]));
+const lowered = (value) => String(value || "").trim().toLowerCase();
+
+/**
+ * The real university and programme behind each of this student's shortlist
+ * entries, read from the catalogue the counselor chose them from. A shortlist
+ * row's university_id is the id of the catalogue programme (or of a
+ * `universities` row for a student's own pick); we resolve it, fall back to the
+ * exact university name, and otherwise return nothing rather than guess.
+ * Only the caller's own entries are resolved.
+ */
+router.get("/api/case/me/shortlist-details", anySession, requireStudent, async (req, res) => {
+  try {
+    const lead = await leadForStudent(req.user.id);
+    const email = await studentEmailFor(req.user.id);
+    const keys = new Set([String(req.user.id), lead?.id ? String(lead.id) : ""].filter(Boolean));
+    const mine = (await jsonTable("university_shortlists")).filter((row) =>
+      keys.has(String(row.student_id || "")) || (email && sameMailbox(row.student_email || row.email) === sameMailbox(email)));
+    if (!mine.length) return res.json({ details: {} });
+
+    const ids = [...new Set(mine.map((row) => String(row.university_id || "")).filter(Boolean))];
+    const names = [...new Set(mine.map((row) => lowered(row.university_name)).filter(Boolean))];
+    const [programRows, universityRows] = await Promise.all([
+      pool.query(
+        `SELECT id, data FROM app_records WHERE table_name = 'university_programs'
+           AND (id = ANY($1::text[]) OR data->>'university_id' = ANY($1::text[]) OR lower(data->>'university_name') = ANY($2::text[]))`,
+        [ids, names],
+      ),
+      pool.query(
+        `SELECT id, data FROM app_records WHERE table_name = 'universities'
+           AND (id = ANY($1::text[]) OR lower(data->>'name') = ANY($2::text[]))`,
+        [ids, names],
+      ),
+    ]);
+    const programs = programRows.rows.map((r) => ({ ...(r.data || {}), id: r.data?.id || r.id })).filter((r) => r.is_active !== false);
+    const universities = universityRows.rows.map((r) => ({ ...(r.data || {}), id: r.data?.id || r.id })).filter((r) => r.is_active !== false);
+
+    const details = {};
+    for (const row of mine) {
+      const byId = programs.find((program) => String(program.id) === String(row.university_id || ""));
+      const course = lowered(row.course_name);
+      const byName = !byId
+        ? programs.find((program) => lowered(program.university_name) === lowered(row.university_name)
+            && lowered(program.program_name) && (course === lowered(program.program_name) || course.startsWith(lowered(program.program_name))))
+        : null;
+      const program = byId || byName || null;
+      const university = universities.find((u) => String(u.id) === String(program?.university_id || row.university_id || ""))
+        || universities.find((u) => lowered(u.name) === lowered(row.university_name))
+        || null;
+      const universityId = String(university?.id || program?.university_id || "");
+      const siblings = (universityId || row.university_name)
+        ? programs
+            .filter((candidate) => (universityId && String(candidate.university_id || "") === universityId)
+              || lowered(candidate.university_name) === lowered(row.university_name))
+            .slice(0, 40)
+            .map((candidate) => pick(candidate, PROGRAM_FIELDS))
+        : [];
+      details[String(row.id)] = {
+        matched_by: byId ? "id" : byName ? "name" : university ? "university" : null,
+        university: university ? pick(university, UNIVERSITY_FIELDS) : null,
+        program: program ? pick(program, PROGRAM_FIELDS) : null,
+        programs: siblings,
+      };
+    }
+    res.json({ details });
+  } catch (error) {
+    console.error("[shortlist] details failed:", error);
+    res.status(500).json({ error: "Could not load the university details." });
   }
 });
 

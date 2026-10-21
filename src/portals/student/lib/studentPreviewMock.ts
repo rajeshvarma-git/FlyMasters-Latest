@@ -108,19 +108,24 @@ const tables: Record<string, Row[]> = {
     { id: "pv-n-2", user_id: ASHA_ID, title: "New document needed", message: "Please upload English test score.", type: "warning", is_read: false, action_url: "/student/documents", created_at: daysAgo(1) },
   ],
   universities: [
-    { id: "pv-u-1", name: "Preview University of Examples", country: "Canada", city: "Toronto", is_active: true, is_tie_up: true, ranking: 120, university_type: "Public", created_at: daysAgo(90), updated_at: NOW },
+    { id: "pv-u-1", name: "Preview University of Examples", country: "Canada", city: "Toronto", state_province: "Ontario", description: "A fictional research university used only in the local preview. Known for applied computing labs and a large co-op programme.", established_year: 1921, website_url: "https://example.com/preview-university", is_active: true, is_tie_up: true, ranking: 120, university_type: "Public", created_at: daysAgo(90), updated_at: NOW },
     { id: "pv-u-2", name: "Sample Institute of Technology", country: "Ireland", city: "Dublin", is_active: true, is_tie_up: false, ranking: 240, university_type: "Public", created_at: daysAgo(90), updated_at: NOW },
     { id: "pv-u-3", name: "Harbour Example University", country: "Ireland", city: "Cork", is_active: true, is_tie_up: false, ranking: 300, university_type: "Public", created_at: daysAgo(90), updated_at: NOW },
     { id: "pv-u-4", name: "Lakeside Sample College", country: "Canada", city: "Ottawa", is_active: true, is_tie_up: false, ranking: 410, university_type: "Public", created_at: daysAgo(90), updated_at: NOW },
     { id: "pv-u-5", name: "Riverside Example Institute", country: "Ireland", city: "Galway", is_active: true, is_tie_up: false, ranking: 500, university_type: "Public", created_at: daysAgo(90), updated_at: NOW },
+  ],
+  // Fictional catalogue programmes. A counselor's recommendation stores the id of one of these as its university_id.
+  university_programs: [
+    { id: "prog-pv-1", university_id: "pv-u-1", university_name: "Preview University of Examples", program_name: "MSc Computer Science", country: "Canada", degree: "Masters", course: "Computer Science", specialization: "Machine Learning", location: "Toronto, Ontario", city: "Toronto", region: "Ontario", duration: "2 years", fee: "CAD 24,000 per year", language: "English (IELTS 6.5)", program_description: "Thesis or project route with a paid co-op term.", eligibility: "Bachelor's degree in a related field, 70% or equivalent; IELTS 6.5.", career: "Software engineering, data science and research roles.", deadline: "15 Jan 2027", is_active: true },
+    { id: "prog-pv-2", university_id: "pv-u-1", university_name: "Preview University of Examples", program_name: "MEng Data Engineering", country: "Canada", degree: "Masters", course: "Engineering", specialization: "Data Engineering", location: "Toronto, Ontario", city: "Toronto", region: "Ontario", duration: "16 months", fee: "CAD 21,500 per year", is_active: true },
   ],
   user_favorites: [{ id: "pv-fav-1", user_id: ASHA_ID, university_id: "pv-u-2", created_at: daysAgo(4) }],
   // Fictional shortlist rows covering every case: counselor recommendation still waiting for the student,
   // a recommendation that became an application, an application not yet sent to the university, and the student's own pick.
   university_shortlists: [
     {
-      id: "pv-sl-1", student_id: ASHA_ID, counselor_id: COUNSELOR_ID, source_counselor_id: COUNSELOR_ID, university_id: "pv-u-1", university_name: "Preview University of Examples",
-      course_name: "MSc Computer Science", location: "Toronto, Canada", status: "recommended", tuition_fees: 24000, course_duration: "2 years",
+      id: "pv-sl-1", student_id: ASHA_ID, counselor_id: COUNSELOR_ID, source_counselor_id: COUNSELOR_ID, university_id: "prog-pv-1", university_name: "Preview University of Examples",
+      course_name: "MSc Computer Science", location: "Toronto, Canada", status: "recommended", priority_level: "high", tuition_fees: 24000, course_duration: "2 years",
       counselor_notes: "Strong fit for your profile and budget.", shortlisted_at: daysAgo(5), created_at: daysAgo(5), updated_at: daysAgo(5),
     },
     {
@@ -259,7 +264,45 @@ function handleApi(path: string, init?: RequestInit): Response {
   }
   if (path === "/api/case/me/notifications") return json({ ok: true });
   if (path === "/api/case/me/shortlists" && method === "POST") return json({ ok: true, shortlist: { id: `pv-sl-${Date.now()}`, ...body } });
-  if (/^\/api\/case\/me\/shortlists\/[^/]+\/decision$/.test(path)) return json({ ok: true, shortlist: { id: path.split("/")[5], ...body } });
+  // Same rules as the server, applied to the in-memory rows so the preview behaves like the real thing (until reload).
+  if (/^\/api\/case\/me\/shortlists\/[^/]+\/decision$/.test(path)) {
+    const row = tables.university_shortlists.find((item) => item.id === path.split("/")[5] && ownedByViewer(item));
+    if (!row) return json({ error: "That shortlist entry was not found." }, 404);
+    if (row.status === "applied") return json({ error: "Your counsellor has already started this application." }, 409);
+    const at = new Date().toISOString();
+    const accepted = body.decision === "accept";
+    Object.assign(row, {
+      student_consent: accepted, student_consent_date: accepted ? at : null,
+      student_decision: body.decision === "undo" ? null : accepted ? "accepted" : "declined",
+      student_decision_at: body.decision === "undo" ? null : at,
+      status: accepted ? "consented" : body.decision === "decline" ? "declined" : "recommended",
+      application_start_requested_at: accepted ? row.application_start_requested_at || null : null, updated_at: at,
+    });
+    return json({ ok: true, shortlist: row });
+  }
+  if (/^\/api\/case\/me\/shortlists\/[^/]+\/request-application$/.test(path)) {
+    const row = tables.university_shortlists.find((item) => item.id === path.split("/")[5] && ownedByViewer(item));
+    if (!row) return json({ error: "That shortlist entry was not found." }, 404);
+    if (row.status === "applied" || row.application_id) return json({ error: "Your counsellor has already started this application." }, 409);
+    if (!row.student_consent) return json({ error: "Please give your consent for this university first. Your counselor can start the application once you have." }, 409);
+    if (!row.application_start_requested_at) Object.assign(row, { application_start_requested_at: new Date().toISOString() });
+    return json({ ok: true, shortlist: row });
+  }
+  if (path === "/api/case/me/shortlist-details" && method === "GET") {
+    const lower = (value: unknown) => String(value || "").trim().toLowerCase();
+    const details: Row = {};
+    for (const row of tables.university_shortlists.filter(ownedByViewer)) {
+      const program = tables.university_programs.find((item) => item.id === row.university_id) || null;
+      const university = tables.universities.find((item) => item.id === (program?.university_id || row.university_id)) || tables.universities.find((item) => lower(item.name) === lower(row.university_name)) || null;
+      details[row.id] = {
+        matched_by: program ? "id" : university ? "university" : null,
+        university,
+        program,
+        programs: tables.university_programs.filter((item) => university && item.university_id === university.id),
+      };
+    }
+    return json({ details });
+  }
   if (path === "/api/student/checklists") return json({ activated: false, reason: "Preview: no counselor checklist has been activated.", checklists: [] });
   if (path === "/api/case/inbox") return json({ conversations: [], messages: [], unread: 0 });
   if (path.startsWith("/api/whatsapp/")) return json({ conversations: [], messages: [], verified: false });

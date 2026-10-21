@@ -43,7 +43,7 @@ type ShortlistGroupId = "accepted" | "waiting" | "applied" | "declined";
 
 const SHORTLIST_GROUPS: { id: ShortlistGroupId; label: string; hint?: string; badge: string; badgeText: string }[] = [
   { id: "accepted", label: "Accepted by student — start the application", badge: "approved", badgeText: "Accepted ✓" },
-  { id: "waiting", label: "Waiting for the student", hint: "The student sees a green tick and a red cross on each of these.", badge: "pending", badgeText: "Waiting" },
+  { id: "waiting", label: "Waiting for the student", hint: "The student sees Give Consent and Not interested on each of these.", badge: "pending", badgeText: "Waiting" },
   { id: "applied", label: "Application started", badge: "uploaded", badgeText: "Applied" },
   { id: "declined", label: "Declined by student", badge: "rejected", badgeText: "Declined ✗" },
 ];
@@ -413,7 +413,11 @@ export default function Shortlists() {
                         <Button size="sm" disabled={startingId === item.id} onClick={() => void startApplication(item)}>
                           {startingId === item.id ? "Starting…" : "Start application"}
                         </Button>
-                        <span className="text-xs text-slate-500">The student accepted this. You run the application from here.</span>
+                        <span className="text-xs text-slate-500">
+                          {item.application_start_requested_at
+                            ? "The student gave consent and asked you to start this application."
+                            : "The student accepted this. You run the application from here."}
+                        </span>
                       </div>
                     ) : null}
                     {group.id === "applied" ? (

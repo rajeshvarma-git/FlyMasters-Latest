@@ -21,6 +21,7 @@ import { getPool } from "./postgres";
 import { getSessionByToken, readBearerToken } from "./studentAuth";
 import { commonCountryDocumentsFor, countryDocumentsEnabled, canStudentUseCountryDocument } from "../lib/countryDocumentApproval.mjs";
 import { canStudentUploadAnything, canStudentUploadDocument } from "../lib/documentUploadAuthorization.mjs";
+import { staffOnlyTypesForStudent, typeKey } from "../lib/staffOnlyDocuments.mjs";
 
 export type Viewer = {
   userId: string;
@@ -67,8 +68,10 @@ const OWNED = new Set([
  * through /api/case/me/shortlists (which also tells the counsellor), and the
  * counsellor runs the application. Writing these rows directly would let a
  * student mark a shortlist "applied" or invent an application.
+ * Document requests are the counsellor's too: a request is one of the things
+ * that lets a student upload, so a student must not be able to write one.
  */
-const READ_ONLY_OWNED = new Set(["user_roles", "university_shortlists_admin", "university_shortlists", "applications", "application_status_updates", "student_country_document_approvals", "student_document_upload_authorizations"]);
+const READ_ONLY_OWNED = new Set(["user_roles", "university_shortlists_admin", "university_shortlists", "applications", "application_status_updates", "student_country_document_approvals", "student_document_upload_authorizations", "document_requests"]);
 
 const OWNER_ID_FIELDS = ["user_id", "student_id", "student_user_id", "sender_id", "receiver_id"];
 const OWNER_EMAIL_FIELDS = ["email", "student_email", "user_email"];
@@ -203,6 +206,63 @@ async function visibleCountryDocumentRows(viewer: Viewer, rows: any[]) {
   return rows.filter((_row, index) => allowed[index]);
 }
 
+/**
+ * Tables whose rows carry a document type. A document that is staff-only for
+ * this student ("Hidden from students") must not be readable, changeable or
+ * attached to anything through any of them - not just hidden from the list.
+ */
+const DOCUMENT_TYPE_TABLES = new Set([
+  "documents", "document_versions", "document_requests", "document_notifications",
+  "document_audit_logs", "student_document_progress", "student_checklists",
+]);
+
+async function hiddenDocumentTypes(viewer: Viewer): Promise<Set<string>> {
+  return staffOnlyTypesForStudent(await studentLead(viewer), [...viewer.keys]);
+}
+
+/** Ids of `documents` rows whose type is hidden from this viewer (versions point at them by document_id). */
+async function hiddenDocumentIds(hidden: Set<string>): Promise<Set<string>> {
+  if (!hidden.size) return new Set();
+  const { rows } = await getPool().query(
+    "SELECT id FROM app_records WHERE table_name = 'documents' AND lower(btrim(data->>'document_type')) = ANY($1::text[])",
+    [[...hidden]],
+  ).catch(() => ({ rows: [] as any[] }));
+  return new Set(rows.map((r) => String(r.id)));
+}
+
+function isHiddenRow(row: any, hidden: Set<string>, hiddenIds: Set<string>) {
+  if (!row) return false;
+  if (row.document_type && hidden.has(typeKey(row.document_type))) return true;
+  return Boolean(row.document_id && hiddenIds.has(String(row.document_id)));
+}
+
+async function withoutStaffOnlyDocuments(viewer: Viewer, rows: any[]) {
+  const hidden = await hiddenDocumentTypes(viewer);
+  if (!hidden.size) return rows;
+  const hiddenIds = await hiddenDocumentIds(hidden);
+  return rows.filter((row) => !isHiddenRow(row, hidden, hiddenIds));
+}
+
+/** Of these stored file paths, the ones that belong to a staff-only document for this viewer. */
+async function staffOnlyFilePaths(viewer: Viewer, paths: string[]): Promise<Set<string>> {
+  if (!paths.length) return new Set();
+  const hidden = await hiddenDocumentTypes(viewer);
+  if (!hidden.size) return new Set();
+  const hiddenIds = await hiddenDocumentIds(hidden);
+  const { rows } = await getPool().query(
+    "SELECT data FROM app_records WHERE table_name IN ('documents','document_versions','travel_document_uploads') AND data->>'file_path' = ANY($1::text[])",
+    [paths],
+  ).catch(() => ({ rows: [] as any[] }));
+  return new Set(rows.filter((r) => isHiddenRow(r.data, hidden, hiddenIds)).map((r) => String(r.data?.file_path)));
+}
+
+/** The student's file listing without the files of staff-only documents. */
+export async function visibleStorageListing(viewer: Viewer | null, rows: any[]) {
+  if (!viewer || viewer.admin) return rows;
+  const blocked = await staffOnlyFilePaths(viewer, rows.map((r) => String(r.path)));
+  return blocked.size ? rows.filter((r) => !blocked.has(String(r.path))) : rows;
+}
+
 export async function visibleRows(viewer: Viewer | null, table: string, rows: any[]): Promise<any[] | null> {
   if (viewer?.admin) return rows;
   if (table === "document_checklists") return documentChecklistRows(viewer, rows);
@@ -211,7 +271,8 @@ export async function visibleRows(viewer: Viewer | null, table: string, rows: an
   if (table === "package_reviews") return rows; // public reviews; writes still owner-checked
   if (!viewer) return PUBLIC_READ.has(table) ? rows : null;
   if (!OWNED.has(table)) return null;
-  const mine = rows.filter((row) => ownsRow(viewer, row));
+  let mine = rows.filter((row) => ownsRow(viewer, row));
+  if (DOCUMENT_TYPE_TABLES.has(table)) mine = await withoutStaffOnlyDocuments(viewer, mine);
   if (["documents", "document_requests", "document_versions"].includes(table)) {
     return visibleCountryDocumentRows(viewer, mine);
   }
@@ -239,6 +300,19 @@ export async function checkMutation(viewer: Viewer | null, mutation: Mutation, m
   if (!OWNED.has(table) || READ_ONLY_OWNED.has(table)) return "Not allowed.";
   const fieldError = studentFieldError(mutation, matching);
   if (fieldError) return fieldError;
+  // Nothing about a staff-only document can be written, replaced or removed
+  // by the student - by id, by a relabelled type, or by pointing at its file.
+  if (DOCUMENT_TYPE_TABLES.has(table) && ["insert", "upsert", "update", "delete"].includes(mutation.action)) {
+    const hidden = await hiddenDocumentTypes(viewer);
+    if (hidden.size) {
+      const hiddenIds = await hiddenDocumentIds(hidden);
+      const payload = mutation.payload || {};
+      const incoming = mutation.action === "update" ? matching.map((m) => ({ ...m, ...payload }))
+        : mutation.action === "delete" ? [] : mutation.rows || [];
+      const touched = [...matching, ...incoming];
+      if (touched.some((row) => isHiddenRow(row, hidden, hiddenIds))) return "This document type is not available.";
+    }
+  }
   if (table === "documents" && (mutation.action === "insert" || mutation.action === "upsert" || mutation.action === "update")) {
     const lead = await studentLead(viewer);
     const items = await countryChecklistItems();
@@ -379,6 +453,9 @@ export async function canUseFile(viewer: Viewer | null, path: string, mode: "rea
   if (!path) return false;
   if (viewer?.admin) return true;
   if (!viewer) return false;
+  // The file of a staff-only document is closed to the student: not to read,
+  // overwrite or delete, wherever it is stored - including their own folder.
+  if ((await staffOnlyFilePaths(viewer, [path])).has(path)) return false;
   // Students upload under "<their user id>/…" — but only once the counselor
   // has enabled uploads for them (an authorisation, or a request/document the
   // counselor aimed at them). Reading their own folder is unaffected.

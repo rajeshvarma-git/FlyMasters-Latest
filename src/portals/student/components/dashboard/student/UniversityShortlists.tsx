@@ -16,7 +16,9 @@ import { useToast } from '@student/hooks/use-toast';
 import { Calendar, Check, DollarSign, GraduationCap, Info, MapPin, RotateCcw, User, X } from 'lucide-react';
 import { format } from 'date-fns';
 import { collectStudentShortlistKeys, shortlistBelongsToStudent } from '@student/lib/studentShortlists';
-import { decideShortlist, shortlistMyPick } from '@student/lib/shortlistDecisions';
+import { decideShortlist, fetchShortlistDetails, requestApplicationStart, shortlistMyPick, type ShortlistDetails } from '@student/lib/shortlistDecisions';
+import { RecommendedUniversityCard } from './RecommendedUniversityCard';
+import { UniversityDetailsDialog } from './UniversityDetailsDialog';
 import { statusInfo } from '@shared/applicationJourney';
 
 /**
@@ -47,6 +49,8 @@ type ShortlistRow = {
   application_deadline: string | null;
   application_id?: string | null;
   application_status?: string | null;
+  application_start_requested_at?: string | null;
+  student_consent_date?: string | null;
   shortlisted_at: string | null;
   created_at: string | null;
   course_link?: string | null;
@@ -84,6 +88,9 @@ export function UniversityShortlists() {
   const [loading, setLoading] = useState(true);
   const [busyKey, setBusyKey] = useState('');
   const [details, setDetails] = useState<Item | null>(null);
+  const [catalog, setCatalog] = useState<Record<string, ShortlistDetails>>({});
+  const [viewing, setViewing] = useState<ShortlistRow | null>(null);
+  const [notices, setNotices] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     if (!user) return;
@@ -108,6 +115,8 @@ export function UniversityShortlists() {
         website_url: u.website_url || null,
       })));
       setApplications((apps || []) as ApplicationRow[]);
+      // The real university and programme behind each recommendation (catalogue records, not copies).
+      fetchShortlistDetails().then(setCatalog).catch((error) => console.error('Could not load university details:', error));
 
       const ids = [...new Set(mine.map((row) => row.source_counselor_id || row.counselor_id).filter(Boolean))] as string[];
       if (ids.length) {
@@ -201,6 +210,27 @@ export function UniversityShortlists() {
     ? run(item.key, () => decideShortlist(item.row.id, 'undo'), 'Moved back to your decisions')
     : Promise.resolve();
 
+  // Start Application never creates an application. Before consent it explains why; after consent it asks the counselor.
+  const startApplication = async (row: ShortlistRow) => {
+    const setNotice = (message: string) => setNotices((current) => ({ ...current, [row.id]: message }));
+    const consented = row.student_consent || String(row.status || '').toLowerCase() === 'consented';
+    if (!consented) {
+      setNotice('Please give your consent for this university first. Your counselor can start the application once you have.');
+      return;
+    }
+    setNotice('');
+    setBusyKey(`s-${row.id}`);
+    try {
+      await requestApplicationStart(row.id);
+      toast({ title: 'Request sent', description: 'Your counselor has been asked to start this application.' });
+      await load();
+    } catch (error: any) {
+      setNotice(error?.message || 'Could not send your request. Please try again.');
+    } finally {
+      setBusyKey('');
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex min-h-[400px] items-center justify-center">
@@ -218,6 +248,27 @@ export function UniversityShortlists() {
     if (item.row.source === 'student') return 'Your pick';
     const name = counselorNames[String(item.row.source_counselor_id || item.row.counselor_id || '')];
     return name ? `Recommended by ${name}` : 'Recommended by your counsellor';
+  };
+
+  const renderRecommended = (item: Item) => {
+    if (item.kind !== 'shortlist') return null;
+    const row = item.row;
+    const app = applicationFor(row);
+    return (
+      <RecommendedUniversityCard
+        key={item.key}
+        row={row}
+        details={catalog[row.id]}
+        application={app ? { id: app.id, status: app.status } : null}
+        busy={busyKey === item.key}
+        notice={notices[row.id]}
+        onGiveConsent={() => { setNotices((c) => ({ ...c, [row.id]: '' })); void accept(item); }}
+        onWithdrawConsent={() => { setNotices((c) => ({ ...c, [row.id]: '' })); void undo(item); }}
+        onNotInterested={() => void decline(item)}
+        onStartApplication={() => void startApplication(row)}
+        onView={() => setViewing(row)}
+      />
+    );
   };
 
   const renderCard = (item: Item) => {
@@ -308,7 +359,7 @@ export function UniversityShortlists() {
         <div>
           <h1 className="text-3xl font-bold">My Shortlists</h1>
           <p className="text-muted-foreground">
-            Universities you are interested in. These are not applications - tick <span className="font-medium text-emerald-700">&#10003;</span> the ones you want to
+            Universities you are interested in. These are not applications. For your counselor's recommendations, give your consent when you want them to go ahead. For your own picks, tick <span className="font-medium text-emerald-700">&#10003;</span> the ones you want to
             go ahead with, or cross <span className="font-medium text-rose-700">&#10007;</span> the ones you don&apos;t. Only your counselor can start an application, and
             it then appears under <Link to="/student/applications" className="font-medium text-primary underline">My Applications</Link>.
           </p>
@@ -336,8 +387,15 @@ export function UniversityShortlists() {
               <Button asChild variant="outline" size="sm"><Link to="/student/messages">Message your advisor</Link></Button>
             </CardContent>
           </Card>
-        ) : groups.recommended.map(renderCard)}
+        ) : groups.recommended.map(renderRecommended)}
       </section>
+
+      <UniversityDetailsDialog
+        open={Boolean(viewing)}
+        onOpenChange={(open) => { if (!open) setViewing(null); }}
+        row={viewing}
+        details={viewing ? catalog[viewing.id] : null}
+      />
 
       <Dialog open={Boolean(details)} onOpenChange={(open) => { if (!open) setDetails(null); }}>
         <DialogContent>

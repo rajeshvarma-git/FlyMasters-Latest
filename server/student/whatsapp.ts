@@ -6,6 +6,7 @@ import { getSessionByToken, readBearerToken, type PublicUser } from "./studentAu
 import { deliveryStatusPatch, whatsappWindowOpen, latestWhatsAppInbound } from "../lib/waDelivery.mjs";
 import { sendWhatsAppOutreach, outreachTemplateName } from "../lib/waSend.mjs";
 import { JWT_SECRET, IS_PRODUCTION } from "../lib/env.mjs";
+import { staffOnlyForStudentRef } from "../lib/staffOnlyDocuments.mjs";
 
 const CODE_TTL_MS = 10 * 60 * 1000;
 const MAX_VERIFY_ATTEMPTS = 5;
@@ -1018,6 +1019,11 @@ async function handleSendDocument(req: IncomingMessage, res: ServerResponse, con
   }
   if (!doc.file_path) {
     sendJson(res, 404, { error: "File not found." });
+    return;
+  }
+  // A staff-only document is never sent to the student, by WhatsApp or otherwise.
+  if (await staffOnlyForStudentRef(String(studentId), doc.document_type)) {
+    sendJson(res, 403, { error: "This is a staff-only document and cannot be sent to the student." });
     return;
   }
 

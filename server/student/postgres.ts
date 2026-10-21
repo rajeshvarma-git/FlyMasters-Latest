@@ -342,7 +342,10 @@ async function mergeCounselorSqlShortlists(
       student_id: resolved?.user_id || String(existing?.student_id || row.student_id || ""),
       student_email: resolved?.email || existing?.student_email || lead?.email || "",
       counselor_id: "local-counselor-1",
-      university_id: row.university_id ? String(row.university_id) : `uni-${row.id}`,
+      // The SQL mirror has no university_id of its own. Keep the catalogue programme id the counselor
+      // recommended (stored on the record) - replacing it with a made-up "uni-<row id>" on every student
+      // read would cut the recommendation off from the real university it points at.
+      university_id: row.university_id ? String(row.university_id) : String(existing?.university_id || `uni-${row.id}`),
       university_name: row.university_name || "",
       course_name: row.course_name || "",
       location: row.location || "",

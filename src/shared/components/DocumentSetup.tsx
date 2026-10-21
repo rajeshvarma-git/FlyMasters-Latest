@@ -437,7 +437,7 @@ export default function DocumentSetup({ title = "Documents setup", backSlot }: {
         </div>
         <div className="flex flex-wrap items-center gap-5 text-sm text-slate-700">
           <label className="flex items-center gap-2">
-            <input type="checkbox" checked={required} onChange={(e) => setRequired(e.target.checked)} /> Required
+            <input type="checkbox" checked={required} onChange={(e) => setRequired(e.target.checked)} /> Mandatory
           </label>
           <label className="flex items-center gap-2" title="Kept for staff; not shown to or asked of students">
             <input type="checkbox" checked={staffOnly} onChange={(e) => setStaffOnly(e.target.checked)} /> Staff only (students don&apos;t see it)
@@ -500,12 +500,12 @@ export default function DocumentSetup({ title = "Documents setup", backSlot }: {
               ) : null}
             </div>
             <div className="flex flex-wrap items-center gap-2">
-              {row.is_required !== false ? <span className={`${chip} bg-orange-100 text-orange-800`}>Required</span> : null}
+              {row.is_required !== false ? <span className={`${chip} bg-orange-100 text-orange-800`}>Mandatory</span> : null}
               {row.staff_only ? <span className={`${chip} bg-slate-800 text-white`}><EyeOff className="h-3 w-3" /> Staff only</span> : null}
-              <span className={`${chip} ${row.is_active === false ? "bg-slate-100 text-slate-600" : "bg-emerald-100 text-emerald-800"}`}>
-                {row.is_active === false ? (row.source === "document_master" ? "Country checklists only" : "Not asked") : "Asked of students"}
+              <span className={`${chip} ${row.is_active === false || row.staff_only ? "bg-slate-100 text-slate-600" : "bg-emerald-100 text-emerald-800"}`}>
+                {row.staff_only ? "Hidden from students" : row.is_active === false ? (row.source === "document_master" ? "Country checklists only" : "Hidden from students") : "Visible to students"}
               </span>
-              {!row.can_edit ? <span className={`${chip} bg-sky-50 text-sky-700`}>Set by {row.created_by_role === "admin" || !row.created_by_role ? "admin" : "another counsellor"}</span> : null}
+              {!row.can_edit ? <span className={`${chip} bg-sky-50 text-sky-700`}>Added by {row.created_by_role === "admin" || !row.created_by_role ? "admin" : "another counsellor"}</span> : null}
               {row.can_edit ? (
                 <>
                   {row.audience === "students" ? (

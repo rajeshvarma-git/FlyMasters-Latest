@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import { jsonTable, jsonUpsert } from "./db.mjs";
+import { isStaffOnlyDocumentType, studentForTargeting } from "./documentTargeting.mjs";
 
 /**
  * Who may upload documents, and which ones.
@@ -13,6 +14,10 @@ import { jsonTable, jsonUpsert } from "./db.mjs";
  * It is deliberately separate from the country-wise approval
  * (lib/countryDocumentApproval.mjs): approving the country-wise common
  * documents makes that group *visible*, it never grants the right to upload.
+ *
+ * A staff-only document ("Hidden from students") is never uploadable by a
+ * student, whatever else they have been allowed: not under "all", not when
+ * listed under "selected", not through a request. That check comes first.
  *
  * Two other counsellor actions are already explicit and per-student, so they
  * also let the student upload exactly the document they name, and nothing more:
@@ -69,12 +74,18 @@ export async function setDocumentUploadAuthorization(student, { enabled, documen
 /**
  * The single rule. Pure, so the server gate and the tests use the same code.
  *
+ * @param student  optional targeting shape ({ ids, countries, ... }); needed so a
+ *                 same-named ordinary document aimed at this student is recognised.
  * @returns {{ allowed: boolean, source: "authorization"|"request"|"named_document"|null, reason?: string }}
  */
-export function uploadDecision({ authorization, ids, checklistItems = [], requests = [], documentType }) {
+export function uploadDecision({ authorization, ids, checklistItems = [], requests = [], documentType, student }) {
   const type = norm(documentType);
   if (!type) return { allowed: false, source: null, reason: "Document type is required." };
   const mine = ids instanceof Set ? ids : new Set([...(ids || [])].map(String));
+
+  if (isStaffOnlyDocumentType(checklistItems, student || { ids: [...mine] }, documentType)) {
+    return { allowed: false, source: null, reason: "This document type is not available for upload." };
+  }
 
   const request = requests.find(
     (row) =>
@@ -126,7 +137,10 @@ export async function canStudentUploadDocument(student, documentType, { extraIds
     jsonTable("document_checklists").catch(() => []),
     jsonTable("document_requests").catch(() => []),
   ]);
-  return uploadDecision({ authorization, ids: studentIds(student, extraIds), checklistItems, requests, documentType });
+  return uploadDecision({
+    authorization, ids: studentIds(student, extraIds), checklistItems, requests, documentType,
+    student: studentForTargeting(student, extraIds),
+  });
 }
 
 export async function canStudentUploadAnything(student, extraIds = []) {

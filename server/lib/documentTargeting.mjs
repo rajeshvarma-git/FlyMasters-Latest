@@ -103,6 +103,33 @@ export function documentAppliesToStudent(item, student, { includeStaffOnly = fal
   return true;
 }
 
+const typeKey = (value) => String(value || "").trim().toLowerCase();
+
+/**
+ * Whether `documentType` is a staff-only document for this student: some row
+ * with that name is staff-only, and no ordinary (students-can-see-it) row with
+ * the same name applies to the student. Names are compared ignoring case and
+ * surrounding spaces, so a different spelling of the name cannot slip past.
+ * Upload permission, document requests, record reads and file access all use
+ * this one rule, so "Hidden from students" means the same everywhere.
+ *
+ * @param items    document_checklists rows
+ * @param student  the shape documentAppliesToStudent wants ({ ids, countries, ... })
+ */
+export function isStaffOnlyDocumentType(items, student, documentType) {
+  const key = typeKey(documentType);
+  if (!key) return false;
+  const same = (items || []).filter((item) => typeKey(item?.document_type) === key);
+  if (!same.some((item) => item.staff_only)) return false;
+  return !same.some((item) => !item.staff_only && documentAppliesToStudent(item, student));
+}
+
+/** Lower-cased names of every document type that is staff-only for this student. */
+export function staffOnlyDocumentTypes(items, student) {
+  const names = new Set((items || []).filter((item) => item?.staff_only).map((item) => typeKey(item.document_type)).filter(Boolean));
+  return new Set([...names].filter((name) => isStaffOnlyDocumentType(items, student, name)));
+}
+
 /** A student lead row → the shape documentAppliesToStudent wants. */
 export function studentForTargeting(lead, extraIds = []) {
   const prefs = lead?.preferences && typeof lead.preferences === "object" ? lead.preferences : {};

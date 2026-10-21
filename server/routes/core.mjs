@@ -20,6 +20,7 @@ import { announceCaseOwner } from "./cases.mjs";
 import { raiseAlert } from "../lib/alerts.mjs";
 import { pool, jsonTable, jsonUpsert } from "../lib/db.mjs";
 import { documentAppliesToStudent, studentForTargeting } from "../lib/documentTargeting.mjs";
+import { staffOnlyForStudentRef } from "../lib/staffOnlyDocuments.mjs";
 import { applyApplicationStatus, buildApplicationEvent, shortlistApplicationPatch } from "../lib/applicationWorkflow.mjs";
 import { STATUS_INFO } from "../../src/shared/applicationJourney.ts";
 import {
@@ -2652,6 +2653,8 @@ router.patch("/api/documents/:id", auth, async (req, res) => {
       reviewed_at: now,
       updated_at: now,
     });
+    // A staff-only document is reviewed quietly: the student is not told it exists.
+    if (await staffOnlyForStudentRef(found.user_id, found.document_type)) return res.json({ ok: true, notified: false });
     await notify(
       found.user_id,
       status === "approved" ? "Document approved" : "Document rejected",

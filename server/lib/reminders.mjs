@@ -9,6 +9,7 @@
  *               after H1 hours, then H2 hours (see nudgeStalledIntakes in routes/cases.mjs).
  */
 import crypto from "crypto";
+import { staffOnlyForStudentRef } from "./staffOnlyDocuments.mjs";
 import { pool, jsonTable, jsonUpsert } from "./db.mjs";
 
 export const REMINDER_DEFAULTS = {
@@ -153,6 +154,8 @@ export async function runDocumentReminders({ now = new Date(), settings = null, 
   const due = new Map();
   for (const req of requests) {
     if (String(req.status || "pending") !== "pending") continue;
+    // A request for a staff-only document (made before such requests were refused) is never chased.
+    if (await staffOnlyForStudentRef(req.student_id, req.document_type)) continue;
     if (have.has(`${req.student_id}|${String(req.document_type || "").trim().toLowerCase()}`)) continue;
     const sent = Number(req.reminders_sent || 0);
     if (sent >= cfg.maxReminders) continue;
