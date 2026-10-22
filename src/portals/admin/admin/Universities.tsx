@@ -1,7 +1,8 @@
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
-import { Building2, ChevronRight, Globe, GraduationCap, Plane, Upload } from "lucide-react";
+import { Building2, ChevronRight, Globe, GraduationCap, Pencil, Plane, Plus, Upload } from "lucide-react";
 import { api } from "@admin/lib/api";
 import { refreshStore, useAdminStore } from "@admin/lib/store";
+import { useAuth } from "@admin/context/AuthContext";
 import type {
   CatalogCountryRow,
   CatalogDegreeRow,
@@ -11,13 +12,29 @@ import type {
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
 import { Input, Label } from "@admin/components/ui/Field";
+import { UniversityInfoEditor } from "./UniversityInfoEditor";
+import type { UniversityInfoStatus } from "@shared/universityInfo";
 
 const PAGE_SIZE = 50;
 
-type BrowseLevel = "countries" | "universities" | "degrees" | "programs";
+type BrowseLevel = "countries" | "universities" | "degrees" | "programs" | "info";
+
+/** Only admins and super admins may write university information; the server enforces it too. */
+const INFO_EDITOR_ROLES = ["admin", "super_admin"];
+
+const INFO_BADGE: Record<UniversityInfoStatus, { text: string; className: string }> = {
+  none: { text: "No information yet", className: "bg-slate-100 text-slate-600" },
+  draft: { text: "Draft", className: "bg-amber-100 text-amber-800" },
+  published: { text: "Published", className: "bg-emerald-100 text-emerald-800" },
+  changed: { text: "Published - edits not published", className: "bg-sky-100 text-sky-800" },
+};
 
 export default function Universities() {
   const store = useAdminStore();
+  const { user } = useAuth();
+  const canEditInfo = INFO_EDITOR_ROLES.includes(String(user?.role));
+  const [infoUniversity, setInfoUniversity] = useState<{ id: string; name: string } | null>(null);
+  const [infoStatuses, setInfoStatuses] = useState<Record<string, UniversityInfoStatus>>({});
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -47,6 +64,12 @@ export default function Universities() {
   const loadUniversities = async (nextCountry: string) => {
     const params = new URLSearchParams({ country: nextCountry });
     setUniversities(await api<CatalogUniversityRow[]>(`/university-catalog/universities?${params.toString()}`));
+  };
+
+  const loadInfoStatuses = async () => {
+    if (!canEditInfo) return;
+    const data = await api<{ statuses: { university_id: string; status: UniversityInfoStatus }[] }>("/admin/university-info/status");
+    setInfoStatuses(Object.fromEntries(data.statuses.map((row) => [row.university_id, row.status])));
   };
 
   const loadDegrees = async (nextCountry: string, nextUniversity: string) => {
@@ -81,6 +104,10 @@ export default function Universities() {
       void loadUniversities(country).catch((err: Error) => setError(err.message));
     }
   }, [level, country, store.universityProgramCount]);
+
+  useEffect(() => {
+    if (level === "universities") void loadInfoStatuses().catch(() => setInfoStatuses({}));
+  }, [level, country, canEditInfo]);
 
   useEffect(() => {
     if (level === "degrees" && country && university) {
@@ -304,21 +331,57 @@ export default function Universities() {
               <p className="font-semibold">Universities in {country}</p>
             </div>
             <div className="grid gap-3">
-              {universities.map((item) => (
-                <button
-                  key={item.name}
-                  type="button"
-                  className="rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:border-sky-300 hover:bg-sky-50"
-                  onClick={() => openUniversity(item.name)}
-                >
-                  <p className="font-semibold">{item.name}</p>
-                  <p className="mt-1 text-sm text-slate-500">
-                    {item.location || country} · {item.program_count.toLocaleString()} programs
-                  </p>
-                </button>
-              ))}
+              {universities.map((item) => {
+                const id = item.university_id || "";
+                const status = infoStatuses[id] || "none";
+                return (
+                  <div
+                    key={item.name}
+                    className="rounded-2xl border border-slate-200 bg-white p-4 transition hover:border-sky-300"
+                    data-testid="university-card"
+                  >
+                    <button
+                      type="button"
+                      className="block text-left font-semibold hover:text-sky-700"
+                      data-testid="university-name"
+                      onClick={() => openUniversity(item.name)}
+                    >
+                      {item.name}
+                    </button>
+                    {canEditInfo && (
+                      <div className="mt-2 flex flex-wrap items-center gap-2" data-testid="university-info-row">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          disabled={!id}
+                          title={id ? undefined : "This university has no catalogue id yet. Re-import its CSV."}
+                          data-testid="manage-university-info"
+                          onClick={() => { setInfoUniversity({ id, name: item.name }); setLevel("info"); }}
+                        >
+                          {status === "none" ? <Plus className="h-4 w-4" /> : <Pencil className="h-4 w-4" />}
+                          {status === "none" ? "Add University Information" : "Edit University Information"}
+                        </Button>
+                        <span className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${INFO_BADGE[status].className}`} data-testid="university-info-status">
+                          {INFO_BADGE[status].text}
+                        </span>
+                      </div>
+                    )}
+                    <p className="mt-2 text-sm text-slate-500">
+                      {item.location || country} · {item.program_count.toLocaleString()} programs
+                    </p>
+                  </div>
+                );
+              })}
             </div>
           </>
+        )}
+
+        {level === "info" && infoUniversity && (
+          <UniversityInfoEditor
+            universityId={infoUniversity.id}
+            onBack={() => { setLevel("universities"); setInfoUniversity(null); void loadInfoStatuses().catch(() => undefined); }}
+          />
         )}
 
         {level === "degrees" && (

@@ -27,6 +27,7 @@ import { alignAssignedLeadBranches } from "./lib/branches.mjs";
 import { pool } from "./lib/db.mjs";
 import coreRoutes, { startUnassignedWatcher } from "./routes/core.mjs";
 import counselorRoutes from "./routes/counselor.mjs";
+import universityInfoRoutes from "./routes/universityInfo.mjs";
 import studentRoutes from "./routes/student.mjs";
 import partnerRoutes from "./routes/partner.mjs";
 import financeRoutes from "./routes/finance.mjs";
@@ -73,6 +74,8 @@ app.use(configRoutes);
 app.use(commsRoutes);
 // One student conversation: AI advisor -> telecaller -> counselor.
 app.use(caseRoutes);
+// Admin-managed university information (draft / publish) and its student view.
+app.use(universityInfoRoutes);
 app.use(documentSetupRoutes);
 app.use(knowledgeRoutes);
 app.use(coreRoutes);

@@ -3,12 +3,14 @@ import { Badge } from '@student/components/ui/badge';
 import { GraduationCap, Globe, MapPin } from 'lucide-react';
 import type { ShortlistDetails } from '@student/lib/shortlistDecisions';
 import { fieldOfStudy, keyFacts, locationLine, overview, programTitle } from '@student/lib/universityInfo';
+import { UniversityInfoView } from './UniversityInfoView';
 
 type Props = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   row: {
     id: string;
+    university_id?: string | null;
     university_name: string | null;
     course_name: string | null;
     location: string | null;
@@ -47,6 +49,11 @@ export function UniversityDetailsDialog({ open, onOpenChange, row, details }: Pr
         </DialogHeader>
 
         <div className="space-y-4 text-sm">
+          <section data-testid="published-university-info">
+            <h3 className="mb-2 font-semibold">About this university</h3>
+            <UniversityInfoView universityId={details?.university_id || details?.university?.id || row.university_id || null} />
+          </section>
+
           {about ? (
             <section>
               <h3 className="mb-1 font-semibold">Overview</h3>

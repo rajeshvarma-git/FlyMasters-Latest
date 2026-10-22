@@ -1972,6 +1972,8 @@ router.get("/api/case/me/shortlist-details", anySession, requireStudent, async (
             .map((candidate) => pick(candidate, PROGRAM_FIELDS))
         : [];
       details[String(row.id)] = {
+        // The catalogue id of the university: what "View University" looks the published information up by.
+        university_id: universityId || null,
         matched_by: byId ? "id" : byName ? "name" : university ? "university" : null,
         university: university ? pick(university, UNIVERSITY_FIELDS) : null,
         program: program ? pick(program, PROGRAM_FIELDS) : null,

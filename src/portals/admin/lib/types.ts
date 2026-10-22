@@ -291,6 +291,8 @@ export interface CatalogCountryRow {
 
 export interface CatalogUniversityRow {
   name: string;
+  /** Catalogue id of the university; what its information is stored against. */
+  university_id?: string | null;
   location: string;
   program_count: number;
 }

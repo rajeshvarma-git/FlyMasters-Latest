@@ -395,6 +395,7 @@ async function catalogUniversities(country) {
   const result = await pool.query(
     `SELECT
        data->>'university_name' AS name,
+       MAX(data->>'university_id') AS university_id,
        MAX(data->>'location') AS location,
        COUNT(*)::int AS program_count
      FROM app_records
@@ -405,6 +406,7 @@ async function catalogUniversities(country) {
   );
   return result.rows.map((row) => ({
     name: row.name || "Unknown",
+    university_id: row.university_id || null,
     location: row.location || "",
     program_count: Number(row.program_count || 0),
   }));

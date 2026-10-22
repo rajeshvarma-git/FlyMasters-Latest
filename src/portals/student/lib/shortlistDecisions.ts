@@ -54,6 +54,8 @@ export type CatalogProgram = {
   language?: string; program_description?: string; eligibility?: string; career?: string; deadline?: string;
 };
 export type ShortlistDetails = {
+  /** Catalogue id of the university: what the published information is looked up by. */
+  university_id?: string | null;
   matched_by: 'id' | 'name' | 'university' | null;
   university: CatalogUniversity | null;
   program: CatalogProgram | null;

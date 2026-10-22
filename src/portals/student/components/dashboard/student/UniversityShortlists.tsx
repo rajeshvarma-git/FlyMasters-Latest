@@ -19,6 +19,7 @@ import { collectStudentShortlistKeys, shortlistBelongsToStudent } from '@student
 import { decideShortlist, fetchShortlistDetails, requestApplicationStart, shortlistMyPick, type ShortlistDetails } from '@student/lib/shortlistDecisions';
 import { RecommendedUniversityCard } from './RecommendedUniversityCard';
 import { UniversityDetailsDialog } from './UniversityDetailsDialog';
+import { UniversityInfoView } from './UniversityInfoView';
 import { statusInfo } from '@shared/applicationJourney';
 
 /**
@@ -309,8 +310,8 @@ export function UniversityShortlists() {
             ) : null}
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" onClick={() => setDetails(item)}>
-              <Info className="mr-1 h-4 w-4" /> View information
+            <Button variant="outline" size="sm" data-testid="view-university" onClick={() => setDetails(item)}>
+              <Info className="mr-1 h-4 w-4" /> View University
             </Button>
             {state === 'pending' ? (
               <>
@@ -398,7 +399,7 @@ export function UniversityShortlists() {
       />
 
       <Dialog open={Boolean(details)} onOpenChange={(open) => { if (!open) setDetails(null); }}>
-        <DialogContent>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl" data-testid="university-panel">
           {details ? (
             <>
               <DialogHeader>
@@ -406,6 +407,9 @@ export function UniversityShortlists() {
                 <DialogDescription>{sourceLabel(details)}</DialogDescription>
               </DialogHeader>
               <div className="space-y-3 text-sm">
+                <section data-testid="published-university-info">
+                  <UniversityInfoView universityId={details.kind === 'saved' ? details.uni.id : (details.row.university_id || catalog[details.row.id]?.university_id || null)} />
+                </section>
                 {details.kind === 'shortlist' && details.row.course_name ? (
                   <p className="flex items-start gap-2"><GraduationCap className="mt-0.5 h-4 w-4 shrink-0" /> {details.row.course_name}</p>
                 ) : null}

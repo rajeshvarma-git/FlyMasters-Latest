@@ -7,6 +7,8 @@ import { Input } from '@student/components/ui/input';
 import { Button } from '@student/components/ui/button';
 import { Badge } from '@student/components/ui/badge';
 import { useToast } from '@student/hooks/use-toast';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@student/components/ui/dialog';
+import { UniversityInfoView } from './UniversityInfoView';
 import { 
   GraduationCap, 
   Search,
@@ -41,6 +43,7 @@ export function StudentUniversities() {
   const [savingId, setSavingId] = useState<string | null>(null);
   const [shortlistingId, setShortlistingId] = useState<string | null>(null);
   const [shortlistedIds, setShortlistedIds] = useState<Set<string>>(new Set());
+  const [viewing, setViewing] = useState<University | null>(null);
 
   // "Apply" used to open a student application form. The counsellor runs the
   // application now, so this puts the university on the student's shortlist
@@ -329,17 +332,15 @@ export function StudentUniversities() {
                         {shortlistingId === university.id ? 'Adding…' : 'Shortlist'}
                       </Button>
                     )}
-                    {university.website_url ? (
-                      <Button variant="outline" size="sm" className="flex-1" asChild>
-                        <a href={university.website_url} target="_blank" rel="noopener noreferrer">
-                          View Details
-                        </a>
-                      </Button>
-                    ) : (
-                      <Button variant="outline" size="sm" className="flex-1" disabled>
-                        Details coming soon
-                      </Button>
-                    )}
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1"
+                      data-testid="view-university"
+                      onClick={() => setViewing(university)}
+                    >
+                      View University
+                    </Button>
                     {university.website_url ? (
                       <Button variant="ghost" size="sm" asChild>
                         <a href={university.website_url} target="_blank" rel="noopener noreferrer">
@@ -354,6 +355,30 @@ export function StudentUniversities() {
           })}
         </div>
       )}
+
+      <Dialog open={Boolean(viewing)} onOpenChange={(open) => { if (!open) setViewing(null); }}>
+        <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl" data-testid="university-panel">
+          {viewing ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>{viewing.name}</DialogTitle>
+                <DialogDescription className="flex items-center gap-1">
+                  <MapPin className="w-3 h-3" />
+                  {viewing.city ? `${viewing.city}, ` : ''}{viewing.country}
+                </DialogDescription>
+              </DialogHeader>
+              <section data-testid="published-university-info">
+                <UniversityInfoView universityId={viewing.id} />
+              </section>
+              {viewing.website_url && /^https?:\/\//i.test(viewing.website_url) ? (
+                <a href={viewing.website_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-sm text-primary underline">
+                  <ExternalLink className="w-4 h-4" /> University website
+                </a>
+              ) : null}
+            </>
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
