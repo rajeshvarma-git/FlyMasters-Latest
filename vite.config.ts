@@ -12,7 +12,7 @@ import path from "path";
  * src/shared is a later, separate change — it is not required to get one repo,
  * one deploy and one login.
  */
-export default defineConfig(({ mode }) => {
+export default defineConfig(({ mode, command }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const apiTarget = env.VITE_API_TARGET || "http://127.0.0.1:8788";
 
@@ -33,6 +33,14 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     resolve: {
       alias: {
+        // Production builds get an inert stand-in, so the fictional local-preview data (student and counselor) never ships.
+        ...(command === "build"
+          ? {
+              "@student/lib/studentPreviewMock": path.resolve(__dirname, "./src/portals/student/lib/studentPreviewStub.ts"),
+              "@shared/staffPreview": path.resolve(__dirname, "./src/shared/staffPreviewStub.tsx"),
+              "@counselor/lib/previewMode": path.resolve(__dirname, "./src/portals/counselor/lib/previewStub.ts"),
+            }
+          : {}),
         "@": path.resolve(__dirname, "./src"),
         "@shared": path.resolve(__dirname, "./src/shared"),
         "@admin": path.resolve(__dirname, "./src/portals/admin"),
