@@ -5,15 +5,11 @@
 // ALL of these hold:
 //   - the Vite dev server is running (import.meta.env.DEV; false in every build)
 //   - VITE_PREVIEW=true is set when starting the dev server
-//   - the page is opened from localhost / 127.0.0.1 (a LAN address or tunnel gets the normal sign-in)
 // While active, this answers the student portal's own requests (/__auth, /__local_db,
 // /__storage, /api/case/..., /api/whatsapp/...) inside the browser from the fictional
 // data below. Nothing is sent to the API, PostgreSQL or Railway. Changes live in
 // memory only and are gone on reload. Anything it cannot answer fails with a clear
 // "not available in preview" message instead of reaching a server.
-
-import { isLocalHost } from "@shared/localHost";
-import { emptyUniversityInfo, type UniversityInfo } from "@shared/universityInfo";
 
 const SESSION_KEY = "flymasters.student.session.v2";
 const PICK_KEY = "flymasters.preview.student";
@@ -229,68 +225,6 @@ function handleDb(url: URL, init?: RequestInit): Response {
   }
 }
 
-// ------------------------------------------------ fictional PUBLISHED university information
-// Stands in for what an admin publishes through "Manage University Information". Only the universities listed in
-// PREVIEW_PUBLISHED have anything published: every other one answers `info: null`, so the student screens show the
-// "not published yet" empty state, exactly as the real API does for an unpublished university.
-const svgImage = (label: string, from: string, to: string, width: number, height: number) =>
-  `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${from}"/><stop offset="1" stop-color="${to}"/></linearGradient></defs><rect width="100%" height="100%" fill="url(#g)"/><text x="50%" y="50%" fill="#fff" font-family="system-ui,sans-serif" font-size="${Math.round(height / 7)}" text-anchor="middle" dominant-baseline="middle">${label}</text></svg>`;
-const PREVIEW_ASSETS: Record<string, { type: string; body: string }> = {
-  "preview-logo.svg": { type: "image/svg+xml", body: svgImage("PUE", "#1d4ed8", "#0ea5e9", 240, 240) },
-  "preview-campus.svg": { type: "image/svg+xml", body: svgImage("Fictional campus", "#0f766e", "#65a30d", 800, 450) },
-  "preview-gallery.svg": { type: "image/svg+xml", body: svgImage("Fictional library", "#9333ea", "#db2777", 800, 450) },
-  "preview-prospectus.pdf": { type: "application/pdf", body: "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 300 120]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n4 0 obj<</Length 62>>stream\nBT /F1 14 Tf 20 60 Td (Fictional preview prospectus) Tj ET\nendstream endobj\n5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\ntrailer<</Root 1 0 R/Size 6>>\n%%EOF\n" },
-};
-
-const PREVIEW_PUBLISHED: Record<string, UniversityInfo> = {
-  // Everything filled in, including images and a brochure.
-  "pv-u-1": {
-    ...emptyUniversityInfo(),
-    basic: { name: "Preview University of Examples", country: "Canada", city: "Toronto", campus_location: "100 Example Avenue, Toronto (fictional)", overview: "FICTIONAL preview text. A research university used only to test the local preview. It has applied computing labs, a large co-op programme and a compact downtown campus." },
-    branding: { logo: { file: "preview-logo.svg", caption: "Logo" }, campus_images: [{ file: "preview-campus.svg", caption: "Main campus (fictional)" }], gallery: [{ file: "preview-gallery.svg", caption: "Library (fictional)" }] },
-    programs: [
-      { name: "MSc Computer Science", degree_level: "Masters", duration: "2 years", courses: "Machine Learning, Distributed Systems, Algorithms" },
-      { name: "MEng Data Engineering", degree_level: "Masters", duration: "16 months", courses: "Data Pipelines, Cloud Platforms" },
-    ],
-    fees: { tuition: "24,000", currency: "CAD", period: "year", other_costs: "Fictional estimate: housing about CAD 9,000 per year." },
-    admission: { academic: "Bachelor's degree in a related field, 70% or equivalent.", english: "IELTS 6.5 overall (fictional requirement).", other: "Two references and a statement of purpose." },
-    intakes: [{ period: "Fall 2027", deadline: "2027-01-15", notes: "Main intake" }, { period: "Winter 2028", deadline: "2027-09-30", notes: "Limited places" }],
-    important_dates: [{ label: "Scholarship deadline", date: "2026-12-01" }],
-    links: { website: "https://example.com/preview-university", admissions_page: "https://example.com/preview-university/apply", other: [{ label: "Housing (fictional)", url: "https://example.com/preview-university/housing" }] },
-    brochures: [{ label: "Prospectus (fictional PDF)", file: "preview-prospectus.pdf", url: "" }, { label: "Online brochure", file: null, url: "https://example.com/preview-university/brochure" }],
-  },
-  // Text only: no images, no brochure, fewer sections.
-  "pv-u-3": {
-    ...emptyUniversityInfo(),
-    basic: { name: "Harbour Example University", country: "Ireland", city: "Cork", campus_location: "", overview: "FICTIONAL preview text. A coastal university with a strong analytics school." },
-    programs: [{ name: "MSc Data Analytics", degree_level: "Masters", duration: "1 year", courses: "" }],
-    fees: { tuition: "18,500", currency: "EUR", period: "year", other_costs: "" },
-    intakes: [{ period: "September 2027", deadline: "2027-05-31", notes: "" }],
-    links: { website: "https://example.com/harbour-university", admissions_page: "", other: [] },
-  },
-};
-
-function handleUniversityInfo(path: string): Response | null {
-  const match = /^\/api\/university-info\/([^/]+)(?:\/assets\/([^/]+))?$/.exec(path);
-  if (!match) return null;
-  const id = decodeURIComponent(match[1]);
-  const university = tables.universities.find((item) => item.id === id);
-  if (!university) return json({ error: "University not found." }, 404);
-  const info = PREVIEW_PUBLISHED[id] || null;
-  if (match[2]) {
-    const file = decodeURIComponent(match[2]);
-    const asset = PREVIEW_ASSETS[file];
-    const used = info && JSON.stringify(info).includes(`"${file}"`);
-    if (!asset || !used) return json({ error: "File not found." }, 404);
-    return new Response(asset.body, { status: 200, headers: { "Content-Type": asset.type } });
-  }
-  return json({
-    university: { id, name: university.name, country: university.country || "", city: university.city || "", website_url: university.website_url || "" },
-    info,
-    published_at: info ? daysAgo(3) : null,
-  });
-}
-
 const caseMessages = [
   { id: "pv-m-1", kind: "text", sender_role: "counselor", sender_id: COUNSELOR_ID, sender_name: "Preview Counselor", body: `Hi ${IDENTITY.first} — this is a fictional preview chat. Nothing here is real.`, data: null, channel: "app", source: null, sources: [], review_status: null, reviewed_by_name: null, created_at: daysAgo(1) },
 ];
@@ -362,7 +296,6 @@ function handleApi(path: string, init?: RequestInit): Response {
       const university = tables.universities.find((item) => item.id === (program?.university_id || row.university_id)) || tables.universities.find((item) => lower(item.name) === lower(row.university_name)) || null;
       details[row.id] = {
         matched_by: program ? "id" : university ? "university" : null,
-        university_id: university?.id || program?.university_id || null,
         university,
         program,
         programs: tables.university_programs.filter((item) => university && item.university_id === university.id),
@@ -377,9 +310,9 @@ function handleApi(path: string, init?: RequestInit): Response {
 }
 
 // ------------------------------------------------- contract used by integrations/supabase/client.ts
-/** True only under the Vite dev server, with VITE_PREVIEW=true (or VITE_STUDENT_PREVIEW=true), on localhost. Always false in builds. */
+/** True only under the Vite dev server with VITE_PREVIEW=true (or VITE_STUDENT_PREVIEW=true). Always false in builds. */
 export function isStudentPreview() {
-  return import.meta.env.DEV && isLocalHost() && (import.meta.env.VITE_PREVIEW === "true" || import.meta.env.VITE_STUDENT_PREVIEW === "true");
+  return import.meta.env.DEV && (import.meta.env.VITE_PREVIEW === "true" || import.meta.env.VITE_STUDENT_PREVIEW === "true");
 }
 
 export function previewRows(table: string): Row[] {
@@ -448,9 +381,6 @@ export function installStudentPreview() {
       if (path === "/__local_db") return handleDb(url, init);
       if (path === "/__storage") return json(url.searchParams.get("action") === "list" ? { files: [], items: [] } : { ok: true, url: "" });
       if (path === "/__public_media" || path === "/__db_health") return json({ ok: true, files: [] });
-      if (path.startsWith("/api/university-info/")) {
-        return handleUniversityInfo(path) || json({ error: "Preview mode: not available locally." }, 404);
-      }
       if (path.startsWith("/api/case/") || path.startsWith("/api/student/") || path.startsWith("/api/whatsapp/") || path.startsWith("/api/referral/") || path === "/api/auth/signin") {
         return handleApi(path, init);
       }

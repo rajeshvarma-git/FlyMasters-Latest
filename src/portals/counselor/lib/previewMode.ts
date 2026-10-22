@@ -5,15 +5,12 @@
 //   - the Vite dev server is running (import.meta.env.DEV; false in every build)
 //   - VITE_COUNSELOR_PREVIEW=true (or VITE_PREVIEW=true, which also previews the
 //     student portal) is set when starting the dev server
-//   - the page is opened from localhost / 127.0.0.1 (a LAN address or tunnel gets the normal sign-in)
 // When active, the counselor portal skips sign-in and every API call is answered
 // from the fictional data below. Nothing is sent to the API, PostgreSQL or Railway,
 // and nothing is saved: writes only change this in-memory preview data.
 
-import { isLocalHost } from "@shared/localHost";
-
 export function isCounselorPreview() {
-  return import.meta.env.DEV && isLocalHost() && (import.meta.env.VITE_COUNSELOR_PREVIEW === "true" || import.meta.env.VITE_PREVIEW === "true");
+  return import.meta.env.DEV && (import.meta.env.VITE_COUNSELOR_PREVIEW === "true" || import.meta.env.VITE_PREVIEW === "true");
 }
 
 const PREVIEW_COUNSELOR_ID = "preview-counselor";

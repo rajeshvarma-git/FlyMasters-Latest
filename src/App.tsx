@@ -1,7 +1,6 @@
 import { Suspense, lazy, useMemo } from "react";
 import { BrowserRouter } from "react-router-dom";
 import StaffSignIn from "./shared/StaffSignIn";
-import { StaffPreviewPicker, isStaffPreview } from "@shared/staffPreview";
 import ReferralLanding from "./shared/ReferralLanding";
 
 /**
@@ -61,7 +60,7 @@ export default function App() {
   if (portal === "staff") {
     return (
       <div className="staff-shell">
-        {isStaffPreview() ? <StaffPreviewPicker /> : <StaffSignIn />}
+        <StaffSignIn />
       </div>
     );
   }
