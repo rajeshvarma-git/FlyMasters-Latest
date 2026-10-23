@@ -113,6 +113,11 @@ app.use((error, _req, res, _next) => {
   if (!res.headersSent) res.status(500).json({ error: "Server error" });
 });
 
+// A stray rejected promise must not take the whole API down.
+process.on("unhandledRejection", (error) => {
+  console.error("Unhandled rejection:", error?.message || error);
+});
+
 async function start() {
   await new Promise((resolve) => {
     app.listen(PORT, "0.0.0.0", () => {

@@ -890,6 +890,13 @@ async function loadSharedChat(counselorId) {
 
 const router = express.Router();
 
+// Express 4 does not catch rejections from async handlers; turn them into a 500.
+const asyncRoute = (handler) => (req, res, next) =>
+  Promise.resolve(handler(req, res, next)).catch((error) => {
+    console.error(`${req.method} ${req.path} failed:`, error.message || error);
+    if (!res.headersSent) res.status(500).json({ error: error.message || "Request failed" });
+  });
+
 
 router.post("/api/counselor/auth/send-verification-code", async (req, res) => {
   try {
@@ -1056,7 +1063,7 @@ router.put("/api/counselor/profile", counselorAuth, async (req, res) => {
   }
 });
 
-router.get("/api/counselor/state", counselorAuth, async (req, res) => {
+router.get("/api/counselor/state", counselorAuth, asyncRoute(async (req, res) => {
   const id = req.user.id;
   const counselorAliases = await resolveCounselorAliases(id);
   await syncCounselorNameToStudentChat(id).catch(() => {});
@@ -1175,7 +1182,7 @@ router.get("/api/counselor/state", counselorAuth, async (req, res) => {
       ? [{ user_id: extra.id, bio: extra.bio || "", specializations: extra.specializations || [], phone: extra.phone || "" }]
       : [],
   });
-});
+}));
 
 // Retired (28 Sep 2026): a counselor creating a lead and self-assigning it
 // skips admin intake and telecaller qualification entirely — the exact
