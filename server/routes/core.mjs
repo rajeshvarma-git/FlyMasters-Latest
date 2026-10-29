@@ -34,6 +34,7 @@ import {
   WHATSAPP,
 } from "../lib/env.mjs";
 import { assignRole, setAccountBranches, createAccount, AccountWriteError } from "../lib/accountWrites.mjs";
+import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
 import { branchExists, listBranches, allocateBranchCode, suggestBranchCode } from "../lib/branches.mjs";
 import {
   allocateReferralCode,
@@ -111,12 +112,6 @@ function verifyPassword(password, stored) {
     return next.length === prev.length && timingSafeEqual(next, prev);
   }
   return false;
-}
-
-/** Role lookup for code paths that only need the string. */
-async function roleFor(userId) {
-  const result = await pool.query("SELECT role FROM user_roles WHERE user_id = $1", [String(userId)]);
-  return result.rows[0]?.role || "student";
 }
 
 async function ensureCounselorLogin(authId, passwordPlain) {
@@ -1766,11 +1761,15 @@ router.post("/api/auth/signin", async (req, res) => {
       await pool.query("UPDATE auth_users SET password = $2 WHERE id = $1", [row.id, next]);
       row.password = next;
     }
-    const role = await roleFor(row.id);
-    const active = await pool.query("SELECT is_active FROM user_roles WHERE user_id = $1", [row.id]);
-    if (active.rows[0]?.is_active === false) {
-      return res.status(403).json({ error: "This account is disabled. Ask an admin." });
+    // The same decision every later request will get from `session`: no token is issued for an
+    // account that check would refuse. A failed lookup throws and answers 500, never a token.
+    const access = await resolveAccountIdentity(pool, row.id);
+    if (!access.ok) {
+      const error = access.code === "ACCOUNT_DISABLED" ? "This account is disabled. Ask an admin." : access.error;
+      return res.status(access.status).json({ error, code: access.code });
     }
+    noteWarnings(access.identity);
+    const role = access.identity.role;
     const profiles = await jsonTable("profiles");
     const profile = profiles.find((item) => String(item.user_id) === String(row.id));
     const user = publicUser({ ...row, first_name: profile?.first_name, last_name: profile?.last_name, phone: profile?.phone }, role);
