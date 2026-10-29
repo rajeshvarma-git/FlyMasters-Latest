@@ -3,6 +3,7 @@ import { isEmailConfigured, sendVerificationEmail } from "./emailVerification";
 import { hashPassword, needsRehash, verifyPassword } from "./password";
 import { ensureSchema, getPool } from "./postgres";
 import { upsertUserRole } from "../lib/accountWrites.mjs";
+import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
 
 const SESSION_DAYS = 30;
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
@@ -97,9 +98,12 @@ export async function getSessionByToken(token: string | null | undefined): Promi
     await getPool().query("DELETE FROM auth_sessions WHERE token = $1", [value]);
     return null;
   }
-  // A disabled account loses access immediately, not when its session expires.
-  if (await isDisabled(row.id)) {
-    await getPool().query("DELETE FROM auth_sessions WHERE user_id = $1", [row.id]).catch(() => null);
+  // A disabled or misconfigured account loses access immediately, not when its session expires.
+  const access = await accountAccess(row.id);
+  if (!access.ok) {
+    if (access.code === "ACCOUNT_DISABLED") {
+      await getPool().query("DELETE FROM auth_sessions WHERE user_id = $1", [row.id]).catch(() => null);
+    }
     return null;
   }
   await getPool().query("UPDATE auth_sessions SET last_seen_at = now() WHERE token = $1", [value]).catch(() => null);
@@ -110,12 +114,18 @@ export async function getSessionByToken(token: string | null | undefined): Promi
   };
 }
 
-async function isDisabled(userId: string) {
-  const { rows } = await getPool().query(
-    `SELECT 1 FROM user_roles WHERE user_id = $1 AND is_active = false LIMIT 1`,
-    [String(userId)],
-  ); // no .catch: a failed lookup must not read as "not disabled"
-  return rows.length > 0;
+/**
+ * Whether an account may use the student portal, decided by the same resolver as every other
+ * path (accountIdentity.mjs): disabled, missing and misconfigured accounts are refused alike,
+ * and a failed lookup throws rather than reading as "allowed".
+ */
+async function accountAccess(userId: string): Promise<{ ok: true } | { ok: false; code: string }> {
+  const result: any = await resolveAccountIdentity(getPool(), String(userId));
+  if (result.ok) {
+    noteWarnings(result.identity);
+    return { ok: true };
+  }
+  return { ok: false, code: String(result.code) };
 }
 
 /** Ends every session of a user (password change, disable). */
@@ -144,8 +154,11 @@ export async function signInUser(emailInput: string, password: string): Promise<
   if (!user || !verifyPassword(password, user.password)) {
     return { error: "Invalid email or password", status: 401 };
   }
-  if (await isDisabled(user.id)) {
-    return { error: "This account is disabled. Contact Fly Masters.", status: 403 };
+  const access = await accountAccess(user.id);
+  if (!access.ok) {
+    return access.code === "ACCOUNT_DISABLED"
+      ? { error: "This account is disabled. Contact Fly Masters.", status: 403 }
+      : { error: "Account access is not configured. Contact Fly Masters.", status: 403 };
   }
   if (needsRehash(user.password)) {
     await getPool().query("UPDATE auth_users SET password = $1 WHERE id = $2", [hashPassword(password), user.id]);

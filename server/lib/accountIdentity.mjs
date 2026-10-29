@@ -11,6 +11,9 @@
 // A database failure is never turned into access: resolveAccountIdentity() throws and
 // the caller must answer with a service error.
 
+// Every role the database accepts (user_roles_role_valid). A role outside this list is refused.
+export const KNOWN_ROLES = ["super_admin", "admin", "branch_head", "counselor", "telecaller", "accountant", "partner", "student"];
+
 export const isStrict = () => String(process.env.IDENTITY_STRICT || "").toLowerCase() === "true";
 
 const fail = (status, code, error) => ({ ok: false, status, code, error });
@@ -63,7 +66,7 @@ const QUERY = `
 /** Reads the account from SQL and decides. Throws on a database error: never a permissive fallback. */
 export async function resolveAccountIdentity(db, userId, options = {}) {
   const { rows } = await db.query(QUERY, [String(userId)]);
-  return decideIdentity(rows[0] || null, { strict: isStrict(), ...options });
+  return decideIdentity(rows[0] || null, { strict: isStrict(), knownRoles: KNOWN_ROLES, ...options });
 }
 
 const warned = new Set();

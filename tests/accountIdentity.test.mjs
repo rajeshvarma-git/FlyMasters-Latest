@@ -4,7 +4,6 @@ import { readFileSync } from "node:fs";
 import { decideIdentity, isStrict } from "../server/lib/accountIdentity.mjs";
 import { session, anySession, branchScope, signUser, ALL_ROLES } from "../server/lib/auth.mjs";
 import { pool } from "../server/lib/db.mjs";
-import { viewerRole } from "../server/student/dataPolicy.ts";
 
 const row = (over = {}) => ({ id: "u1", email: "u1@x.com", has_role: true, role: "counselor", branch_id: "b1", is_active: true, membership_ids: ["b1", "b2"], ...over });
 const known = { knownRoles: ALL_ROLES };
@@ -168,12 +167,6 @@ test("anySession: a valid JWT for a disabled account is refused, not passed to t
 });
 
 // ---------- student data policy ----------
-
-test("viewerRole: SQL student stays student; no row means student; the SQL role is used as is", () => {
-  assert.equal(viewerRole([{ role: "student" }]), "student");
-  assert.equal(viewerRole([]), "student");
-  assert.equal(viewerRole([{ role: "admin" }]), "admin");
-});
 
 // ---------- guard against JSON roles coming back ----------
 

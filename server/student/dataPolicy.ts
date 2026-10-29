@@ -18,6 +18,7 @@
  *  - Everything else is refused.
  */
 import { getPool } from "./postgres";
+import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
 import { getSessionByToken, readBearerToken } from "./studentAuth";
 import { commonCountryDocumentsFor, countryDocumentsEnabled, canStudentUseCountryDocument } from "../lib/countryDocumentApproval.mjs";
 import { canStudentUploadAnything, canStudentUploadDocument } from "../lib/documentUploadAuthorization.mjs";
@@ -76,26 +77,24 @@ const READ_ONLY_OWNED = new Set(["user_roles", "university_shortlists_admin", "u
 const OWNER_ID_FIELDS = ["user_id", "student_id", "student_user_id", "sender_id", "receiver_id"];
 const OWNER_EMAIL_FIELDS = ["email", "student_email", "user_email"];
 
-/** The canonical role: the SQL row, or "student" when the account has none. Legacy JSON never counts. */
-export function viewerRole(rows: Array<{ role?: unknown }>): string {
-  return String(rows[0]?.role || "") || "student";
-}
-
 export async function viewerFromRequest(req: { headers?: Record<string, any>; url?: string }): Promise<Viewer | null> {
   const session = await getSessionByToken(readBearerToken(req));
   if (!session?.user?.id) return null;
   const userId = String(session.user.id);
   const email = String(session.user.email || "").trim().toLowerCase();
   const pool = getPool();
-  // The role comes from SQL only; a failed lookup propagates rather than guessing.
-  const [sqlRole, leads] = await Promise.all([
-    pool.query("SELECT role FROM user_roles WHERE user_id = $1", [userId]),
+  // The role comes from the shared resolver (SQL only). A disabled, missing or misconfigured
+  // account is not a viewer, and a failed lookup propagates rather than guessing.
+  const access: any = await resolveAccountIdentity(pool, userId);
+  if (!access.ok) return null;
+  noteWarnings(access.identity);
+  const [leads] = await Promise.all([
     pool.query(
       "SELECT id FROM app_records WHERE table_name = 'student_leads' AND (data->>'user_id' = $1 OR ($2 <> '' AND lower(data->>'email') = $2))",
       [userId, email],
     ).catch(() => ({ rows: [] as any[] })),
   ]);
-  const role = viewerRole(sqlRole.rows);
+  const role: string = access.identity.role;
   const admin = ADMIN_ROLES.has(role);
   const keys = new Set([userId, ...leads.rows.map((r) => String(r.id))]);
   return { userId, email, role, admin, keys };
