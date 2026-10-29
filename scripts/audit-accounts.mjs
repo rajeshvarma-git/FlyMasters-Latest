@@ -34,6 +34,7 @@ try {
     sqlRoles: await rows("SELECT user_id, role, branch_id, is_active FROM user_roles"),
     jsonRoles: await rows("SELECT id AS record_id, data->>'user_id' AS user_id, data->>'role' AS role FROM app_records WHERE table_name = 'user_roles'"),
     memberships: await rows("SELECT user_id, branch_id FROM user_branches"),
+    branches: await rows("SELECT id, is_active FROM branches"),
     profiles: await rows("SELECT data->>'user_id' AS user_id, data->>'is_active' AS is_active, data->>'disabled' AS disabled, data->>'role' AS role FROM app_records WHERE table_name = 'profiles' AND COALESCE(data->>'user_id','') <> ''"),
     counselorRecords: await rows("SELECT id, data->>'user_id' AS user_id FROM app_records WHERE table_name = 'counselors' AND COALESCE(data->>'user_id','') <> ''"),
     counselorLogins: await rows("SELECT id::text AS id, email FROM counselor_users"),

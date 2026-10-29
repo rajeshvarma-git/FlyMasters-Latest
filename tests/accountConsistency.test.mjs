@@ -65,12 +65,58 @@ test("home branch outside assigned memberships is flagged", () => {
   assert.equal(f.evidence.home_branch, HO);
 });
 
-test("missing home branch is reported except for super admins", () => {
+test("missing home branch is reported for staff, but not for students, partners or super admins", () => {
   const s = clean();
-  s.accounts.push({ id: "sa", email: "sa@x.com" });
+  s.accounts.push({ id: "sa", email: "sa@x.com" }, { id: "par", email: "par@x.com" });
   s.sqlRoles.push({ user_id: "sa", role: "super_admin", branch_id: null, is_active: true });
-  s.sqlRoles[0].branch_id = null;
+  s.sqlRoles.push({ user_id: "par", role: "partner", branch_id: null, is_active: true });
+  s.sqlRoles[0].branch_id = null; // admin
+  s.sqlRoles[2].branch_id = null; // student: registration does not require a branch
   assert.deepEqual(one(s, "D4").map((f) => f.user_id), ["adm"]);
+});
+
+test("a registered student with no home branch and no memberships is fully clean", () => {
+  const s = clean();
+  s.sqlRoles[2].branch_id = null;
+  assert.deepEqual(analyzeAccounts(s), []);
+});
+
+test("an existing account that only lacks a role row is A1, not an orphan membership", () => {
+  const s = clean();
+  s.accounts.push({ id: "norole", email: "n@x.com" });
+  s.memberships.push({ user_id: "norole", branch_id: HO });
+  assert.deepEqual(one(s, "A1").map((f) => f.user_id), ["norole"]);
+  assert.equal(one(s, "D2").length, 0);
+});
+
+test("a membership whose account does not exist is still an orphan", () => {
+  const s = clean();
+  s.memberships.push({ user_id: "nobody", branch_id: HO });
+  assert.deepEqual(one(s, "D2").map((f) => f.user_id), ["nobody"]);
+});
+
+test("branch references are validated when branches are supplied", () => {
+  const s = clean();
+  s.branches = [{ id: HO, is_active: true }, { id: B2, is_active: false }];
+  s.sqlRoles[1].branch_id = "gone";            // home branch does not exist
+  s.memberships = [{ user_id: "ctr", branch_id: B2 }, { user_id: "adm", branch_id: HO }];
+  const missing = one(s, "D6");
+  const inactive = one(s, "D7");
+  assert.deepEqual(missing[0].evidence.missing_branches, ["gone"]);
+  assert.deepEqual(inactive[0].evidence.inactive_branches, [B2]);
+});
+
+test("branch checks are skipped, not guessed, when branches are not supplied", () => {
+  const s = clean();
+  s.sqlRoles[1].branch_id = "gone";
+  assert.equal(one(s, "D6").length, 0);
+  assert.equal(one(s, "D7").length, 0);
+});
+
+test("branch checks report nothing when every reference is an active branch", () => {
+  const s = clean();
+  s.branches = [{ id: HO, is_active: true }];
+  assert.equal(one(s, "D6").length + one(s, "D7").length, 0);
 });
 
 test("profile inactive while SQL is enabled is flagged; a disabled SQL account is informational", () => {
@@ -123,7 +169,7 @@ test("the analysis does not mutate its input", () => {
 
 test("summary lists every code, including those with no findings", () => {
   const rows = summarize(analyzeAccounts(clean()));
-  assert.ok(rows.length >= 17);
+  assert.ok(rows.length >= 19);
   assert.ok(rows.every((r) => r.count === 0));
   assert.ok(codes({ ...clean(), accounts: [] }).length > 0);
 });

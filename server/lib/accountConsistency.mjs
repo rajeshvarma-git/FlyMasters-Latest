@@ -6,6 +6,9 @@
 
 export const SCOPED_ROLES = ["branch_head", "counselor", "telecaller", "accountant"];
 export const ADMIN_ROLES = ["admin", "super_admin"];
+// Roles that are expected to have a home branch. Students register without one and
+// super admins are global, so neither is reported for lacking it.
+export const HOME_BRANCH_ROLES = ["admin", ...SCOPED_ROLES];
 
 export const CODES = {
   A1: ["high", "Account has no SQL role"],
@@ -20,6 +23,8 @@ export const CODES = {
   D3: ["high", "Home branch is not among assigned memberships"],
   D4: ["low", "SQL role has no home branch"],
   D5: ["info", "Account disabled in SQL"],
+  D6: ["high", "Home branch or membership points to a branch that does not exist"],
+  D7: ["medium", "Home branch or membership points to an inactive branch"],
   E1: ["medium", "SQL counselor has no counselors record"],
   E2: ["high", "Counselors record belongs to an account that is not a SQL counselor"],
   E3: ["medium", "More than one counselors record for one account"],
@@ -43,6 +48,7 @@ const group = (items, key) => {
  *   sqlRoles:        [{ user_id, role, branch_id, is_active }],
  *   jsonRoles:       [{ record_id, user_id, role }],
  *   memberships:     [{ user_id, branch_id }],
+ *   branches:        [{ id, is_active }],        // optional; branch checks are skipped without it
  *   profiles:        [{ user_id, is_active, disabled, role }],   // is_active/disabled as text
  *   counselorRecords:[{ id, user_id }],
  *   counselorLogins: [{ id, email }],
@@ -51,7 +57,7 @@ const group = (items, key) => {
  */
 export function analyzeAccounts(snapshot, { maskEmail = (e) => e } = {}) {
   const { accounts = [], sqlRoles = [], jsonRoles = [], memberships = [], profiles = [],
-    counselorRecords = [], counselorLogins = [] } = snapshot;
+    counselorRecords = [], counselorLogins = [], branches = null } = snapshot;
 
   const out = [];
   const add = (code, user_id, evidence = {}) =>
@@ -100,10 +106,26 @@ export function analyzeAccounts(snapshot, { maskEmail = (e) => e } = {}) {
     if (r.branch_id && branches.length && !branches.includes(r.branch_id)) {
       add("D3", r.user_id, { ...who(r.user_id), role: r.role, home_branch: r.branch_id, memberships: branches });
     }
-    if (!r.branch_id && r.role !== "super_admin") add("D4", r.user_id, { ...who(r.user_id), role: r.role });
+    if (!r.branch_id && HOME_BRANCH_ROLES.includes(r.role)) add("D4", r.user_id, { ...who(r.user_id), role: r.role });
     if (r.is_active === false) add("D5", r.user_id, { ...who(r.user_id), role: r.role });
   }
-  for (const id of branchesOf.keys()) if (!sqlByUser.has(id)) add("D2", id, { branches: branchesOf.get(id) });
+  // D2 asks whether the ACCOUNT exists. An account that merely lacks a role row is
+  // already reported as A1, so it is not an orphan membership.
+  for (const id of branchesOf.keys()) if (!accountById.has(id)) add("D2", id, { branches: branchesOf.get(id) });
+
+  if (branches) {
+    const branchById = new Map(branches.map((b) => [b.id, b]));
+    const refs = new Map(); // user_id -> Set of referenced branch ids (home + memberships)
+    const addRef = (id, b) => { if (b) refs.set(id, new Set([...(refs.get(id) || []), b])); };
+    for (const r of sqlRoles) addRef(r.user_id, r.branch_id);
+    for (const m of memberships) addRef(m.user_id, m.branch_id);
+    for (const [id, set] of refs) {
+      const missing = [...set].filter((b) => !branchById.has(b));
+      const inactive = [...set].filter((b) => branchById.has(b) && branchById.get(b).is_active === false);
+      if (missing.length) add("D6", id, { ...who(id), missing_branches: missing });
+      if (inactive.length) add("D7", id, { ...who(id), inactive_branches: inactive });
+    }
+  }
 
   const recordsByUser = group(counselorRecords, (c) => c.user_id);
   for (const r of sqlRoles) {
