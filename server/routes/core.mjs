@@ -2752,14 +2752,100 @@ router.post("/api/salary", auth, async (req, res) => {
   res.json(row.rows[0]);
 });
 
+// router.put("/api/users/:id/role", auth, async (req, res) => {
+//   const role = String(req.body.role || "");
+//   if (!["student", "telecaller", "counselor", "admin", "super_admin"].includes(role)) {
+//     return res.status(400).json({ error: "Invalid role." });
+//   }
+//   const roles = await jsonTable("user_roles");
+//   const existing = roles.find((row) => String(row.user_id) === String(req.params.id));
+//   await jsonUpsert("user_roles", { id: existing?.id || `role-${req.params.id}`, user_id: req.params.id, role });
+//   if (role === "counselor") {
+//     const counselors = await jsonTable("counselors");
+//     const found = counselors.find((row) => String(row.user_id) === String(req.params.id));
+//     await jsonUpsert("counselors", {
+//       id: found?.id || `counselor-${req.params.id}`,
+//       user_id: req.params.id,
+//       is_active: true,
+//       specializations: found?.specializations || ["Study Abroad"],
+//       created_at: found?.created_at || new Date().toISOString(),
+//       updated_at: new Date().toISOString(),
+//     });
+//     await ensureCounselorLogin(req.params.id).catch(() => {});
+//   }
+//   res.json({ ok: true });
+// });
+// router.put("/api/users/:id/role", auth, async (req, res) => {
+//   const role = String(req.body.role || "");
+//   if (!["student", "telecaller", "counselor", "admin", "super_admin"].includes(role)) {
+//     return res.status(400).json({ error: "Invalid role." });
+//   }
+
+//   // Only a super admin may grant the super admin role.
+//   if (role === "super_admin" && req.user.role !== "super_admin") {
+//     return res.status(403).json({ error: "Only a super admin can grant the Super Admin role." });
+//   }
+
+//   const roles = await jsonTable("user_roles");
+//   const existing = roles.find((row) => String(row.user_id) === String(req.params.id));
+
+//   // Only a super admin may change an existing super admin's role.
+//   if (existing?.role === "super_admin" && req.user.role !== "super_admin") {
+//     return res.status(403).json({ error: "Only a super admin can change a Super Admin account's role." });
+//   }
+
+//   await jsonUpsert("user_roles", { id: existing?.id || `role-${req.params.id}`, user_id: req.params.id, role });
+//   await audit(req, "user.role.update", "auth_users", req.params.id, {
+//     previousRole: existing?.role ?? null,
+//     newRole: role,
+//   });
+
+//   if (role === "counselor") {
+//     const counselors = await jsonTable("counselors");
+//     const found = counselors.find((row) => String(row.user_id) === String(req.params.id));
+//     await jsonUpsert("counselors", {
+//       id: found?.id || `counselor-${req.params.id}`,
+//       user_id: req.params.id,
+//       is_active: true,
+//       specializations: found?.specializations || ["Study Abroad"],
+//       created_at: found?.created_at || new Date().toISOString(),
+//       updated_at: new Date().toISOString(),
+//     });
+//     await ensureCounselorLogin(req.params.id).catch(() => {});
+//   }
+//   res.json({ ok: true });
+// });
+
 router.put("/api/users/:id/role", auth, async (req, res) => {
   const role = String(req.body.role || "");
   if (!["student", "telecaller", "counselor", "admin", "super_admin"].includes(role)) {
     return res.status(400).json({ error: "Invalid role." });
   }
+
+  // Nobody changes their own role: it locks admins out and is a promotion path.
+  if (String(req.params.id) === String(req.user.id)) {
+    return res.status(400).json({ error: "You cannot change your own role." });
+  }
+
+  // Only a super admin may grant the super admin role.
+  if (role === "super_admin" && req.user.role !== "super_admin") {
+    return res.status(403).json({ error: "Only a super admin can grant the Super Admin role." });
+  }
+
   const roles = await jsonTable("user_roles");
   const existing = roles.find((row) => String(row.user_id) === String(req.params.id));
+
+  // Only a super admin may change an existing super admin's role.
+  if (existing?.role === "super_admin" && req.user.role !== "super_admin") {
+    return res.status(403).json({ error: "Only a super admin can change a Super Admin account's role." });
+  }
+
   await jsonUpsert("user_roles", { id: existing?.id || `role-${req.params.id}`, user_id: req.params.id, role });
+  await audit(req, "user.role.update", "auth_users", req.params.id, {
+    previousRole: existing?.role ?? null,
+    newRole: role,
+  });
+
   if (role === "counselor") {
     const counselors = await jsonTable("counselors");
     const found = counselors.find((row) => String(row.user_id) === String(req.params.id));
