@@ -68,6 +68,8 @@ export function buildPlan(report) {
 }
 
 const blank = (v) => v === null || v === undefined || (typeof v === "string" && v.trim() === "");
+// An object that says nothing ({} or []) is not a proposal and not a starting state.
+const emptyObject = (v) => v === null || typeof v !== "object" || Array.isArray(v) || Object.keys(v).length === 0;
 
 /** Returns a list of problems; an empty list means the plan is ready for ACCESS-02E. */
 export function validatePlan(plan) {
@@ -77,13 +79,15 @@ export function validatePlan(plan) {
     if (!STATUSES.includes(e.status)) { add(e, `unknown status "${e.status}"`); continue; }
     if (e.status === "unresolved") { add(e, "still unresolved"); continue; }
     if (e.status === "rejected") continue;
-    if (blank(e.proposed) || typeof e.proposed !== "object") add(e, "no proposed values");
+    // A proposal is still a draft: the plan is ready only when every entry is approved or rejected.
+    if (e.status === "proposed") add(e, "proposed but not approved");
+    if (emptyObject(e.proposed)) add(e, "no proposed values");
     if (blank(e.reason)) add(e, "no reason recorded");
     if (!e.evidence?.length) add(e, "no supporting evidence");
     if (e.status === "approved") {
       if (blank(e.reviewer)) add(e, "approved without a reviewer");
       if (blank(e.approved_at)) add(e, "approved without a date");
-      if (blank(e.expected_before) || typeof e.expected_before !== "object") add(e, "no expected starting values for ACCESS-02E to re-check");
+      if (emptyObject(e.expected_before)) add(e, "no expected starting values for ACCESS-02E to re-check");
       if (blank(e.account_id)) add(e, "approved correction has no account id (resolve ownership first)");
     }
   }

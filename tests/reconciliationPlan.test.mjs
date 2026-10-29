@@ -101,3 +101,20 @@ test("building a plan does not mutate the report", () => {
   buildPlan(report);
   assert.equal(JSON.stringify(report), before);
 });
+
+// ---------- regression: the validator must not call a draft or an empty approval "ready" ----------
+
+test("a proposal that has not been approved keeps the plan not ready", () => {
+  const entry = { id: "a", account_id: "u1", status: "proposed", proposed: { role: "student" }, reason: "r", evidence: [{ code: "B1" }] };
+  const problems = validatePlan({ entries: [entry] });
+  assert.deepEqual(problems.map((p) => p.problem), ["proposed but not approved"]);
+});
+
+test("an approval with empty proposed or starting-state objects is refused", () => {
+  const base = { id: "a", account_id: "u1", status: "approved", reason: "r", evidence: [{ code: "B1" }], reviewer: "x", approved_at: "2026-01-01" };
+  for (const [proposed, expected] of [[{}, { sql_role: "student" }], [{ role: "student" }, {}], [[], { sql_role: "student" }], [{ role: "student" }, []]]) {
+    const problems = validatePlan({ entries: [{ ...base, proposed, expected_before: expected }] });
+    assert.ok(problems.length > 0, `accepted proposed=${JSON.stringify(proposed)} expected_before=${JSON.stringify(expected)}`);
+  }
+  assert.deepEqual(validatePlan({ entries: [{ ...base, proposed: { role: "student" }, expected_before: { sql_role: "student" } }] }), []);
+});
