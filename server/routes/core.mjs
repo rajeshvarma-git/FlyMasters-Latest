@@ -2818,6 +2818,20 @@ router.post("/api/salary", auth, async (req, res) => {
 
 router.put("/api/users/:id/role", auth, async (req, res) => {
   const role = String(req.body.role || "");
+
+    const result = await applyRoleChange({
+    actor: req.user,
+    targetId: req.params.id,
+    newRole: role,
+    store: {
+      getRole: async (id) => (await jsonTable("user_roles")).find((row) => String(row.user_id) === String(id)) || null,
+      setRole: (id, newRole, existing) =>
+        jsonUpsert("user_roles", { id: existing?.id || `role-${id}`, user_id: id, role: newRole }),
+      audit: (details) => audit(req, "user.role.update", "auth_users", req.params.id, details),
+    },
+  });
+  if (!result.ok) return res.status(result.status).json({ error: result.error });
+  
   if (!["student", "telecaller", "counselor", "admin", "super_admin"].includes(role)) {
     return res.status(400).json({ error: "Invalid role." });
   }
