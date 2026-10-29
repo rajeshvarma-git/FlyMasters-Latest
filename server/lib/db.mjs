@@ -1,4 +1,5 @@
 import pg from "pg";
+import { upsertUserRole } from "./accountWrites.mjs";
 import { DATABASE_URL, IS_PRODUCTION } from "./env.mjs";
 
 export const pool = new pg.Pool({
@@ -49,17 +50,8 @@ async function readUserRoles() {
 async function writeUserRole(data) {
   const userId = String(data.user_id || "");
   if (!userId) throw new Error("user_roles requires user_id");
-  const result = await pool.query(
-    `INSERT INTO user_roles (user_id, role, branch_id)
-     VALUES ($1, $2, COALESCE($3::uuid, (SELECT id FROM branches WHERE code = 'HO')))
-     ON CONFLICT (user_id) DO UPDATE
-       SET role = EXCLUDED.role,
-           branch_id = COALESCE(EXCLUDED.branch_id, user_roles.branch_id),
-           updated_at = now()
-     RETURNING user_id, role, branch_id, is_active, created_at`,
-    [userId, String(data.role || "student"), data.branch_id || null],
-  );
-  const row = result.rows[0];
+  // An existing home branch is kept when none is given (see accountWrites.mjs).
+  const row = await upsertUserRole(pool, { userId, role: String(data.role || "student"), branchId: data.branch_id || null });
   return { id: `role-${row.user_id}`, ...row };
 }
 

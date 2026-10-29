@@ -2,6 +2,7 @@ import { createHash, randomBytes } from "crypto";
 import { isEmailConfigured, sendVerificationEmail } from "./emailVerification";
 import { hashPassword, needsRehash, verifyPassword } from "./password";
 import { ensureSchema, getPool } from "./postgres";
+import { upsertUserRole } from "../lib/accountWrites.mjs";
 
 const SESSION_DAYS = 30;
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
@@ -111,11 +112,9 @@ export async function getSessionByToken(token: string | null | undefined): Promi
 
 async function isDisabled(userId: string) {
   const { rows } = await getPool().query(
-    `SELECT 1 FROM user_roles WHERE user_id = $1 AND is_active = false
-     UNION ALL SELECT 1 FROM app_records WHERE table_name = 'user_roles' AND data->>'user_id' = $1 AND data->>'is_active' = 'false'
-     LIMIT 1`,
+    `SELECT 1 FROM user_roles WHERE user_id = $1 AND is_active = false LIMIT 1`,
     [String(userId)],
-  ).catch(() => ({ rows: [] as any[] }));
+  ); // no .catch: a failed lookup must not read as "not disabled"
   return rows.length > 0;
 }
 
@@ -201,7 +200,6 @@ export async function signUpUser(input: {
   const record = (table: string, data: Record<string, any>) => ({ table, data: { ...data, created_at: now, updated_at: now } });
   const records = [
     record("profiles", { id: crypto.randomUUID(), user_id: user.id, first_name: firstName, last_name: lastName }),
-    record("user_roles", { id: crypto.randomUUID(), user_id: user.id, role: "student" }),
     record("student_leads", {
       id: crypto.randomUUID(),
       user_id: user.id,
@@ -228,6 +226,9 @@ export async function signUpUser(input: {
       "INSERT INTO auth_users (id, email, password, user_metadata) VALUES ($1, $2, $3, $4::jsonb)",
       [user.id, user.email, user.password, JSON.stringify(user.user_metadata)]
     );
+    // The role is a real row in the same transaction as the account: a signup can never
+    // exist without one, and no legacy JSON role record is created.
+    await upsertUserRole(client, { userId: user.id, role: "student", defaultToHeadOffice: false });
     for (const r of records) {
       await client.query("INSERT INTO app_records (id, table_name, data) VALUES ($1, $2, $3::jsonb)", [r.data.id, r.table, JSON.stringify(r.data)]);
     }

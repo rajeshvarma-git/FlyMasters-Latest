@@ -33,7 +33,8 @@ import {
   TELECALLER_SIGNUP_CODE,
   WHATSAPP,
 } from "../lib/env.mjs";
-import { branchExists, setUserBranches, listBranches, allocateBranchCode, suggestBranchCode } from "../lib/branches.mjs";
+import { assignRole, setAccountBranches, createAccount, AccountWriteError } from "../lib/accountWrites.mjs";
+import { branchExists, listBranches, allocateBranchCode, suggestBranchCode } from "../lib/branches.mjs";
 import {
   allocateReferralCode,
   attachReferral,
@@ -612,6 +613,7 @@ async function publishCounselorAccount(row, passwordPlain) {
   const now = new Date().toISOString();
   const existing = await pool.query("SELECT id FROM auth_users WHERE lower(email) = $1", [email]).catch(() => ({ rows: [] }));
   let authId = existing.rows[0]?.id ? String(existing.rows[0].id) : "";
+  const isNewAccount = !authId;
   const meta = JSON.stringify({
     first_name: row.first_name || "",
     last_name: row.last_name || "",
@@ -630,11 +632,9 @@ async function publishCounselorAccount(row, passwordPlain) {
   const confirmed = await pool.query("SELECT id FROM auth_users WHERE lower(email) = $1", [email]);
   if (confirmed.rows[0]?.id) authId = String(confirmed.rows[0].id);
 
-  const roles = await jsonTable("user_roles");
-  const current = roles.find((item) => String(item.user_id) === authId);
-  if (current?.role !== "admin" && current?.role !== "super_admin") {
-    await jsonUpsert("user_roles", { id: current?.id || `role-${authId}`, user_id: authId, role: "counselor" });
-  }
+  // Publishing a counselor profile never changes an existing account's role. Only an account
+  // this very call created gets the counselor role; role changes go through the Users screen.
+  if (isNewAccount) await assignRole(pool, { userId: authId, role: "counselor", branchId: row.branch_id || null });
 
   const profiles = await jsonTable("profiles");
   const profile = profiles.find((item) => String(item.user_id) === authId) || { id: `profile-${authId}`, user_id: authId };
@@ -1783,10 +1783,14 @@ router.post("/api/auth/signin", async (req, res) => {
 router.get("/api/me", session, async (req, res) => {
   const found = await pool.query("SELECT * FROM auth_users WHERE id = $1", [req.user.id]);
   if (!found.rows[0]) return res.status(401).json({ error: "Account not found" });
-  const role = await roleFor(req.user.id);
+  // The role the backend enforces is the one `session` already resolved; show exactly that.
+  const role = req.user.role;
   const profiles = await jsonTable("profiles");
   const profile = profiles.find((item) => String(item.user_id) === String(req.user.id));
-  res.json({ user: publicUser({ ...found.rows[0], first_name: profile?.first_name, last_name: profile?.last_name, phone: profile?.phone }, role) });
+  res.json({
+    user: publicUser({ ...found.rows[0], first_name: profile?.first_name, last_name: profile?.last_name, phone: profile?.phone }, role),
+    access: { role, branch_id: req.user.branch_id, branch_ids: req.user.branch_ids },
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2756,17 +2760,23 @@ router.post("/api/salary", auth, async (req, res) => {
 
 router.put("/api/users/:id/role", auth, async (req, res) => {
   const role = String(req.body.role || "");
-  const result = await applyRoleChange({
-    actor: req.user,
-    targetId: req.params.id,
-    newRole: role,
-    store: {
-      getRole: async (id) => (await jsonTable("user_roles")).find((row) => String(row.user_id) === String(id)) || null,
-      setRole: (id, newRole, existing) =>
-        jsonUpsert("user_roles", { id: existing?.id || `role-${id}`, user_id: id, role: newRole }),
-      audit: (details) => audit(req, "user.role.update", "auth_users", req.params.id, details),
-    },
-  });
+  let result;
+  try {
+    result = await applyRoleChange({
+      actor: req.user,
+      targetId: req.params.id,
+      newRole: role,
+      store: {
+        getRole: async (id) => (await jsonTable("user_roles")).find((row) => String(row.user_id) === String(id)) || null,
+        // Role and branch move together and the person's branch is kept (accountWrites.mjs).
+        setRole: (id, newRole) => assignRole(pool, { userId: id, role: newRole, assignedBy: req.user.id }),
+        audit: (details) => audit(req, "user.role.update", "auth_users", req.params.id, details),
+      },
+    });
+  } catch (error) {
+    if (error instanceof AccountWriteError) return res.status(error.status).json({ error: error.message });
+    return res.status(500).json({ error: error.message || "Could not change role" });
+  }
   if (!result.ok) return res.status(result.status).json({ error: result.error });
 
   if (role === "counselor") {
@@ -2847,17 +2857,21 @@ router.post("/api/users", auth, async (req, res) => {
   const existing = await pool.query("SELECT id FROM auth_users WHERE lower(email) = $1", [email]);
   if (existing.rows[0]) return res.status(400).json({ error: "An account with this email already exists." });
   const id = role === "counselor" ? crypto.randomUUID() : `user-${crypto.randomUUID()}`;
-  await pool.query(
-    "INSERT INTO auth_users (id, email, password, user_metadata) VALUES ($1,$2,$3,$4::jsonb)",
-    [id, email, hashPassword(password), JSON.stringify({ first_name: firstName, last_name: lastName })],
-  );
-  await jsonUpsert("user_roles", {
-    id: `role-${id}`,
-    user_id: id,
-    role,
-    branch_id: requestedBranches[0] || null,
-  });
-  await setUserBranches(id, requestedBranches, req.user.id);
+  // Login, role and branches are created together, or not at all.
+  try {
+    await createAccount(pool, {
+      id,
+      email,
+      passwordHash: hashPassword(password),
+      metadata: { first_name: firstName, last_name: lastName },
+      role,
+      branchIds: requestedBranches,
+      assignedBy: req.user.id,
+    });
+  } catch (error) {
+    if (error instanceof AccountWriteError) return res.status(error.status).json({ error: error.message });
+    throw error;
+  }
   await audit(req, "user.create", "auth_users", id, { email, role, branches: requestedBranches });
   await jsonUpsert("profiles", {
     id: `profile-${id}`,
@@ -3735,12 +3749,12 @@ router.put("/api/users/:id/branches", [session, requireRole(ADMIN_ROLES, "Admin"
     for (const branchId of branchIds) {
       if (!(await branchExists(branchId))) return res.status(400).json({ error: `Unknown branch: ${branchId}` });
     }
-    await setUserBranches(req.params.id, branchIds, req.user.id);
-    await pool.query("UPDATE user_roles SET branch_id = $2, updated_at = now() WHERE user_id = $1",
-      [req.params.id, branchIds[0] || null]);
+    // Memberships and the home branch change together or not at all.
+    await setAccountBranches(pool, { userId: req.params.id, branchIds, assignedBy: req.user.id });
     await audit(req, "user.branches", "auth_users", req.params.id, { branchIds });
     res.json({ ok: true, branchIds });
   } catch (error) {
+    if (error instanceof AccountWriteError) return res.status(error.status).json({ error: error.message });
     res.status(500).json({ error: error.message || "Could not update branches" });
   }
 });

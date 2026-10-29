@@ -76,23 +76,27 @@ const READ_ONLY_OWNED = new Set(["user_roles", "university_shortlists_admin", "u
 const OWNER_ID_FIELDS = ["user_id", "student_id", "student_user_id", "sender_id", "receiver_id"];
 const OWNER_EMAIL_FIELDS = ["email", "student_email", "user_email"];
 
+/** The canonical role: the SQL row, or "student" when the account has none. Legacy JSON never counts. */
+export function viewerRole(rows: Array<{ role?: unknown }>): string {
+  return String(rows[0]?.role || "") || "student";
+}
+
 export async function viewerFromRequest(req: { headers?: Record<string, any>; url?: string }): Promise<Viewer | null> {
   const session = await getSessionByToken(readBearerToken(req));
   if (!session?.user?.id) return null;
   const userId = String(session.user.id);
   const email = String(session.user.email || "").trim().toLowerCase();
   const pool = getPool();
-  const [sqlRole, jsonRoles, leads] = await Promise.all([
-    pool.query("SELECT role FROM user_roles WHERE user_id = $1", [userId]).catch(() => ({ rows: [] as any[] })),
-    pool.query("SELECT data->>'role' AS role FROM app_records WHERE table_name = 'user_roles' AND data->>'user_id' = $1", [userId]).catch(() => ({ rows: [] as any[] })),
+  // The role comes from SQL only; a failed lookup propagates rather than guessing.
+  const [sqlRole, leads] = await Promise.all([
+    pool.query("SELECT role FROM user_roles WHERE user_id = $1", [userId]),
     pool.query(
       "SELECT id FROM app_records WHERE table_name = 'student_leads' AND (data->>'user_id' = $1 OR ($2 <> '' AND lower(data->>'email') = $2))",
       [userId, email],
     ).catch(() => ({ rows: [] as any[] })),
   ]);
-  const roles = [...sqlRole.rows, ...jsonRoles.rows].map((r) => String(r.role || "")).filter(Boolean);
-  const admin = roles.some((r) => ADMIN_ROLES.has(r));
-  const role = admin ? roles.find((r) => ADMIN_ROLES.has(r))! : roles[0] || "student";
+  const role = viewerRole(sqlRole.rows);
+  const admin = ADMIN_ROLES.has(role);
   const keys = new Set([userId, ...leads.rows.map((r) => String(r.id))]);
   return { userId, email, role, admin, keys };
 }
@@ -116,8 +120,7 @@ async function staffNameRows(rows: any[]) {
   const ids = rows.map((r) => String(r.user_id || "")).filter(Boolean);
   if (!ids.length) return [];
   const { rows: staff } = await getPool().query(
-    `SELECT user_id FROM user_roles WHERE user_id = ANY($1::text[]) AND role <> 'student'
-     UNION SELECT data->>'user_id' FROM app_records WHERE table_name = 'user_roles' AND data->>'user_id' = ANY($1::text[]) AND data->>'role' <> 'student'`,
+    `SELECT user_id FROM user_roles WHERE user_id = ANY($1::text[]) AND role <> 'student'`,
     [ids],
   ).catch(() => ({ rows: [] as any[] }));
   const staffIds = new Set(staff.map((s) => String(s.user_id)));
@@ -440,7 +443,6 @@ async function areStaff(ids: string[]) {
   const unique = [...new Set(ids)];
   const { rows } = await getPool().query(
     `SELECT user_id FROM user_roles WHERE user_id = ANY($1::text[]) AND role <> 'student'
-     UNION SELECT data->>'user_id' FROM app_records WHERE table_name = 'user_roles' AND data->>'user_id' = ANY($1::text[]) AND data->>'role' <> 'student'
      UNION SELECT id::text FROM counselor_users WHERE id::text = ANY($1::text[])`,
     [unique],
   ).catch(() => ({ rows: [] as any[] }));

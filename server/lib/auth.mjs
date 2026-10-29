@@ -13,6 +13,7 @@
 import jwt from "jsonwebtoken";
 import { JWT_SECRET } from "./env.mjs";
 import { pool } from "./db.mjs";
+import { noteWarnings, resolveAccountIdentity } from "./accountIdentity.mjs";
 
 export const ROLES = Object.freeze({
   SUPER_ADMIN: "super_admin",
@@ -56,28 +57,19 @@ export function signUser(user) {
 }
 
 /**
- * Role and branch are re-read from the database on every request, so a demoted,
- * moved or deleted account loses access immediately rather than at token expiry.
- * One indexed query instead of the old full-table scan of user_roles.
+ * Role, enabled state and branches are re-read from SQL on every request through the
+ * shared resolver (accountIdentity.mjs), so a demoted, moved or disabled account loses
+ * access immediately. Legacy JSON roles are never consulted.
  */
-async function identityFor(userId) {
-  const result = await pool.query(
-    `SELECT u.id,
-            u.email,
-            COALESCE(r.role, 'student') AS role,
-            r.branch_id,
-            r.is_active,
-            COALESCE(
-              (SELECT array_agg(ub.branch_id) FROM user_branches ub WHERE ub.user_id = u.id),
-              CASE WHEN r.branch_id IS NULL THEN '{}'::uuid[] ELSE ARRAY[r.branch_id] END
-            ) AS branch_ids
-       FROM auth_users u
-       LEFT JOIN user_roles r ON r.user_id = u.id
-      WHERE u.id = $1`,
-    [String(userId)],
-  );
-  return result.rows[0] || null;
-}
+const toRequestUser = (identity) => ({
+  id: identity.id,
+  email: identity.email,
+  role: identity.role,
+  branch_id: identity.branch_id,
+  branch_ids: identity.branch_ids,
+});
+
+const resolveFor = (userId) => resolveAccountIdentity(pool, userId, { knownRoles: ALL_ROLES });
 
 export async function session(req, res, next) {
   const header = req.headers.authorization || "";
@@ -92,19 +84,13 @@ export async function session(req, res, next) {
   }
 
   try {
-    const identity = await identityFor(claims.id);
-    if (!identity) return res.status(401).json({ error: "Account no longer exists." });
-    if (identity.is_active === false) return res.status(403).json({ error: "Account is disabled." });
-
-    req.user = {
-      id: identity.id,
-      email: identity.email,
-      role: identity.role,
-      branch_id: identity.branch_id || null,
-      branch_ids: (identity.branch_ids || []).map(String).filter(Boolean),
-    };
+    const result = await resolveFor(claims.id);
+    if (!result.ok) return res.status(result.status).json({ error: result.error, code: result.code });
+    noteWarnings(result.identity);
+    req.user = toRequestUser(result.identity);
     next();
   } catch (error) {
+    // A failed permission lookup is a service error, never a fallback to access.
     res.status(500).json({ error: error.message || "Could not verify session" });
   }
 }
@@ -127,21 +113,26 @@ export async function anySession(req, res, next) {
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
   if (!token) return res.status(401).json({ error: "Sign in required" });
 
+  let claims = null;
   try {
-    const claims = jwt.verify(token, JWT_SECRET);
-    const identity = await identityFor(claims.id);
-    if (identity && identity.is_active !== false) {
-      req.user = {
-        id: identity.id,
-        email: identity.email,
-        role: identity.role,
-        branch_id: identity.branch_id || null,
-        branch_ids: (identity.branch_ids || []).map(String).filter(Boolean),
-      };
-      return next();
-    }
+    claims = jwt.verify(token, JWT_SECRET);
   } catch {
-    // not a staff JWT — fall through to the student realm
+    // not a staff JWT: fall through to the student realm
+  }
+
+  if (claims) {
+    try {
+      const result = await resolveFor(claims.id);
+      if (result.ok) {
+        noteWarnings(result.identity);
+        req.user = toRequestUser(result.identity);
+        return next();
+      }
+      // A valid JWT for a disabled or misconfigured account is refused outright.
+      if (result.status !== 401) return res.status(result.status).json({ error: result.error, code: result.code });
+    } catch (error) {
+      return res.status(500).json({ error: error.message || "Could not verify session" });
+    }
   }
 
   try {
@@ -156,12 +147,13 @@ export async function anySession(req, res, next) {
     if (new Date(row.expires_at).getTime() <= Date.now()) {
       return res.status(401).json({ error: "Session expired. Sign in again." });
     }
-    const disabled = await pool.query(
-      `SELECT 1 FROM user_roles WHERE user_id = $1 AND is_active = false
-       UNION ALL SELECT 1 FROM app_records WHERE table_name = 'user_roles' AND data->>'user_id' = $1 AND data->>'is_active' = 'false' LIMIT 1`,
-      [String(row.user_id)],
-    ).catch(() => ({ rows: [] }));
-    if (disabled.rows.length) return res.status(403).json({ error: "Account is disabled." });
+    // Enabled state comes from the same SQL identity as every other path. A failed
+    // lookup is a service error, never "not disabled".
+    const result = await resolveFor(row.user_id);
+    if (!result.ok) return res.status(result.status).json({ error: result.error, code: result.code });
+    noteWarnings(result.identity);
+    // The opaque student token only ever acts as a student, whatever role the account
+    // holds: it is session identity for the student realm, not permission for staff APIs.
     req.user = {
       id: String(row.user_id),
       email: row.email,
