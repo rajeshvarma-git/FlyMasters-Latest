@@ -19,7 +19,7 @@ import path from "path";
 import { sendVerificationEmail } from "../lib/email.mjs";
 import { syncConversationFromLead } from "../lib/whatsappStore.mjs";
 import { pool, jsonTable, jsonUpsert } from "../lib/db.mjs";
-import { assignRole } from "../lib/accountWrites.mjs";
+import { createAccount } from "../lib/accountWrites.mjs";
 import { documentAppliesToStudent, staffOnlyDocumentTypes, studentForTargeting } from "../lib/documentTargeting.mjs";
 import { staffOnlyForStudentRef } from "../lib/staffOnlyDocuments.mjs";
 import {
@@ -576,28 +576,29 @@ async function publishCounselorAccount(row, passwordPlain) {
   `).catch(() => {});
   const existing = await pool.query("SELECT id FROM auth_users WHERE lower(email) = $1", [email]).catch(() => ({ rows: [] }));
   let authId = existing.rows[0]?.id ? String(existing.rows[0].id) : "";
-  const isNewAccount = !authId;
   const meta = JSON.stringify({
     first_name: row.first_name || "",
     last_name: row.last_name || "",
   });
   if (!authId) {
     authId = String(row.id);
-    await pool.query(
-      `INSERT INTO auth_users (id, email, password, user_metadata)
-       VALUES ($1, $2, $3, $4::jsonb)
-       ON CONFLICT (email) DO UPDATE SET user_metadata = EXCLUDED.user_metadata`,
-      [authId, email, hashAuthPassword(passwordPlain || crypto.randomUUID()), meta],
-    );
+    // New login: account, counselor role and branch (if the profile has one) are written in ONE
+    // transaction, so a failure cannot leave a login with no role. A profile with no branch yet
+    // is created pending: it has no branch access until an admin assigns one.
+    await createAccount(pool, {
+      id: authId,
+      email,
+      passwordHash: hashAuthPassword(passwordPlain || crypto.randomUUID()),
+      metadata: JSON.parse(meta),
+      role: "counselor",
+      branchIds: row.branch_id ? [row.branch_id] : [],
+      allowUnassigned: true,
+    });
   } else {
     await pool.query("UPDATE auth_users SET user_metadata = $2::jsonb WHERE id = $1", [authId, meta]);
   }
   const confirmed = await pool.query("SELECT id FROM auth_users WHERE lower(email) = $1", [email]);
   if (confirmed.rows[0]?.id) authId = String(confirmed.rows[0].id);
-
-  // Publishing a counselor profile never changes an existing account's role. Only an account
-  // this very call created gets the counselor role; role changes go through the Users screen.
-  if (isNewAccount) await assignRole(pool, { userId: authId, role: "counselor", branchId: row.branch_id || null });
 
   const profiles = await jsonTable("profiles");
   const profile = profiles.find((item) => String(item.user_id) === authId) || { id: `profile-${authId}`, user_id: authId };

@@ -107,3 +107,37 @@ test("account creation is atomic: duplicate email or invalid role leaves no logi
   await assert.rejects(() => createAccount(pool, { id: "c3", email: "c3@x.test", passwordHash: "h", role: "wizard" }));
   assert.equal((await rows("SELECT 1 FROM auth_users WHERE id = 'c3'")).length, 0);
 });
+
+
+test("a pool-based role write is atomic: a failing membership insert leaves the old role and branch", { skip }, async () => {
+  await addAccount("p1");
+  await pool.query("INSERT INTO user_roles (user_id, role) VALUES ('p1', 'student')");
+  await pool.query(`CREATE FUNCTION fail_membership() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'membership insert failed'; END $$`);
+  await pool.query("CREATE TRIGGER fail_membership BEFORE INSERT ON user_branches FOR EACH ROW EXECUTE FUNCTION fail_membership()");
+  try {
+    await assert.rejects(() => upsertUserRole(pool, { userId: "p1", role: "telecaller", branchId: B.HYD }), /membership insert failed/);
+    assert.deepEqual(await state("p1"), { role: "student", home: null, memberships: [] });
+  } finally {
+    await pool.query("DROP TRIGGER fail_membership ON user_branches");
+  }
+});
+
+test("counselor provisioning is atomic: login and role exist together, or neither does", { skip }, async () => {
+  // Pending (no branch yet): a complete account with a role and no branch access.
+  await createAccount(pool, { id: "co1", email: "co1@x.test", passwordHash: "h", role: "counselor", allowUnassigned: true });
+  assert.deepEqual(await state("co1"), { role: "counselor", home: null, memberships: [] });
+
+  // Assigned: role, home branch and membership together.
+  await createAccount(pool, { id: "co2", email: "co2@x.test", passwordHash: "h", role: "counselor", branchIds: [B.VIZ], allowUnassigned: true });
+  assert.deepEqual(await state("co2"), { role: "counselor", home: "VIZ", memberships: ["VIZ"] });
+
+  // A failure while writing the role leaves no login behind.
+  await pool.query(`CREATE FUNCTION fail_role() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'role insert failed'; END $$`);
+  await pool.query("CREATE TRIGGER fail_role BEFORE INSERT ON user_roles FOR EACH ROW EXECUTE FUNCTION fail_role()");
+  try {
+    await assert.rejects(() => createAccount(pool, { id: "co3", email: "co3@x.test", passwordHash: "h", role: "counselor", allowUnassigned: true }), /role insert failed/);
+    assert.equal((await rows("SELECT 1 FROM auth_users WHERE id = 'co3'")).length, 0, "no login without a role");
+  } finally {
+    await pool.query("DROP TRIGGER fail_role ON user_roles");
+  }
+});

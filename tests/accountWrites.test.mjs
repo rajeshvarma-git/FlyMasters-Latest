@@ -266,6 +266,31 @@ test("upsertUserRole never picks a branch: a new row without one has none", asyn
   await assert.rejects(() => upsertUserRole(db, { userId: "", role: "student" }), AccountWriteError);
 });
 
+// ---------- regression: rollback review ----------
+
+test("upsertUserRole given a pool runs account check, role and membership as one transaction on one connection", async () => {
+  const pool = fakePool((text) => { if (text.startsWith("INSERT INTO user_roles")) return { rows: [{ user_id: "u1", role: "telecaller", branch_id: "b1" }] }; });
+  await upsertUserRole(pool, { userId: "u1", role: "telecaller", branchId: "b1" });
+  assert.deepEqual(pool.log, ["BEGIN", "SELECT 1 FROM", "INSERT INTO user_roles", "INSERT INTO user_branches", "COMMIT", "RELEASE"]);
+});
+
+test("upsertUserRole given a pool rolls the role back when the membership insert fails", async () => {
+  const pool = fakePool((text) => {
+    if (text.startsWith("INSERT INTO user_roles")) return { rows: [{ user_id: "u1", role: "telecaller", branch_id: "b1" }] };
+    if (text.startsWith("INSERT INTO user_branches")) throw new Error("membership failed");
+  });
+  await assert.rejects(() => upsertUserRole(pool, { userId: "u1", role: "telecaller", branchId: "b1" }), /membership failed/);
+  assert.deepEqual(pool.log.filter((l) => /^(BEGIN|COMMIT|ROLLBACK)/.test(l)), ["BEGIN", "ROLLBACK"]);
+  assert.equal(pool.log.at(-1), "RELEASE");
+});
+
+test("upsertUserRole given an open client joins the caller's transaction instead of starting another", async () => {
+  const pool = fakePool((text) => { if (text.startsWith("INSERT INTO user_roles")) return { rows: [{ user_id: "u1", role: "telecaller", branch_id: "b1" }] }; });
+  const client = await pool.connect();
+  await upsertUserRole(client, { userId: "u1", role: "telecaller", branchId: "b1" });
+  assert.ok(!pool.log.includes("BEGIN") && !pool.log.includes("COMMIT"), "the caller owns BEGIN/COMMIT");
+});
+
 // ---------- regression: the four findings from the 02D review ----------
 
 test("F1: no SQL statement assigns Head Office by default", () => {
@@ -323,7 +348,7 @@ test("F4: self-registration creates account and role together, with no branch an
 
 test("F4: admin, telecaller and partner provisioning routes use the transactional writer", () => {
   const s = src("server/routes/core.mjs");
-  assert.equal((s.match(/await createAccount\(pool/g) || []).length, 4, "create-user, admin, telecaller and partner signups");
+  assert.equal((s.match(/await createAccount\(pool/g) || []).length, 5, "create-user, admin, telecaller and partner signups, and counselor publishing");
   assert.doesNotMatch(s, /jsonUpsert\("user_roles", \{ id: `role-\$\{(id|userId)\}`/);
 });
 
@@ -346,11 +371,13 @@ test("the Users, branches and create-user routes go through accountWrites, not s
   assert.doesNotMatch(s, /UPDATE user_roles SET branch_id/);
 });
 
-test("publishing a counselor profile assigns a role only to a newly created account", () => {
+test("publishing a counselor profile creates login and role in one step, and never touches an existing account's role", () => {
   for (const f of ["server/routes/core.mjs", "server/routes/counselor.mjs"]) {
-    const s = src(f);
-    assert.match(s, /if \(isNewAccount\) await assignRole/, f);
-    assert.doesNotMatch(s, /role: "counselor" \}\);\n  \}\n\n  const profiles/, f);
+    const body = src(f).replace(/\r\n/g, "\n").split("async function publishCounselorAccount")[1].split("\n}\n")[0];
+    assert.match(body, /await createAccount\(pool/, f);
+    assert.doesNotMatch(body, /assignRole\(/, f + ": no separate role step after the login insert");
+    assert.doesNotMatch(body, /INSERT INTO auth_users/, f + ": no bare login insert");
+    assert.doesNotMatch(body, /user_roles/, f + ": publishing never writes roles directly");
   }
 });
 

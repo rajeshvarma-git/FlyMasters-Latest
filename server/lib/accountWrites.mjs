@@ -29,6 +29,9 @@ export class AccountWriteError extends Error {
   }
 }
 
+/** A pool can lend out clients but is not one; a checked-out client can be released. */
+const isPool = (db) => typeof db.connect === "function" && typeof db.release !== "function";
+
 async function requireAccount(db, userId) {
   const { rows } = await db.query("SELECT 1 FROM auth_users WHERE id = $1", [String(userId)]);
   if (!rows[0]) throw new AccountWriteError(404, "That account does not exist.");
@@ -46,7 +49,11 @@ async function addMembership(db, userId, branchId, assignedBy) {
  * - branchId given: becomes the home branch, and (for roles that work at a branch) also a membership.
  * - branchId omitted: an existing home branch is KEPT; a new row simply has none.
  */
-export async function upsertUserRole(db, { userId, role, branchId = null, assignedBy = null, syncMembership = true }) {
+export async function upsertUserRole(db, options) {
+  // Given a pool, the account check, the role row and the membership run as ONE transaction on one
+  // connection; given an open client, they join the caller's transaction.
+  if (isPool(db)) return inTransaction(db, (client) => upsertUserRole(client, options));
+  const { userId, role, branchId = null, assignedBy = null, syncMembership = true } = options;
   const id = String(userId || "");
   if (!id) throw new AccountWriteError(400, "user_roles requires user_id");
   await requireAccount(db, id);
