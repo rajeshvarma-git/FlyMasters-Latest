@@ -1650,11 +1650,13 @@ router.post("/api/auth/signup", async (req, res) => {
       return res.status(400).json({ error: "An account with this email already exists. Sign in instead." });
     }
     const id = `admin-${crypto.randomUUID()}`;
-    await pool.query(
-      "INSERT INTO auth_users (id, email, password, user_metadata) VALUES ($1,$2,$3,$4::jsonb)",
-      [id, email, hashPassword(password), JSON.stringify({ first_name: firstName, last_name: lastName })],
-    );
-    await jsonUpsert("user_roles", { id: `role-${id}`, user_id: id, role: "admin" });
+    await createAccount(pool, {
+      id,
+      email,
+      passwordHash: hashPassword(password),
+      metadata: { first_name: firstName, last_name: lastName },
+      role: "admin",
+    });
     await jsonUpsert("profiles", {
       id: `profile-${id}`,
       user_id: id,
@@ -1696,11 +1698,16 @@ router.post("/api/auth/telecaller-signup", async (req, res) => {
       return res.status(400).json({ error: "An account with this email already exists. Sign in instead." });
     }
     const id = `user-${crypto.randomUUID()}`;
-    await pool.query(
-      "INSERT INTO auth_users (id, email, password, user_metadata) VALUES ($1,$2,$3,$4::jsonb)",
-      [id, email, hashPassword(password), JSON.stringify({ first_name: firstName, last_name: lastName })],
-    );
-    await jsonUpsert("user_roles", { id: `role-${id}`, user_id: id, role: "telecaller" });
+    // A person registering themselves cannot choose their own branch, and none is assumed for
+    // them: the account exists with its role and no branch access until an admin assigns one.
+    await createAccount(pool, {
+      id,
+      email,
+      passwordHash: hashPassword(password),
+      metadata: { first_name: firstName, last_name: lastName },
+      role: "telecaller",
+      allowUnassigned: true,
+    });
     await jsonUpsert("profiles", {
       id: `profile-${id}`,
       user_id: id,
@@ -1713,7 +1720,7 @@ router.post("/api/auth/telecaller-signup", async (req, res) => {
     });
     const users = await loadUsers();
     for (const admin of users.filter((row) => ADMIN_ROLES.includes(row.role))) {
-      await notify(admin.id, "New telecaller registered", `${firstName} ${lastName} created a telecaller account.`, "info", "/admin/telecallers");
+      await notify(admin.id, "New telecaller registered", `${firstName} ${lastName} created a telecaller account. Assign a branch so they can start.`, "info", "/admin/telecallers");
     }
     const user = publicUser({ id, email, first_name: firstName, last_name: lastName, phone }, "telecaller");
     res.json({ token: signUser(user), user });
@@ -3941,11 +3948,14 @@ router.put("/api/partners/:id/login", superAdminAuth, async (req, res) => {
       const existing = await pool.query("SELECT id FROM auth_users WHERE lower(email) = $1", [email]);
       if (existing.rows[0]) return res.status(400).json({ error: "An account with this email already exists." });
       userId = `partner-${crypto.randomUUID()}`;
-      await pool.query(
-        "INSERT INTO auth_users (id, email, password, user_metadata) VALUES ($1,$2,$3,$4::jsonb)",
-        [userId, email, hashPassword(password), JSON.stringify({ first_name: partner.full_name, last_name: "" })],
-      );
-      await jsonUpsert("user_roles", { id: `role-${userId}`, user_id: userId, role: "partner", branch_id: partner.branch_id });
+      await createAccount(pool, {
+        id: userId,
+        email,
+        passwordHash: hashPassword(password),
+        metadata: { first_name: partner.full_name, last_name: "" },
+        role: "partner",
+        branchIds: partner.branch_id ? [partner.branch_id] : [],
+      });
     } else if (password.length >= 6) {
       await pool.query("UPDATE auth_users SET password = $2 WHERE id = $1", [userId, hashPassword(password)]);
     }

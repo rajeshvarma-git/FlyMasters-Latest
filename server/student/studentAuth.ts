@@ -241,7 +241,7 @@ export async function signUpUser(input: {
     );
     // The role is a real row in the same transaction as the account: a signup can never
     // exist without one, and no legacy JSON role record is created.
-    await upsertUserRole(client, { userId: user.id, role: "student", defaultToHeadOffice: false });
+    await upsertUserRole(client, { userId: user.id, role: "student" });
     for (const r of records) {
       await client.query("INSERT INTO app_records (id, table_name, data) VALUES ($1, $2, $3::jsonb)", [r.data.id, r.table, JSON.stringify(r.data)]);
     }
