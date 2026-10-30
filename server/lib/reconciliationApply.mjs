@@ -17,6 +17,13 @@ import { validatePlan } from "./reconciliationPlan.mjs";
 
 export const APPLY_ACTIONS = ["set_access", "remove_orphan"];
 
+// Exactly these fields are understood. Anything else (for example is_active) is refused rather than
+// silently ignored, so an entry can never report "applied" for a change that was not made.
+const PROPOSED_KEYS = { set_access: ["action", "role", "home_branch", "memberships"], remove_orphan: ["action"] };
+const EXPECTED_KEYS = ["exists", "role", "sql_role", "home_branch", "memberships"];
+// The starting state an approver must have stated for ACCESS-02E to re-check.
+const EXPECTED_REQUIRED = { set_access: ["role", "home_branch", "memberships"], remove_orphan: ["exists"] };
+
 const sortedIds = (list) => [...new Set((list || []).map(String))].sort();
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
@@ -25,6 +32,8 @@ export function checkProposal(proposed) {
   const p = proposed || {};
   const problems = [];
   if (!APPLY_ACTIONS.includes(p.action)) return [`unsupported action "${p.action}" (supported: ${APPLY_ACTIONS.join(", ")}); handle this one manually`];
+  const extra = Object.keys(p).filter((k) => !PROPOSED_KEYS[p.action].includes(k));
+  if (extra.length) return [`unsupported field(s) in proposed: ${extra.join(", ")}. Changing enabled/disabled state is not done by 02E; use the Users screen and reject this entry`];
   if (p.action === "remove_orphan") return problems;
   if (!KNOWN_ROLES.includes(p.role)) problems.push(`role "${p.role}" is not a known role`);
   if (p.home_branch !== null && typeof p.home_branch !== "string") problems.push("home_branch must be a branch id or null");
@@ -35,6 +44,19 @@ export function checkProposal(proposed) {
   if (SCOPED_ROLES.includes(p.role) && !memberships.length) problems.push(`a ${p.role} needs at least one branch membership`);
   if (p.home_branch && !memberships.includes(String(p.home_branch))) problems.push("home_branch must be one of the memberships");
   if (!p.home_branch && memberships.length) problems.push("memberships need a home_branch");
+  return problems;
+}
+
+/** Problems with an entry's expected_before: unknown fields, or starting-state checks left out. */
+export function checkExpected(action, expected) {
+  const e = expected && typeof expected === "object" ? { ...expected } : {};
+  const problems = [];
+  const unknown = Object.keys(e).filter((k) => !EXPECTED_KEYS.includes(k));
+  if (unknown.length) problems.push(`expected_before has unsupported field(s): ${unknown.join(", ")}`);
+  if (e.role === undefined && e.sql_role !== undefined) e.role = e.sql_role;
+  const missing = (EXPECTED_REQUIRED[action] || []).filter((k) => e[k] === undefined);
+  if (missing.length) problems.push(`expected_before must state: ${missing.join(", ")}`);
+  if (action === "remove_orphan" && e.exists !== false) problems.push("expected_before.exists must be false for remove_orphan");
   return problems;
 }
 
@@ -117,28 +139,46 @@ async function applyOne(db, entry, appliedBy) {
  * Applies every approved entry. `pool` is anything with connect(). dryRun (the default) runs the
  * exact same statements and rolls each one back.
  */
-export async function applyPlan(pool, plan, { dryRun = true, appliedBy = "access-02e" } = {}) {
+export async function applyPlan(pool, plan, { dryRun = true, appliedBy = "access-02e", target, journal } = {}) {
   const problems = validatePlan(plan);
   if (problems.length) return { ok: false, refused: "the plan is not ready", problems, results: [] };
+  // The plan must say which database it was audited from, and that must be this one.
+  const planned = plan.source?.target?.fingerprint;
+  if (!planned) return { ok: false, refused: "the plan does not record which database it was made from; re-run the audit and rebuild the plan", problems: [], results: [] };
+  if (!target?.fingerprint || target.fingerprint !== planned) {
+    return { ok: false, refused: `this plan was made from ${plan.source.target.host}:${plan.source.target.port}/${plan.source.target.database}, not the database you are connected to`, problems: [], results: [] };
+  }
+  if (!dryRun && !(journal?.prepared && journal?.committed)) return { ok: false, refused: "no durable change journal supplied; refusing to write without evidence", problems: [], results: [] };
   const results = [];
+  let halted = false;
   for (const entry of plan.entries.filter((e) => e.status === "approved")) {
+    if (halted) break;
     const base = { id: entry.id, account_id: entry.account_id, action: entry.proposed?.action };
-    const bad = checkProposal(entry.proposed);
+    const badProposal = checkProposal(entry.proposed);
+    const bad = badProposal.length ? badProposal : checkExpected(entry.proposed.action, entry.expected_before);
     if (bad.length) { results.push({ ...base, outcome: "invalid", detail: bad }); continue; }
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
       const r = await applyOne(client, entry, appliedBy);
+      const real = !dryRun && r.outcome === "applied";
+      // The before/after evidence is made durable BEFORE the commit. If it cannot be written the
+      // entry is rolled back and the run stops, so no change ever exists without its record.
+      if (real) {
+        try { await journal.prepared({ ...base, ...r }); } catch (e) { e.journal = true; throw e; }
+      }
       await client.query(dryRun || r.outcome !== "applied" ? "ROLLBACK" : "COMMIT");
       results.push({ ...base, ...r, outcome: dryRun && r.outcome === "applied" ? "would_apply" : r.outcome });
+      if (real) { try { await journal.committed({ ...base, outcome: "applied" }); } catch { halted = true; } }
     } catch (error) {
       await client.query("ROLLBACK").catch(() => {});
       results.push({ ...base, outcome: "failed", detail: String(error?.message || error) });
+      if (error?.journal) halted = true;
     } finally {
       client.release();
     }
   }
-  return { ok: true, dryRun, results, summary: summarizeResults(results) };
+  return { ok: true, dryRun, halted, results, summary: summarizeResults(results) };
 }
 
 export function summarizeResults(results) {

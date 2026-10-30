@@ -11,6 +11,7 @@ import { execSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { DATABASE_URL } from "../server/lib/env.mjs";
 import { analyzeAccounts, summarize } from "../server/lib/accountConsistency.mjs";
+import { targetIdentity } from "../server/lib/targetIdentity.mjs";
 
 const args = process.argv.slice(2);
 const outFile = args.includes("--out") ? args[args.indexOf("--out") + 1] : null;
@@ -48,6 +49,7 @@ try {
   report = {
     generated_at: meta.at,
     database: meta.db,
+    target: targetIdentity({ url: DATABASE_URL, database: meta.db }),
     code_commit: commit,
     totals: Object.fromEntries(Object.entries(snapshot).map(([k, v]) => [k, v.length])),
     summary: summarize(findings),

@@ -62,7 +62,7 @@ export function buildPlan(report) {
     e.evidence.push({ code: f.code, ...f.evidence });
   }
   return {
-    source: { generated_at: report.generated_at, database: report.database, code_commit: report.code_commit },
+    source: { generated_at: report.generated_at, database: report.database, ...(report.target ? { target: report.target } : {}), code_commit: report.code_commit },
     entries: [...byKey.values()],
   };
 }
