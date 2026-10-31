@@ -34,6 +34,8 @@ import {
   WHATSAPP,
 } from "../lib/env.mjs";
 import { assignRole, setAccountBranches, createAccount, AccountWriteError } from "../lib/accountWrites.mjs";
+import { decideAccountAction } from "../lib/accessPolicy.mjs";
+import { loadAccountTarget } from "../lib/accountTargets.mjs";
 import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
 import { branchExists, listBranches, allocateBranchCode, suggestBranchCode } from "../lib/branches.mjs";
 import {
@@ -2765,8 +2767,27 @@ router.post("/api/salary", auth, async (req, res) => {
 });
 
 
+/**
+ * ACCESS-03: loads the target from SQL and asks the shared policy. Returns the target, or sends the
+ * refusal itself and returns null. Nothing is written by a refused request.
+ */
+async function authorizeAccountAction(req, res, action, requested = {}) {
+  let target;
+  try {
+    target = await loadAccountTarget(pool, req.params.id);
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not check permissions" });
+    return null;
+  }
+  if (!target) { res.status(404).json({ error: "That account does not exist." }); return null; }
+  const decision = decideAccountAction({ actor: { id: req.user.id, role: req.user.role, scope: req.scope }, action, target, requested });
+  if (!decision.ok) { res.status(decision.status).json({ error: decision.error, code: decision.code }); return null; }
+  return target;
+}
+
 router.put("/api/users/:id/role", auth, async (req, res) => {
   const role = String(req.body.role || "");
+  if (!(await authorizeAccountAction(req, res, "staff.role.change", { role }))) return;
   let result;
   try {
     result = await applyRoleChange({
@@ -2774,7 +2795,8 @@ router.put("/api/users/:id/role", auth, async (req, res) => {
       targetId: req.params.id,
       newRole: role,
       store: {
-        getRole: async (id) => (await jsonTable("user_roles")).find((row) => String(row.user_id) === String(id)) || null,
+        // The current role is read from SQL, the only authority; legacy JSON records are not consulted.
+        getRole: async (id) => (await pool.query("SELECT role FROM user_roles WHERE user_id = $1", [String(id)])).rows[0] || null,
         // Role and branch move together and the person's branch is kept (accountWrites.mjs).
         setRole: (id, newRole) => assignRole(pool, { userId: id, role: newRole, assignedBy: req.user.id }),
         audit: (details) => audit(req, "user.role.update", "auth_users", req.params.id, details),
@@ -2805,10 +2827,9 @@ router.put("/api/users/:id/role", auth, async (req, res) => {
 router.put("/api/users/:id/password", auth, async (req, res) => {
   const password = String(req.body.password || "");
   if (password.length < 6) return res.status(400).json({ error: "Password must be at least 6 characters." });
-  const role = (await jsonTable("user_roles")).find((row) => String(row.user_id) === String(req.params.id))?.role;
-  if (ADMIN_ROLES.includes(role) && String(req.params.id) !== String(req.user.id) && req.user.role !== "super_admin") {
-    return res.status(403).json({ error: "Only a super admin can reset another admin's password." });
-  }
+  const target = await authorizeAccountAction(req, res, "staff.password.reset");
+  if (!target) return;
+  const role = target.role;
   await pool.query("UPDATE auth_users SET password = $2 WHERE id = $1", [req.params.id, hashPassword(password)]);
   const counselor = await pool.query("SELECT id FROM counselor_users WHERE email = (SELECT email FROM auth_users WHERE id = $1)", [req.params.id]).catch(() => ({ rows: [] }));
   if (counselor.rows[0]) {
@@ -2836,6 +2857,17 @@ router.post("/api/users", auth, async (req, res) => {
   // Only a super admin may mint another super admin.
   if (role === "super_admin" && req.user.role !== "super_admin") {
     return res.status(403).json({ error: "Only a super admin can create another super admin." });
+  }
+
+  // Who may create which role, in which branches (ACCESS-03). Branch Heads need an explicit delegation.
+  {
+    const wanted = Array.isArray(req.body.branchIds) ? req.body.branchIds : [req.body.branchId];
+    const decision = decideAccountAction({
+      actor: { id: req.user.id, role: req.user.role, scope: req.scope },
+      action: "staff.create",
+      requested: { role, branchIds: wanted.map(String).filter((v) => v && v !== "undefined" && v !== "null") },
+    });
+    if (!decision.ok) return res.status(decision.status).json({ error: decision.error, code: decision.code });
   }
 
   // Which branches this person will be able to see. A branch-scoped role with
@@ -3753,6 +3785,7 @@ router.patch("/api/branches/:id", [session, requireRole(ADMIN_ROLES, "Admin"), b
 router.put("/api/users/:id/branches", [session, requireRole(ADMIN_ROLES, "Admin"), branchScope], async (req, res) => {
   try {
     const branchIds = (req.body.branchIds || []).map(String).filter(Boolean);
+    if (!(await authorizeAccountAction(req, res, "staff.branches.change", { branchIds }))) return;
     for (const branchId of branchIds) {
       if (!(await branchExists(branchId))) return res.status(400).json({ error: `Unknown branch: ${branchId}` });
     }
