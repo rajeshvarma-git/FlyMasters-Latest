@@ -12,6 +12,7 @@
  */
 import express from "express";
 import { pool } from "../lib/db.mjs";
+import { allow, checkRowInScope } from "../lib/scopeGuards.mjs";
 import { ROLES, ADMIN_ROLES, session, requireRole, branchScope, audit } from "../lib/auth.mjs";
 
 const router = express.Router();
@@ -216,6 +217,7 @@ router.post("/api/finance/payments", financeAuth, async (req, res) => {
 
 router.patch("/api/finance/payments/:id", financeAuth, async (req, res) => {
   try {
+    if (!(await allow(res, checkRowInScope(pool, req.scope, "student_payments", req.params.id)))) return;
     const fields = [];
     const params = [req.params.id];
     for (const [key, column] of [["status", "status"], ["amount", "amount"], ["receiptRef", "receipt_ref"], ["notes", "notes"]]) {

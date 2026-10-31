@@ -42,6 +42,7 @@ import {
   flushScheduled,
 } from "../lib/automation.mjs";
 import { whatsapp, notify } from "./core.mjs";
+import { allow, checkConversationInScope, checkEscalationInScope, checkSubjectInScope } from "../lib/scopeGuards.mjs";
 
 const router = Router();
 
@@ -601,6 +602,13 @@ router.get("/api/comms/log", staffAuth, async (req, res) => {
 
 router.get("/api/comms/consent", staffAuth, async (req, res) => {
   try {
+    if (!req.scope.allBranches) {
+      // A limited caller must name one person in their branches; the all-branches opt-out list is global.
+      if (!req.query.subject_id) {
+        return res.status(403).json({ error: "Pick a person: the full opt-out list covers every branch.", code: "NEEDS_HIGHER_AUTHORITY" });
+      }
+      if (!(await allow(res, checkSubjectInScope(pool, req.scope, req.query.subject_id)))) return;
+    }
     const { rows } = await pool.query(
       req.query.subject_id
         ? "SELECT * FROM communication_consent WHERE subject_id = $1"
@@ -615,6 +623,7 @@ router.put("/api/comms/consent", staffAuth, async (req, res) => {
   try {
     const body = req.body || {};
     if (!body.subject_id || !body.channel) throw new Error("Subject and channel are required.");
+    if (!(await allow(res, checkSubjectInScope(pool, req.scope, body.subject_id)))) return;
     const { rows } = await pool.query(
       `INSERT INTO communication_consent (subject_type, subject_id, channel, opted_out, consent_at, reason)
        VALUES ($1,$2,$3,$4, CASE WHEN $4 THEN NULL ELSE now() END, $5)
@@ -833,7 +842,7 @@ router.get("/api/comms/supervision/conversations", commsAdmin, async (req, res) 
     for (const kind of kinds) all = all.concat(await listConversations(kind));
     if (!req.scope.allBranches) {
       const allowed = new Set(req.scope.branchIds.map(String));
-      all = all.filter((row) => !row.branch_id || allowed.has(String(row.branch_id)));
+      all = all.filter((row) => row.branch_id && allowed.has(String(row.branch_id)));
     }
     res.json({ conversations: all.slice(0, Number(req.query.limit) || 300) });
   } catch (error) { fail(res, error); }
@@ -842,6 +851,7 @@ router.get("/api/comms/supervision/conversations", commsAdmin, async (req, res) 
 router.get("/api/comms/supervision/:kind/:id", commsAdmin, async (req, res) => {
   try {
     if (!CONVERSATION_SOURCES[req.params.kind]) throw new Error("Unknown conversation type.");
+    if (!(await allow(res, checkConversationInScope(pool, req.scope, req.params.kind, req.params.id)))) return;
     const messages = await listMessages(req.params.kind, req.params.id);
     await recordSupervision(req, { kind: req.params.kind, conversationId: req.params.id, action: "view" });
     await audit(req, "chat.view", "conversation", req.params.id, { kind: req.params.kind, messages: messages.length });
@@ -863,6 +873,7 @@ router.post("/api/comms/supervision/:kind/:id/join", commsAdmin, async (req, res
   try {
     const source = CONVERSATION_SOURCES[req.params.kind];
     if (!source) throw new Error("Unknown conversation type.");
+    if (!(await allow(res, checkConversationInScope(pool, req.scope, req.params.kind, req.params.id)))) return;
     const note = String(req.body?.reason || "Joined for review");
 
     await pool.query(
@@ -890,6 +901,7 @@ router.post("/api/comms/supervision/:kind/:id/message", commsAdmin, async (req, 
   try {
     const source = CONVERSATION_SOURCES[req.params.kind];
     if (!source) throw new Error("Unknown conversation type.");
+    if (!(await allow(res, checkConversationInScope(pool, req.scope, req.params.kind, req.params.id)))) return;
     const message = String(req.body?.message || "").trim();
     if (!message) throw new Error("Write a message.");
 
@@ -966,7 +978,7 @@ router.get("/api/comms/escalations", commsAdmin, async (req, res) => {
     if (req.query.status) { params.push(String(req.query.status)); where.push(`status = $${params.length}`); }
     if (!req.scope.allBranches) {
       params.push(req.scope.branchIds);
-      where.push(`(branch_id = ANY($${params.length}::uuid[]) OR branch_id IS NULL)`);
+      where.push(`branch_id = ANY($${params.length}::uuid[])`);
     }
     const { rows } = await pool.query(
       `SELECT * FROM chat_escalations
@@ -981,6 +993,7 @@ router.get("/api/comms/escalations", commsAdmin, async (req, res) => {
 
 router.patch("/api/comms/escalations/:id", commsAdmin, async (req, res) => {
   try {
+    if (!(await allow(res, checkEscalationInScope(pool, req.scope, req.params.id)))) return;
     const before = (await pool.query("SELECT * FROM chat_escalations WHERE id = $1", [req.params.id])).rows[0];
     if (!before) throw Object.assign(new Error("Escalation not found."), { status: 404 });
     const status = String(req.body?.status || before.status);

@@ -43,13 +43,22 @@ const H = {
 };
 
 /** accounts: id -> { branches: [] }.  leads: id -> branchId.  Records every write with its parameters. */
-function world({ accounts = {}, leads = {} } = {}) {
+function world({ accounts = {}, leads = {}, leadData = {} } = {}) {
   const writes = [];
   const originalQuery = pool.query.bind(pool);
   const originalConnect = pool.connect.bind(pool);
   const answer = (sql, params = []) => {
     const text = String(sql).replace(/\s+/g, " ").trim();
     if (/^(INSERT|UPDATE|DELETE)/.test(text)) { writes.push({ text: text.slice(0, 60), params }); return { rows: /RETURNING/i.test(text) ? [{ id: params[0], data: {} }] : [], rowCount: 1 }; }
+    if (/^SELECT id, email, user_metadata, created_at FROM auth_users/.test(text)) {
+      return { rows: Object.keys(accounts).map((id) => ({ id, email: `${id}@x.test`, user_metadata: {}, created_at: "2026-01-01" })) };
+    }
+    if (/^SELECT user_id, role, branch_id, is_active, created_at FROM user_roles/.test(text)) {
+      return { rows: Object.entries(accounts).map(([id, a]) => ({ user_id: id, role: a.role || "counselor", branch_id: a.branches?.[0] ?? null, is_active: true, created_at: "2026-01-01" })) };
+    }
+    if (/^SELECT user_id, branch_id FROM user_branches$/.test(text)) {
+      return { rows: Object.entries(accounts).flatMap(([id, a]) => (a.branches || []).map((b) => ({ user_id: id, branch_id: b }))) };
+    }
     if (/^SELECT id FROM auth_users WHERE id::text/.test(text)) return { rows: accounts[params[0]] ? [{ id: params[0] }] : [] };
     if (/^SELECT a\.id FROM counselor_users/.test(text)) return { rows: [] };
     if (/^SELECT id, lower\(email\)/.test(text)) return { rows: accounts[params[0]] ? [{ id: params[0], email: `${params[0]}@x.test` }] : [] };
@@ -58,7 +67,7 @@ function world({ accounts = {}, leads = {} } = {}) {
     if (/^SELECT branch_id FROM app_records WHERE table_name = 'student_leads' AND id::text/.test(text)) return { rows: params[0] in leads ? [{ branch_id: leads[params[0]] }] : [] };
     if (/^SELECT DISTINCT branch_id FROM app_records/.test(text)) return { rows: [] };
     if (/^SELECT id, data, branch_id, created_at FROM app_records WHERE table_name = \$1/.test(text) && params[0] === "student_leads") {
-      return { rows: Object.entries(leads).map(([id, branch_id]) => ({ id, data: { id, entity_type: "student", lead_status: "converted" }, branch_id, created_at: "2026-01-01" })) };
+      return { rows: Object.entries(leads).map(([id, branch_id]) => ({ id, data: { id, entity_type: "student", lead_status: "converted", ...(leadData[id] || {}) }, branch_id, created_at: "2026-01-01" })) };
     }
     if (/FROM branches/.test(text)) return { rows: [{ id: A }, { id: B }] };
     return { rows: [], rowCount: 0 };
@@ -99,9 +108,9 @@ test("staff transfer/remove: people entirely inside the caller's branches get pa
   const accounts = { cA: { branches: [A] }, cA2: { branches: [A] }, cB: { branches: [B] } };
   await withWorld({ accounts }, async () => {
     const ok = await call(H.counselorTransfer, { scope: scoped(A), params: { id: "cA" }, body: { targetCounselorId: "cA2" } });
-    assert.ok(!refused(ok), JSON.stringify(ok.body));
+    assert.equal(ok.code, 200, JSON.stringify(ok.body));
     const everyone = await call(H.counselorTransfer, { role: "super_admin", scope: everything, params: { id: "cB" }, body: { targetCounselorId: "cA" } });
-    assert.ok(!refused(everyone), "Super Admin / enforcement off: unchanged");
+    assert.equal(everyone.code, 200, "Super Admin / enforcement off: unchanged");
   });
 });
 
@@ -136,7 +145,7 @@ test("lead edits: another branch's lead, or an assignee from another branch, is 
     assert.ok(refused(await call(H.leadPatch, { scope: scoped(A), params: { id: "leadA" }, body: { assigned_counselor_id: "cB" } })));
     assert.equal((await call(H.leadPatch, { scope: scoped(A), params: { id: "missing" }, body: { notes: "x" } })).code, 404);
     assert.deepEqual(w.writes, []);
-    assert.ok(!refused(await call(H.leadPatch, { scope: scoped(A), params: { id: "leadA" }, body: { notes: "x" } })), "own branch still works");
+    assert.equal((await call(H.leadPatch, { scope: scoped(A), params: { id: "leadA" }, body: { notes: "x" } })).code, 200, "own branch still works");
   });
 });
 
@@ -156,8 +165,8 @@ test("branches: only an unrestricted caller creates one; updates only touch the 
     assert.ok(refused(await call(H.branchCreate, { scope: scoped(A), body: { name: "New" } })));
     assert.ok(refused(await call(H.branchUpdate, { scope: scoped(A), params: { id: B }, body: { name: "x" } })));
     assert.deepEqual(w.writes, []);
-    assert.ok(!refused(await call(H.branchUpdate, { scope: scoped(A), params: { id: A }, body: { name: "x" } })), "own branch still works");
-    assert.ok(!refused(await call(H.branchCreate, { role: "super_admin", scope: everything, body: { name: "New" } })));
+    assert.equal((await call(H.branchUpdate, { scope: scoped(A), params: { id: A }, body: { name: "x" } })).code, 200, "own branch still works");
+    assert.equal((await call(H.branchCreate, { role: "super_admin", scope: everything, body: { name: "New" } })).code, 200);
   });
 });
 
@@ -168,5 +177,93 @@ test("checkStaffInScope / checkLeadInScope report why", async () => {
     assert.equal((await checkLeadInScope(pool, scoped(A), "leadB")).code, "OUT_OF_SCOPE");
     assert.equal((await checkLeadInScope(pool, scoped(A), "ghost")).code, "NOT_FOUND");
     assert.equal((await checkLeadInScope(pool, everything, "ghost")).ok, true);
+  });
+});
+
+// ---------- the allowed paths must really work: success response AND the saved result ----------
+
+const saved = (w, predicate) => w.writes.filter((x) => predicate(x));
+const dataOf = (x) => (typeof x.params[2] === "string" ? JSON.parse(x.params[2]) : x.params[2] || {});
+
+test("allowed: a telecaller's open leads are transferred, and the saved lead names the new telecaller", async () => {
+  const accounts = { tA: { role: "telecaller", branches: [A] }, tA2: { role: "telecaller", branches: [A] } };
+  const leadData = { leadA: { entity_type: "lead", lead_status: "new", assigned_telecaller_id: "tA" } };
+  await withWorld({ accounts, leads: { leadA: A }, leadData }, async (w) => {
+    const r = await call(H.telecallerTransfer, { scope: scoped(A), params: { id: "tA" }, body: { targetTelecallerId: "tA2" } });
+    assert.equal(r.code, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body, { ok: true, count: 1 });
+    const lead = saved(w, (x) => /^INSERT INTO app_records/.test(x.text)).map(dataOf).find((d) => d.id === "leadA");
+    assert.equal(lead?.assigned_telecaller_id, "tA2", "the lead was saved with the new telecaller");
+  });
+});
+
+test("allowed: removing a telecaller moves their leads first, then deactivates them", async () => {
+  const accounts = { tA: { role: "telecaller", branches: [A] }, tA2: { role: "telecaller", branches: [A] } };
+  const leadData = { leadA: { entity_type: "lead", lead_status: "new", assigned_telecaller_id: "tA" } };
+  await withWorld({ accounts, leads: { leadA: A }, leadData }, async (w) => {
+    const r = await call(H.telecallerRemove, { scope: scoped(A), params: { id: "tA" }, body: { targetTelecallerId: "tA2" } });
+    assert.equal(r.code, 200, JSON.stringify(r.body));
+    assert.equal(r.body.transferred, 1);
+    const lead = saved(w, (x) => /^INSERT INTO app_records/.test(x.text)).map(dataOf).find((d) => d.id === "leadA");
+    assert.equal(lead?.assigned_telecaller_id, "tA2");
+  });
+});
+
+test("allowed: counselor transfer and removal succeed for staff inside the caller's branches", async () => {
+  const accounts = { cA: { branches: [A] }, cA2: { branches: [A] } };
+  await withWorld({ accounts }, async (w) => {
+    const t = await call(H.counselorTransfer, { scope: scoped(A), params: { id: "cA" }, body: { targetCounselorId: "cA2" } });
+    assert.equal(t.code, 200, JSON.stringify(t.body));
+    assert.equal(t.body.ok, true);
+    const rm = await call(H.counselorRemove, { scope: scoped(A), params: { id: "cA" }, body: { targetCounselorId: "cA2" } });
+    assert.equal(rm.code, 200, JSON.stringify(rm.body));
+    assert.equal(rm.body.ok, true);
+    assert.ok(saved(w, (x) => /^DELETE FROM counselor_users/.test(x.text)).length > 0, "the counselor profile was actually removed");
+  });
+});
+
+test("allowed: an Admin edits a lead in their own branch and the change is saved in that branch", async () => {
+  await withWorld({ leads: { leadA: A }, leadData: { leadA: { entity_type: "lead", lead_status: "new" } } }, async (w) => {
+    const r = await call(H.leadPatch, { scope: scoped(A), params: { id: "leadA" }, body: { notes: "hello" } });
+    assert.equal(r.code, 200, JSON.stringify(r.body));
+    assert.equal(r.body.lead.notes, "hello");
+    const row = saved(w, (x) => /^INSERT INTO app_records/.test(x.text)).find((x) => dataOf(x).id === "leadA");
+    assert.equal(dataOf(row).notes, "hello");
+    assert.equal(row.params[3], A, "saved against the lead's own branch");
+  });
+});
+
+test("allowed: branch update and creation do the work for the people allowed to do them", async () => {
+  await withWorld({}, async (w) => {
+    const u = await call(H.branchUpdate, { scope: scoped(A), params: { id: A }, body: { name: "Renamed" } });
+    assert.equal(u.code, 200, JSON.stringify(u.body));
+    assert.equal(u.body.branch.id, A);
+    assert.deepEqual(saved(w, (x) => /^UPDATE branches/.test(x.text)).map((x) => x.params), [[A, "Renamed"]]);
+    w.writes.length = 0;
+    const c = await call(H.branchCreate, { role: "super_admin", scope: everything, body: { name: "New", city: "Hyd" } });
+    assert.equal(c.code, 200, JSON.stringify(c.body));
+    const insert = saved(w, (x) => /^INSERT INTO branches/.test(x.text));
+    assert.equal(insert.length, 1);
+    assert.equal(insert[0].params[0], "New");
+  });
+});
+
+test("allowed: bulk assignment saves exactly the in-scope lead with the new owner", async () => {
+  const accounts = { cA: { branches: [A] }, tA: { role: "telecaller", branches: [A] } };
+  await withWorld({ accounts, leads: { leadA: A, leadB: B }, leadData: { leadA: { entity_type: "lead", lead_status: "new" }, leadB: { entity_type: "lead", lead_status: "new" } } }, async (w) => {
+    const r = await call(H.bulkTelecaller, { scope: scoped(A), body: { ids: ["leadA", "leadB"], telecallerId: "tA" } });
+    assert.equal(r.code, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body, { ok: true, count: 1, skippedScope: 1 });
+    const writtenLeads = saved(w, (x) => /^INSERT INTO app_records/.test(x.text)).map(dataOf).filter((d) => d.id === "leadA" || d.id === "leadB");
+    assert.deepEqual(writtenLeads.map((d) => [d.id, d.assigned_telecaller_id]), [["leadA", "tA"]]);
+  });
+});
+
+test("allowed: unrestricted callers (Super Admin, or Admin while enforcement is off) are not slowed by lookups", async () => {
+  const accounts = { cA: { branches: [A] }, cB: { branches: [B] }, tB: { role: "telecaller", branches: [B] }, tB2: { role: "telecaller", branches: [B] } };
+  await withWorld({ accounts, leads: { leadB: B }, leadData: { leadB: { entity_type: "lead", lead_status: "new", assigned_telecaller_id: "tB" } } }, async () => {
+    const r = await call(H.telecallerTransfer, { role: "super_admin", scope: everything, params: { id: "tB" }, body: { targetTelecallerId: "tB2" } });
+    assert.equal(r.code, 200, JSON.stringify(r.body));
+    assert.equal(r.body.count, 1, "a Branch B lead moves for the unrestricted caller");
   });
 });

@@ -46,30 +46,8 @@ const ACTION_OVERRIDES = {
 };
 
 // Branch-owned data or actions that no branch check protects today (found by reading each handler).
-const GAPS = {
-  "GET /api/students/:id/checklist": "reads any student's checklist and documents by id",
-  "PATCH /api/leave/:id": "approves or rejects any counselor's leave",
-  "POST /api/notifications": "sends a notification to any user id",
-  "POST /api/notifications/broadcast": "broadcasts across all users",
-  "GET /api/whatsapp/conversations": "Admin sees every branch's conversations (staffCanViewConversation)",
-  "GET /api/whatsapp/conversations/:id/messages": "Admin reads any conversation",
-  "POST /api/whatsapp/messages": "Admin-type sender is not branch-limited",
-  "POST /api/whatsapp/conversations/:id/read": "any conversation",
-  "POST /api/whatsapp/sync-staff": "re-routes conversations across all branches",
-  "GET /api/system/alerts": "not branch-filtered",
-  "POST /api/system/alerts/run": "runs alerts for every branch",
-  "POST /api/system/auto-assign": "assigns telecallers across all branches",
-  "PATCH /api/partners/:id": "edits any partner",
-  "POST /api/leads/:id/referral": "attaches a referral to any lead",
-  "PATCH /api/finance/payments/:id": "updates any payment; the other finance routes check the branch",
-  "GET /api/comms/supervision/:kind/:id": "any Admin reads any conversation",
-  "POST /api/comms/supervision/:kind/:id/join": "any Admin joins any conversation",
-  "POST /api/comms/supervision/:kind/:id/message": "any Admin posts into any conversation",
-  "PATCH /api/comms/escalations/:id": "any Admin handles any escalation",
-  "GET /api/comms/consent": "reads consent for any subject",
-  "PUT /api/comms/consent": "changes consent for any subject",
-  "POST /api/salary": "posts a salary record and notification for any counselor id; the counselor's branch is not checked",
-};
+// Empty since ACCESS-03B batch 3: a new entry here must be a real, recorded gap.
+const GAPS = {};
 
 // Handlers that read and change nothing: they only refuse. Safe by construction.
 const REFUSES = {

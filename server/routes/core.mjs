@@ -36,7 +36,7 @@ import {
 import { assignRole, setAccountBranches, createAccount, AccountWriteError } from "../lib/accountWrites.mjs";
 import { decideAccountAction } from "../lib/accessPolicy.mjs";
 import { loadAccountTarget } from "../lib/accountTargets.mjs";
-import { allow, branchInScope, checkLeadInScope, checkStaffInScope } from "../lib/scopeGuards.mjs";
+import { allow, branchInScope, checkLeadInScope, checkStaffInScope, managerSeesConversation, requireGlobalScope, checkRowInScope, checkLeaveInScope } from "../lib/scopeGuards.mjs";
 import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
 import { branchExists, listBranches, allocateBranchCode, suggestBranchCode } from "../lib/branches.mjs";
 import {
@@ -2281,6 +2281,9 @@ router.get("/api/students/:id/checklist", auth, async (req, res) => {
       (row) => String(row.id) === String(req.params.id) || String(row.user_id) === String(req.params.id),
     );
     if (!student) return res.status(404).json({ error: "Student not found." });
+    if (!branchInScope(req.scope, student.branch_id)) {
+      return res.status(403).json({ error: "That student is outside the branches you manage.", code: "OUT_OF_SCOPE" });
+    }
 
     const [items, sqlDocs, jsonDocs] = await Promise.all([
       jsonTable("document_checklists"),
@@ -2337,7 +2340,9 @@ router.get("/api/students/:id/checklist", auth, async (req, res) => {
   }
 });
 
-router.get("/api/system/alerts", auth, (_req, res) => {
+router.get("/api/system/alerts", auth, (req, res) => {
+  const g = requireGlobalScope(req.scope);
+  if (!g.ok) return res.status(g.status).json({ error: g.error, code: g.code });
   const nextRunAt =
     alertStatus.enabled && alertStatus.lastRunAt
       ? new Date(new Date(alertStatus.lastRunAt).getTime() + ALERT_INTERVAL_HOURS * 3600000).toISOString()
@@ -2345,8 +2350,10 @@ router.get("/api/system/alerts", auth, (_req, res) => {
   res.json({ ...alertStatus, repeatHours: ALERT_REPEAT_HOURS, nextRunAt });
 });
 
-router.post("/api/system/auto-assign", auth, async (_req, res) => {
+router.post("/api/system/auto-assign", auth, async (req, res) => {
   try {
+    const g = requireGlobalScope(req.scope);
+    if (!g.ok) return res.status(g.status).json({ error: g.error, code: g.code });
     if (!TELECALLER_AUTO_ASSIGN) {
       return res.status(400).json({ error: "Automatic assignment is disabled. Admin must assign a telecaller." });
     }
@@ -2357,7 +2364,9 @@ router.post("/api/system/auto-assign", auth, async (_req, res) => {
   }
 });
 
-router.post("/api/system/alerts/run", auth, async (_req, res) => {
+router.post("/api/system/alerts/run", auth, async (req, res) => {
+  const g = requireGlobalScope(req.scope);
+  if (!g.ok) return res.status(g.status).json({ error: g.error, code: g.code });
   await checkUnassignedLeads();
   res.json({ ok: true, ...alertStatus });
 });
@@ -2748,6 +2757,7 @@ router.patch("/api/leave/:id", auth, async (req, res) => {
   const status = String(req.body.status || "");
   if (!["approved", "rejected", "pending"].includes(status)) return res.status(400).json({ error: "Invalid leave status." });
   const comments = String(req.body.comments || "");
+  if (!(await allow(res, checkLeaveInScope(pool, req.scope, req.params.id)))) return;
   const updated = await pool.query(
     "UPDATE counselor_leave_requests SET status = $2 WHERE id = $1 RETURNING *",
     [req.params.id, status],
@@ -2767,6 +2777,7 @@ router.post("/api/salary", auth, async (req, res) => {
   const notes = String(req.body.notes || "");
   if (!counselorId || !month) return res.status(400).json({ error: "Counselor, month, and amount are required." });
   if (!isUuid(counselorId)) return res.status(400).json({ error: "This counselor record is not linked to HR tables yet." });
+  if (!(await allow(res, checkStaffInScope(pool, req.scope, counselorId)))) return;
   const row = await pool.query(
     `INSERT INTO counselor_salary_records (counselor_id, month, year, net_salary, notes)
      VALUES ($1,$2,$3,$4,$5)
@@ -3240,6 +3251,7 @@ router.post("/api/notifications", auth, async (req, res) => {
   const title = String(req.body.title || "").trim();
   const message = String(req.body.message || "").trim();
   if (!userId || !title) return res.status(400).json({ error: "Recipient and title are required." });
+  if (!(await allow(res, checkStaffInScope(pool, req.scope, userId)))) return;
   await notify(userId, title, message, req.body.type || "info", req.body.actionUrl || "");
   res.json({ ok: true });
 });
@@ -3249,6 +3261,8 @@ router.post("/api/notifications/broadcast", auth, async (req, res) => {
   const message = String(req.body.message || "").trim();
   const audience = String(req.body.audience || "students");
   if (!title) return res.status(400).json({ error: "Title is required." });
+  const g = requireGlobalScope(req.scope);
+  if (!g.ok) return res.status(g.status).json({ error: g.error, code: g.code });
   const users = await loadUsers();
   const targets = users.filter((user) => {
     if (audience === "all") return true;
@@ -3311,7 +3325,8 @@ router.get("/api/whatsapp/conversations", staffChatAuth, async (req, res) => {
   try {
     const counselors = await loadCounselors();
     const leads = await jsonTable("student_leads");
-    const conversations = await whatsapp.filterConversationsForStaff(req.user, counselors, leads);
+    const conversations = (await whatsapp.filterConversationsForStaff(req.user, counselors, leads))
+      .filter((row) => managerSeesConversation(req.user, req.scope, row, leads));
     res.json(conversations.sort((a, b) => String(b.last_message_at || "").localeCompare(String(a.last_message_at || ""))));
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not load WhatsApp conversations" });
@@ -3325,6 +3340,9 @@ router.get("/api/whatsapp/conversations/:id/messages", staffChatAuth, async (req
     const conversations = await jsonTable("whatsapp_conversations");
     const conversation = conversations.find((row) => String(row.id) === String(req.params.id));
     if (!conversation) return res.status(404).json({ error: "Conversation not found." });
+    if (!managerSeesConversation(req.user, req.scope, conversation, leads)) {
+      return res.status(403).json({ error: "That conversation is outside the branches you manage.", code: "OUT_OF_SCOPE" });
+    }
     if (!whatsapp.staffCanViewConversation(conversation, req.user, counselors, leads)) {
       return res.status(403).json({ error: "You cannot view this conversation." });
     }
@@ -3382,6 +3400,9 @@ router.post("/api/whatsapp/messages", staffChatAuth, async (req, res) => {
     const conversations = await jsonTable("whatsapp_conversations");
     const conversation = conversations.find((row) => String(row.id) === conversationId);
     if (!conversation) return res.status(404).json({ error: "Conversation not found." });
+    if (!managerSeesConversation(req.user, req.scope, conversation, leads)) {
+      return res.status(403).json({ error: "That conversation is outside the branches you manage.", code: "OUT_OF_SCOPE" });
+    }
     if (!whatsapp.staffCanReplyConversation(conversation, req.user, counselors, leads)) {
       const unassigned = !conversation.assigned_staff_id;
       return res.status(403).json({
@@ -3423,6 +3444,9 @@ router.post("/api/whatsapp/conversations/:id/read", staffChatAuth, async (req, r
     const conversations = await jsonTable("whatsapp_conversations");
     const conversation = conversations.find((row) => String(row.id) === String(req.params.id));
     if (!conversation) return res.status(404).json({ error: "Conversation not found." });
+    if (!managerSeesConversation(req.user, req.scope, conversation, leads)) {
+      return res.status(403).json({ error: "That conversation is outside the branches you manage.", code: "OUT_OF_SCOPE" });
+    }
     if (!whatsapp.staffCanViewConversation(conversation, req.user, counselors, leads)) {
       return res.status(403).json({ error: "You cannot update this conversation." });
     }
@@ -3443,8 +3467,10 @@ router.post("/api/whatsapp/conversations/:id/read", staffChatAuth, async (req, r
   }
 });
 
-router.post("/api/whatsapp/sync-staff", auth, async (_req, res) => {
+router.post("/api/whatsapp/sync-staff", auth, async (req, res) => {
   try {
+    const global = requireGlobalScope(req.scope);
+    if (!global.ok) return res.status(global.status).json({ error: global.error, code: global.code });
     const count = await whatsapp.syncAllConversationStaff();
     res.json({ ok: true, count });
   } catch (error) {
@@ -3953,6 +3979,7 @@ router.post("/api/partners", auth, async (req, res) => {
 
 router.patch("/api/partners/:id", auth, async (req, res) => {
   try {
+    if (!(await allow(res, checkRowInScope(pool, req.scope, "partners", req.params.id)))) return;
     const fields = [];
     const params = [req.params.id];
     const map = {
@@ -4053,6 +4080,7 @@ router.get("/api/referral/:code", async (req, res) => {
 /** Attach a referral code to an existing lead. Admin-side correction path. */
 router.post("/api/leads/:id/referral", auth, async (req, res) => {
   try {
+    if (!(await allow(res, checkLeadInScope(pool, req.scope, req.params.id)))) return;
     const result = await attachReferral(req.params.id, req.body.code, { source: "manual" });
     await audit(req, "lead.referral", "student_leads", req.params.id, result);
     if (!result.ok) return res.status(400).json({ error: result.reason || "Referral not accepted.", outcome: result.outcome });
