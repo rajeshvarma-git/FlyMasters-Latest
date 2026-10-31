@@ -2,12 +2,13 @@
 // recorded verdicts match what the code actually does.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readRoutes } from "../scripts/access-route-inventory.mjs";
+import { readRoutes, callEnd } from "../scripts/access-route-inventory.mjs";
 import { classifyAll, SCOPES, VERDICTS } from "../server/lib/routeAccessMatrix.mjs";
 import { ACTIONS } from "../server/lib/accessPolicy.mjs";
 
 const routes = readRoutes();
 const matrix = classifyAll(routes);
+const byKey = new Map(matrix.map((m) => [m.key, m]));
 
 test("the inventory finds the routes (guards against the parser silently finding none)", () => {
   assert.ok(routes.length > 200, `found ${routes.length}`);
@@ -55,7 +56,7 @@ test("'gap' routes really lack a check: when one is fixed this test fails until 
 test("each gap names the problem so it can be fixed, and the count is the known backlog", () => {
   const gaps = matrix.filter((m) => m.verdict === "gap");
   assert.ok(gaps.every((g) => g.note.length > 15));
-  assert.equal(gaps.length, 30, "the 03B follow-up backlog changed: update this number together with the matrix");
+  assert.equal(gaps.length, 32, "the 03B follow-up backlog changed: update this number together with the matrix");
 });
 
 test("Super Admin-only routes are limited to Super Admin by their guard", () => {
@@ -69,4 +70,19 @@ test("routes reachable without sign-in are exactly the known public ones", () =>
     "POST /__auth", "POST /api/auth/signin", "POST /api/auth/signup", "POST /api/auth/telecaller-signup",
     "POST /api/counselor/auth/send-verification-code", "POST /api/counselor/auth/signup",
   ].sort());
+});
+
+// ---------- regression: a neighbouring helper must never decide a route's classification ----------
+
+test("callEnd stops at the route's own closing parenthesis, through strings, comments and templates", () => {
+  const src = 'router.post("/a)", auth, async (req, res) => {\n  // ) not a close\n  const q = `x ${fn(1, "(")} )`;\n  res.json({ s: "}" });\n});\nfunction helper(req) { return req.scope; }\n';
+  const end = callEnd(src, 0);
+  assert.equal(src.slice(end), ";\nfunction helper(req) { return req.scope; }\n");
+});
+
+test("POST /api/salary has no branch check, and a scope-aware helper defined right after it does not change that", () => {
+  const salary = routes.find((r) => r.key === "POST /api/salary");
+  assert.equal(salary.scoped, false, "the helper below the route was counted as part of it");
+  assert.equal(byKey.get("POST /api/salary").verdict, "gap");
+  assert.equal(byKey.get("POST /api/leads/bulk-assign-telecaller").verdict, "gap");
 });

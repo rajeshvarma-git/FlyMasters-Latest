@@ -77,6 +77,13 @@ const GAPS = {
   "PATCH /api/comms/escalations/:id": "any Admin handles any escalation",
   "GET /api/comms/consent": "reads consent for any subject",
   "PUT /api/comms/consent": "changes consent for any subject",
+  "POST /api/leads/bulk-assign-telecaller": "assigns any lead ids to any telecaller; neither the leads' branch nor the telecaller's branch is checked",
+  "POST /api/salary": "posts a salary record and notification for any counselor id; the counselor's branch is not checked",
+};
+
+// Handlers that read and change nothing: they only refuse. Safe by construction.
+const REFUSES = {
+  "POST /api/leads/:id/convert": "the handler only answers 403 (conversion is done from the counselor portal); nothing is read or changed",
 };
 
 // Shared configuration changeable by Admin/Branch Head: not branch data, but it affects every branch.
@@ -111,6 +118,7 @@ export function classifyRoute(route) {
   }
   if (POLICY[key]) return { ...base, scope: "branch", verdict: "enforced", note: "checked by accessPolicy.mjs before any write (self-change, whole target scope, privileged roles, delegation)" };
   if (who.length === 1 && who[0] === "super_admin") return { ...base, scope: "super-only", verdict: "enforced", note: "Super Admin only" };
+  if (REFUSES[key]) return { ...base, scope: "branch", verdict: "ok", note: REFUSES[key] };
   if (GAPS[key]) return { ...base, scope: key.includes("/branches") ? "global-config" : "branch", verdict: "gap", note: GAPS[key] };
 
   const adminish = who.some((w) => ADMINISH.includes(w));

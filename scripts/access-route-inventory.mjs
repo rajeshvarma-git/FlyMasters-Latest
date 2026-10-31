@@ -27,6 +27,42 @@ function rolesFrom(text, local = {}) {
   return [...out];
 }
 
+/**
+ * Index just after the parenthesis that closes the call whose "(" is the first one at or after `from`
+ * (or `limit` if it cannot be found). Understands strings, comments and template literals with ${ }.
+ */
+export function callEnd(src, from, limit = src.length) {
+  let i = src.indexOf("(", from);
+  if (i < 0) return limit;
+  let depth = 0;
+  let braces = 0;
+  const templates = []; // brace depth at which each open ${ started
+  const template = () => { // i is just after an opening backtick; leaves i on the closing one, or on a ${
+    for (; i < limit; i++) {
+      if (src[i] === "\\") { i++; continue; }
+      if (src[i] === "`") return;
+      if (src[i] === "$" && src[i + 1] === "{") { templates.push(braces); braces++; i++; return; }
+    }
+  };
+  for (; i < limit; i++) {
+    const c = src[i];
+    const n = src[i + 1];
+    if (c === "/" && n === "/") { while (i < limit && src[i] !== "\n") i++; continue; }
+    if (c === "/" && n === "*") { const e = src.indexOf("*/", i + 2); if (e < 0) return limit; i = e + 1; continue; }
+    if (c === "'" || c === '"') { for (i++; i < limit && src[i] !== c; i++) if (src[i] === "\\") i++; continue; }
+    if (c === "`") { i++; template(); continue; }
+    if (c === "{") { braces++; continue; }
+    if (c === "}") {
+      braces--;
+      if (templates.length && templates.at(-1) === braces) { templates.pop(); i++; template(); }
+      continue;
+    }
+    if (c === "(") depth++;
+    else if (c === ")" && --depth === 0) return i + 1;
+  }
+  return limit;
+}
+
 export function readRoutes() {
   const files = [...readdirSync("server/routes").filter((f) => f.endsWith(".mjs")).map((f) => `server/routes/${f}`), "server/index.mjs"];
   const START = /\b(?:router|app)\.(get|post|put|patch|delete)\(\s*(\[[^\]]*\]|(["'`])[^"'`]+\3)\s*,/g;
@@ -51,7 +87,10 @@ export function readRoutes() {
     starts.forEach((m, i) => {
       const method = m[1].toUpperCase();
       const paths = [...m[2].matchAll(/["'`]([^"'`]+)["'`]/g)].map((p) => p[1]);
-      const rest = src.slice(m.index + m[0].length, i + 1 < starts.length ? starts[i + 1].index : src.length);
+      // The route's own text only: from the call to its closing parenthesis. Text after it (helpers,
+      // other routes) must never decide this route's classification.
+      const limit = i + 1 < starts.length ? starts[i + 1].index : src.length;
+      const rest = src.slice(m.index + m[0].length, Math.min(limit, callEnd(src, m.index, limit)));
       const head = rest.slice(0, 260);
       const inline = head.match(/requireRole\(\s*(\[[^\]]*\]|[A-Z_]+)\s*,/);
       const named = Object.keys(guards).find((g) => new RegExp(`\\b${g}\\b`).test(head));
