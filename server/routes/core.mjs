@@ -36,6 +36,7 @@ import {
 import { assignRole, setAccountBranches, createAccount, AccountWriteError } from "../lib/accountWrites.mjs";
 import { decideAccountAction } from "../lib/accessPolicy.mjs";
 import { loadAccountTarget } from "../lib/accountTargets.mjs";
+import { allow, branchInScope, checkLeadInScope, checkStaffInScope } from "../lib/scopeGuards.mjs";
 import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
 import { branchExists, listBranches, allocateBranchCode, suggestBranchCode } from "../lib/branches.mjs";
 import {
@@ -2476,6 +2477,11 @@ router.patch("/api/leads/:id", auth, async (req, res) => {
       error: "Only the assigned telecaller can convert a lead. Use the telecaller portal's convert action.",
     });
   }
+  // ACCESS-03B: the lead and any new assignee must be inside the caller's branches.
+  if (!(await allow(res, checkLeadInScope(pool, req.scope, req.params.id)))) return;
+  for (const assignee of [patch.assigned_counselor_id, patch.assigned_telecaller_id]) {
+    if (assignee && !(await allow(res, checkStaffInScope(pool, req.scope, assignee)))) return;
+  }
   const jsonLeads = await jsonTable("student_leads");
   const current = findLeadJsonRecord(jsonLeads, req.params.id);
   // A counselor is only ever handed an already-converted student — assigning
@@ -2575,6 +2581,7 @@ router.post("/api/leads/bulk-assign", auth, async (req, res) => {
   const counselorId = req.body.counselorId ? String(req.body.counselorId) : "";
   if (!ids.length) return res.status(400).json({ error: "Select at least one student." });
   if (!counselorId) return res.status(400).json({ error: "Choose a counselor to assign." });
+  if (!(await allow(res, checkStaffInScope(pool, req.scope, counselorId)))) return;
   // Same branch check as the single-lead PATCH route — resolved once here
   // rather than per lead, since the counselor doesn't change across the batch.
   const counselorMembership = await pool
@@ -2583,12 +2590,14 @@ router.post("/api/leads/bulk-assign", auth, async (req, res) => {
   const counselorBranchIds = counselorMembership.rows.map((row) => String(row.branch_id));
   let count = 0;
   let skippedBranch = 0;
+  let skippedScope = 0;
   for (const id of ids) {
     const jsonLeads = await jsonTable("student_leads");
     const lead = jsonLeads.find((row) => String(row.id) === id);
     if (!lead) continue;
     const converted = lead.entity_type === "student" || lead.lead_status === "converted";
     if (!converted) continue;
+    if (!branchInScope(req.scope, lead.branch_id)) { skippedScope += 1; continue; }
     if (lead.branch_id && counselorBranchIds.length && !counselorBranchIds.includes(String(lead.branch_id))) {
       skippedBranch += 1;
       continue;
@@ -2606,18 +2615,21 @@ router.post("/api/leads/bulk-assign", auth, async (req, res) => {
       "/counselor/students",
     );
   }
-  res.json({ ok: true, count, skippedBranch });
+  res.json({ ok: true, count, skippedBranch, skippedScope });
 });
 
 router.post("/api/leads/bulk-assign-telecaller", auth, async (req, res) => {
   const ids = Array.isArray(req.body.ids) ? req.body.ids.map(String) : [];
   const telecallerId = req.body.telecallerId ? String(req.body.telecallerId) : "";
   if (!ids.length || !telecallerId) return res.status(400).json({ error: "Select leads and a telecaller." });
+  if (!(await allow(res, checkStaffInScope(pool, req.scope, telecallerId)))) return;
   let count = 0;
+  let skippedScope = 0;
   for (const id of ids) {
     const jsonLeads = await jsonTable("student_leads");
     const lead = jsonLeads.find((row) => String(row.id) === id);
     if (!lead) continue;
+    if (!branchInScope(req.scope, lead.branch_id)) { skippedScope += 1; continue; }
     const updated = await applyLeadPatch(id, { assigned_telecaller_id: telecallerId, status: "assigned" });
     await syncOwnershipOnAssignment(lead, updated);
     count += 1;
@@ -2629,7 +2641,7 @@ router.post("/api/leads/bulk-assign-telecaller", auth, async (req, res) => {
     "info",
     "/telecaller",
   );
-  res.json({ ok: true, count });
+  res.json({ ok: true, count, skippedScope });
 });
 
 /**
@@ -2960,6 +2972,8 @@ router.post("/api/counselors/:id/transfer", auth, async (req, res) => {
     if (!targetCounselorId) {
       return res.status(400).json({ error: "Choose a counselor to transfer students to." });
     }
+    if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;
+    if (!(await allow(res, checkStaffInScope(pool, req.scope, targetCounselorId)))) return;
     const count = await transferCounselorStudents(req.params.id, targetCounselorId);
     if (count > 0) {
       await notify(
@@ -2982,6 +2996,8 @@ router.post("/api/telecallers/:id/transfer", auth, async (req, res) => {
     if (!targetTelecallerId) {
       return res.status(400).json({ error: "Choose a telecaller to transfer leads to." });
     }
+    if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;
+    if (!(await allow(res, checkStaffInScope(pool, req.scope, targetTelecallerId)))) return;
     const count = await transferTelecallerLeads(req.params.id, targetTelecallerId);
     if (count > 0) {
       await notify(
@@ -3000,11 +3016,12 @@ router.post("/api/telecallers/:id/transfer", auth, async (req, res) => {
 
 router.post("/api/telecallers/:id/remove", auth, async (req, res) => {
   try {
+    const targetTelecallerId = req.body.targetTelecallerId ? String(req.body.targetTelecallerId) : "";
+    if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;
+    if (targetTelecallerId && !(await allow(res, checkStaffInScope(pool, req.scope, targetTelecallerId)))) return;
     const users = await loadUsers();
     const telecaller = users.find((row) => row.id === req.params.id && row.role === "telecaller");
     if (!telecaller) return res.status(404).json({ error: "Telecaller not found." });
-
-    const targetTelecallerId = req.body.targetTelecallerId ? String(req.body.targetTelecallerId) : "";
     const assigned = (await jsonTable("student_leads")).filter(
       (lead) => isOpenLeadRecord(lead) && leadOwnedByTelecaller(lead, telecaller.id),
     );
@@ -3038,11 +3055,12 @@ router.post("/api/telecallers/:id/remove", auth, async (req, res) => {
 
 router.post("/api/counselors/:id/remove", auth, async (req, res) => {
   try {
+    const targetCounselorId = req.body.targetCounselorId ? String(req.body.targetCounselorId) : "";
+    if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;
+    if (targetCounselorId && !(await allow(res, checkStaffInScope(pool, req.scope, targetCounselorId)))) return;
     const counselors = await loadCounselors();
     const counselor = counselors.find((row) => row.id === req.params.id || row.auth_user_id === req.params.id);
     if (!counselor) return res.status(404).json({ error: "Counselor not found." });
-
-    const targetCounselorId = req.body.targetCounselorId ? String(req.body.targetCounselorId) : "";
     const assigned = (await jsonTable("student_leads")).filter(
       (lead) =>
         (lead.entity_type === "student" || lead.lead_status === "converted") &&
@@ -3734,6 +3752,8 @@ router.get("/api/branches/suggest-code", auth, async (req, res) => {
 
 router.post("/api/branches", [session, requireRole(ADMIN_ROLES, "Admin"), branchScope], async (req, res) => {
   try {
+    // ACCESS-03B: creating a branch is a company-wide act, not available to a branch-limited caller.
+    if (!req.scope.allBranches) return res.status(403).json({ error: "Creating a branch needs a Super Admin.", code: "NEEDS_HIGHER_AUTHORITY" });
     const name = String(req.body.name || "").trim();
     if (!name) return res.status(400).json({ error: "A branch needs a name." });
 
@@ -3759,6 +3779,8 @@ router.post("/api/branches", [session, requireRole(ADMIN_ROLES, "Admin"), branch
 
 router.patch("/api/branches/:id", [session, requireRole(ADMIN_ROLES, "Admin"), branchScope], async (req, res) => {
   try {
+    // ACCESS-03B: only a branch the caller manages.
+    if (!branchInScope(req.scope, req.params.id)) return res.status(403).json({ error: "That branch is outside the branches you manage.", code: "OUT_OF_SCOPE" });
     const fields = [];
     const params = [req.params.id];
     for (const key of ["name", "city", "state", "area", "address", "phone", "is_active"]) {
@@ -3804,6 +3826,9 @@ router.post("/api/leads/:id/branch", [session, requireRole(ADMIN_ROLES, "Admin")
   try {
     const branchId = String(req.body.branchId || "");
     if (!(await branchExists(branchId))) return res.status(400).json({ error: "Unknown branch." });
+    // ACCESS-03B: both where the lead is now and where it is going must be the caller's branches.
+    if (!(await allow(res, checkLeadInScope(pool, req.scope, req.params.id)))) return;
+    if (!branchInScope(req.scope, branchId)) return res.status(403).json({ error: "That branch is outside the branches you manage.", code: "OUT_OF_SCOPE" });
     await pool.query("UPDATE app_records SET branch_id = $2, updated_at = now() WHERE id = $1 AND table_name = 'student_leads'",
       [req.params.id, branchId]);
     await pool.query("UPDATE student_leads SET branch_id = $2 WHERE id::text = $1", [req.params.id, branchId]).catch(() => {});

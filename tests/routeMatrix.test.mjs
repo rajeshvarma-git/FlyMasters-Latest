@@ -56,7 +56,7 @@ test("'gap' routes really lack a check: when one is fixed this test fails until 
 test("each gap names the problem so it can be fixed, and the count is the known backlog", () => {
   const gaps = matrix.filter((m) => m.verdict === "gap");
   assert.ok(gaps.every((g) => g.note.length > 15));
-  assert.equal(gaps.length, 32, "the 03B follow-up backlog changed: update this number together with the matrix");
+  assert.equal(gaps.length, 22, "the 03B follow-up backlog changed: update this number together with the matrix");
 });
 
 test("Super Admin-only routes are limited to Super Admin by their guard", () => {
@@ -84,5 +84,5 @@ test("POST /api/salary has no branch check, and a scope-aware helper defined rig
   const salary = routes.find((r) => r.key === "POST /api/salary");
   assert.equal(salary.scoped, false, "the helper below the route was counted as part of it");
   assert.equal(byKey.get("POST /api/salary").verdict, "gap");
-  assert.equal(byKey.get("POST /api/leads/bulk-assign-telecaller").verdict, "gap");
+  assert.equal(byKey.get("POST /api/leads/bulk-assign-telecaller").verdict, "enforced", "scoped in the first 03B follow-up batch");
 });

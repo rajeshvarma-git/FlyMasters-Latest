@@ -48,13 +48,7 @@ const ACTION_OVERRIDES = {
 // Branch-owned data or actions that no branch check protects today (found by reading each handler).
 const GAPS = {
   "GET /api/students/:id/checklist": "reads any student's checklist and documents by id",
-  "PATCH /api/leads/:id": "edits any lead; only the counselor/branch pairing is checked, not the lead's own branch",
-  "POST /api/leads/bulk-assign": "assigns any lead ids; checks only the counselor's branch",
   "PATCH /api/leave/:id": "approves or rejects any counselor's leave",
-  "POST /api/counselors/:id/transfer": "moves any counselor's students",
-  "POST /api/telecallers/:id/transfer": "moves any telecaller's leads",
-  "POST /api/telecallers/:id/remove": "removes any telecaller and reassigns their leads",
-  "POST /api/counselors/:id/remove": "removes any counselor and reassigns their students",
   "POST /api/notifications": "sends a notification to any user id",
   "POST /api/notifications/broadcast": "broadcasts across all users",
   "GET /api/whatsapp/conversations": "Admin sees every branch's conversations (staffCanViewConversation)",
@@ -65,19 +59,15 @@ const GAPS = {
   "GET /api/system/alerts": "not branch-filtered",
   "POST /api/system/alerts/run": "runs alerts for every branch",
   "POST /api/system/auto-assign": "assigns telecallers across all branches",
-  "POST /api/leads/:id/branch": "moves any lead to any branch",
   "PATCH /api/partners/:id": "edits any partner",
   "POST /api/leads/:id/referral": "attaches a referral to any lead",
   "PATCH /api/finance/payments/:id": "updates any payment; the other finance routes check the branch",
-  "POST /api/branches": "any Admin can create a branch (branch.create should be Super Admin or delegated)",
-  "PATCH /api/branches/:id": "any Admin can change any branch (branch.update should be Super Admin or delegated)",
   "GET /api/comms/supervision/:kind/:id": "any Admin reads any conversation",
   "POST /api/comms/supervision/:kind/:id/join": "any Admin joins any conversation",
   "POST /api/comms/supervision/:kind/:id/message": "any Admin posts into any conversation",
   "PATCH /api/comms/escalations/:id": "any Admin handles any escalation",
   "GET /api/comms/consent": "reads consent for any subject",
   "PUT /api/comms/consent": "changes consent for any subject",
-  "POST /api/leads/bulk-assign-telecaller": "assigns any lead ids to any telecaller; neither the leads' branch nor the telecaller's branch is checked",
   "POST /api/salary": "posts a salary record and notification for any counselor id; the counselor's branch is not checked",
 };
 
