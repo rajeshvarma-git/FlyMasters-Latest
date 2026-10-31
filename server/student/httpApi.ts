@@ -29,7 +29,7 @@ import {
 } from "./studentAuth";
 import { handleWhatsAppRequest, isWhatsAppConfigured, isWhatsAppPath } from "./whatsapp";
 import { rowMatches } from "./postgres";
-import { canUseFile, checkMutation, rowsForFilters, viewerFromRequest, visibleRows, visibleStorageListing } from "./dataPolicy";
+import { branchAdminFolders, canUseFile, checkMutation, isBranchAdmin, rowsForFilters, viewerFromRequest, visibleRows, visibleStorageListing } from "./dataPolicy";
 
 const API_PATHS = new Set(["/__local_db", "/__db_health", "/__auth", "/__session", "/__storage", "/__public_media"]);
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
@@ -242,11 +242,20 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
         const viewer = await viewerFromRequest(req);
         if (!viewer) { sendJson(res, 401, { error: "Sign in required." }); return; }
         const requested = parsed.searchParams.get("prefix") || "";
-        const prefix = viewer.admin ? requested : `${viewer.userId}/${requested}`;
-        const { rows } = await getPool().query(
-          "SELECT path, length(data_url) AS encoded_size FROM app_storage WHERE starts_with(path, $1) ORDER BY path LIMIT 200",
-          [prefix],
-        );
+        const branchAdmin = isBranchAdmin(viewer);
+        const prefix = viewer.admin || branchAdmin ? requested : `${viewer.userId}/${requested}`;
+        // A branch Admin lists only their students' folders; filter in SQL so the 200-row cap
+        // is spent on their files, not on other branches'.
+        const folders = branchAdmin ? await branchAdminFolders(viewer) : null;
+        const { rows } = folders
+          ? await getPool().query(
+              "SELECT path, length(data_url) AS encoded_size FROM app_storage WHERE starts_with(path, $1) AND split_part(path, '/', 1) = ANY($2::text[]) ORDER BY path LIMIT 200",
+              [prefix, folders],
+            )
+          : await getPool().query(
+              "SELECT path, length(data_url) AS encoded_size FROM app_storage WHERE starts_with(path, $1) ORDER BY path LIMIT 200",
+              [prefix],
+            );
         const listed = await visibleStorageListing(viewer, rows);
         sendJson(res, 200, { files: listed.map((row) => ({ name: row.path, created_at: null, metadata: { size: Math.floor(Number(row.encoded_size) * 3 / 4) } })) });
         return;

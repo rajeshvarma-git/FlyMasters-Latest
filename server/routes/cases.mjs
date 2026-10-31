@@ -45,7 +45,8 @@ const SHARED_COUNSELOR_ID = "local-counselor-1";
 const STAFF_ROLES = new Set([
   ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.BRANCH_HEAD, ROLES.COUNSELOR, ROLES.TELECALLER,
 ]);
-const ADMIN_ROLES = new Set([ROLES.SUPER_ADMIN, ROLES.ADMIN]);
+// Managers whose case access is bounded by req.scope (see scopeBranchHead / canStaffAccess).
+const BRANCH_SCOPED_MANAGERS = new Set([ROLES.SUPER_ADMIN, ROLES.ADMIN, ROLES.BRANCH_HEAD]);
 const MAX_MESSAGE = 2000;
 const AI_NAME = "AI Advisor";
 const CLIENT_MESSAGE_ID = /^[A-Za-z0-9_-]{16,128}$/;
@@ -1449,9 +1450,13 @@ async function counselorAliases(user) {
 
 async function canStaffAccess(req, lead) {
   const role = req.user.role;
-  if (ADMIN_ROLES.has(role)) return true;
-  if (role === ROLES.BRANCH_HEAD) {
-    return req.scope?.allBranches || (req.scope?.branchIds || []).map(String).includes(String(lead.branch_id || ""));
+  if (BRANCH_SCOPED_MANAGERS.has(role)) {
+    // Admin and Branch Head share one rule: the lead's branch must be inside req.scope.
+    // Super Admin (and Admin while ADMIN_SCOPE_ENFORCED is off) arrive with allBranches.
+    // A missing scope is a refusal, never a pass.
+    if (role === ROLES.SUPER_ADMIN) return true;
+    return Boolean(req.scope?.allBranches)
+      || (req.scope?.branchIds || []).map(String).includes(String(lead.branch_id || ""));
   }
   if (role === ROLES.TELECALLER) return String(lead.assigned_telecaller_id || "") === String(req.user.id);
   if (role === ROLES.COUNSELOR) {
@@ -1470,9 +1475,10 @@ function requireStaff(req, res, next) {
 }
 
 // Telecallers and counselors reach a case by assignment, not by branch, so
-// only branch heads go through branch scoping here.
+// only the branch-scoped managers (Branch Head, Admin) go through branch scoping here.
+// Super Admin and, while ADMIN_SCOPE_ENFORCED is off, Admin resolve to allBranches.
 function scopeBranchHead(req, res, next) {
-  if (req.user?.role === ROLES.BRANCH_HEAD) return branchScope(req, res, next);
+  if (BRANCH_SCOPED_MANAGERS.has(req.user?.role)) return branchScope(req, res, next);
   next();
 }
 
@@ -2088,7 +2094,7 @@ router.get("/api/case/inbox", anySession, requireStaff, scopeBranchHead, async (
       const byUser = await rowsWhere("student_leads", "user_id", all.map((c) => c.student_user_id));
       const byId = await rowsWhere("student_leads", "id", all.filter((c) => !c.student_user_id).map((c) => c.lead_id));
       leads = [...new Map([...byUser, ...byId].map((l) => [String(l.id), l])).values()];
-      if (role === ROLES.BRANCH_HEAD && !req.scope?.allBranches) {
+      if (BRANCH_SCOPED_MANAGERS.has(role) && !req.scope?.allBranches) {
         const allowed = new Set((req.scope?.branchIds || []).map(String));
         leads = leads.filter((l) => allowed.has(String(l.branch_id || "")));
       }

@@ -32,7 +32,17 @@ export type Viewer = {
   admin: boolean;
   /** user id plus the ids of their own student_leads rows */
   keys: Set<string>;
+  /**
+   * Set only for an Admin limited to assigned branches (ADMIN_SCOPE_ENFORCED on): the branches they
+   * manage, possibly none. Such a viewer is not `admin` (global) and is not judged by student
+   * ownership either; they reach exactly the records of students in these branches.
+   */
+  branchIds?: string[];
+  /** Students inside branchIds, loaded once per request. */
+  scopeKeys?: ScopeKeys;
 };
+
+type ScopeKeys = { userIds: Set<string>; leadIds: Set<string>; emails: Set<string>; branchIds: Set<string> };
 
 const ADMIN_ROLES = new Set(["admin", "super_admin"]);
 
@@ -99,7 +109,132 @@ export async function viewerFromRequest(req: { headers?: Record<string, any>; ur
   // Admins only see everything while ADMIN_SCOPE_ENFORCED is off; once on, only Super Admin does.
   const admin = ADMIN_ROLES.has(role) && !isBranchLimited(role);
   const keys = new Set([userId, ...leads.rows.map((r) => String(r.id))]);
-  return { userId, email, role, admin, keys };
+  // A limited Admin gets branch-aware access instead of falling back to student-only ownership.
+  const branchIds = role === "admin" && isBranchLimited(role)
+    ? [...new Set<string>((access.identity.branch_ids || []).map(String))]
+    : undefined;
+  return { userId, email, role, admin, keys, ...(branchIds ? { branchIds } : {}) };
+}
+
+/** A branch-limited Admin (never Super Admin, never a student). */
+export const isBranchAdmin = (viewer: Viewer | null | undefined): viewer is Viewer & { branchIds: string[] } =>
+  Boolean(viewer && !viewer.admin && viewer.role === "admin" && Array.isArray(viewer.branchIds));
+
+/**
+ * The students a branch Admin manages: leads whose branch is theirs. An account that ALSO has a
+ * lead in another branch (or one with no branch) is left out - every branch of the target must be
+ * inside the Admin's branches, and an unknown branch is refused, never guessed.
+ */
+export async function branchScopeKeys(viewer: Viewer & { branchIds: string[] }): Promise<ScopeKeys> {
+  if (viewer.scopeKeys) return viewer.scopeKeys;
+  const keys: ScopeKeys = { userIds: new Set(), leadIds: new Set(), emails: new Set(), branchIds: new Set(viewer.branchIds) };
+  if (viewer.branchIds.length) {
+    const pool = getPool();
+    const inside = await pool.query(
+      `SELECT id, data->>'user_id' AS user_id, lower(COALESCE(data->>'email','')) AS email
+         FROM app_records WHERE table_name = 'student_leads' AND branch_id = ANY($1::uuid[])`,
+      [viewer.branchIds],
+    );
+    const outside = await pool.query(
+      `SELECT data->>'user_id' AS user_id, lower(COALESCE(data->>'email','')) AS email
+         FROM app_records WHERE table_name = 'student_leads'
+          AND (branch_id IS NULL OR NOT (branch_id = ANY($1::uuid[])))`,
+      [viewer.branchIds],
+    );
+    const outUsers = new Set(outside.rows.map((r) => String(r.user_id || "")).filter(Boolean));
+    const outEmails = new Set(outside.rows.map((r) => String(r.email || "")).filter(Boolean));
+    for (const r of inside.rows) {
+      const user = String(r.user_id || "");
+      const email = String(r.email || "");
+      if ((user && outUsers.has(user)) || (email && outEmails.has(email))) continue;
+      keys.leadIds.add(String(r.id));
+      if (user) keys.userIds.add(user);
+      if (email) keys.emails.add(email);
+    }
+  }
+  viewer.scopeKeys = keys;
+  return keys;
+}
+
+/** Whether `row` of `table` belongs to a student inside the Admin's branches. */
+export function rowInBranchScope(keys: ScopeKeys, row: any, table: string): boolean {
+  if (!row || typeof row !== "object") return false;
+  if (table === "student_leads") {
+    // An existing lead is in scope when its id was loaded for these branches (see branchScopeKeys).
+    return row.id != null && keys.leadIds.has(String(row.id));
+  }
+  for (const field of OWNER_ID_FIELDS) {
+    const value = row[field];
+    if (value != null && value !== "" && (keys.userIds.has(String(value)) || keys.leadIds.has(String(value)))) return true;
+  }
+  for (const field of OWNER_EMAIL_FIELDS) {
+    if (keys.emails.has(String(row[field] || "").trim().toLowerCase())) return true;
+  }
+  return false;
+}
+
+async function branchAdminVisibleRows(viewer: Viewer & { branchIds: string[] }, table: string, rows: any[]) {
+  if (table === "document_checklists") return rows;
+  if (table === "system_settings") return rows.filter((r) => PUBLIC_SETTINGS.has(String(r.key)));
+  if ((PUBLIC_READ.has(table) && !OWNED.has(table)) || table === "package_reviews") return rows;
+  if (!OWNED.has(table)) return null;
+  const keys = await branchScopeKeys(viewer);
+  const mine = rows.filter((row) => rowInBranchScope(keys, row, table));
+  if (table === "profiles") {
+    const mineSet = new Set(mine);
+    return [...mine, ...(await staffNameRows(rows.filter((row) => !mineSet.has(row))))];
+  }
+  return mine;
+}
+
+async function branchAdminMutationError(viewer: Viewer & { branchIds: string[] }, mutation: Mutation, matching: any[]) {
+  const table = String(mutation.table || "");
+  if (!OWNED.has(table)) return "Not allowed.";
+  const keys = await branchScopeKeys(viewer);
+  const OUT = "That record is outside the branches you manage.";
+  if (matching.some((row) => !rowInBranchScope(keys, row, table))) return OUT;
+  if (mutation.action === "delete") return null;
+  if (mutation.action === "update") {
+    const payload = mutation.payload || {};
+    // Re-pointing a record at a student, or a lead at a branch, outside the Admin's branches.
+    for (const field of [...OWNER_ID_FIELDS, ...OWNER_EMAIL_FIELDS]) {
+      const value = payload[field];
+      if (value == null || value === "") continue;
+      const known = OWNER_EMAIL_FIELDS.includes(field)
+        ? keys.emails.has(String(value).trim().toLowerCase())
+        : keys.userIds.has(String(value)) || keys.leadIds.has(String(value));
+      if (!known && field !== "receiver_id") return OUT;
+    }
+    if (table === "student_leads" && payload.branch_id && !keys.branchIds.has(String(payload.branch_id))) return OUT;
+    return null;
+  }
+  if (mutation.action === "insert" || mutation.action === "upsert") {
+    const rows = Array.isArray(mutation.rows) ? mutation.rows : [];
+    if (!rows.every((row) => rowInBranchScope(keys, row, table) || (table === "student_leads" && row?.branch_id && keys.branchIds.has(String(row.branch_id))))) return OUT;
+    return null;
+  }
+  return "Not allowed.";
+}
+
+/** Stored files a branch Admin may reach: their students' folders, or files their students' records point at. */
+async function branchAdminPaths(viewer: Viewer & { branchIds: string[] }, paths: string[]): Promise<Set<string>> {
+  const keys = await branchScopeKeys(viewer);
+  const allowed = new Set<string>();
+  const rest: string[] = [];
+  for (const path of paths) (keys.userIds.has(path.split("/")[0]) ? allowed.add(path) : rest.push(path));
+  if (rest.length) {
+    const { rows } = await getPool().query(
+      "SELECT data FROM app_records WHERE table_name IN ('documents','document_versions','travel_document_uploads') AND data->>'file_path' = ANY($1::text[])",
+      [rest],
+    ).catch(() => ({ rows: [] as any[] }));
+    for (const r of rows) if (rowInBranchScope(keys, r.data, "documents")) allowed.add(String(r.data?.file_path));
+  }
+  return allowed;
+}
+
+/** Folder names (student user ids) a branch Admin may list. */
+export async function branchAdminFolders(viewer: Viewer & { branchIds: string[] }): Promise<string[]> {
+  return [...(await branchScopeKeys(viewer)).userIds];
 }
 
 export function ownsRow(viewer: Viewer, row: any) {
@@ -263,12 +398,17 @@ async function staffOnlyFilePaths(viewer: Viewer, paths: string[]): Promise<Set<
 /** The student's file listing without the files of staff-only documents. */
 export async function visibleStorageListing(viewer: Viewer | null, rows: any[]) {
   if (!viewer || viewer.admin) return rows;
+  if (isBranchAdmin(viewer)) {
+    const allowed = await branchAdminPaths(viewer, rows.map((r) => String(r.path)));
+    return rows.filter((r) => allowed.has(String(r.path)));
+  }
   const blocked = await staffOnlyFilePaths(viewer, rows.map((r) => String(r.path)));
   return blocked.size ? rows.filter((r) => !blocked.has(String(r.path))) : rows;
 }
 
 export async function visibleRows(viewer: Viewer | null, table: string, rows: any[]): Promise<any[] | null> {
   if (viewer?.admin) return rows;
+  if (isBranchAdmin(viewer)) return branchAdminVisibleRows(viewer, table, rows);
   if (table === "document_checklists") return documentChecklistRows(viewer, rows);
   if (table === "system_settings") return rows.filter((r) => PUBLIC_SETTINGS.has(String(r.key)));
   if (PUBLIC_READ.has(table) && !OWNED.has(table)) return rows;
@@ -301,6 +441,7 @@ export async function checkMutation(viewer: Viewer | null, mutation: Mutation, m
   if (viewer?.admin) return null;
   if (mutation.action === "insert" && PUBLIC_INSERT.has(table)) return null;
   if (!viewer) return "Sign in required.";
+  if (isBranchAdmin(viewer)) return branchAdminMutationError(viewer, mutation, matching);
   if (!OWNED.has(table) || READ_ONLY_OWNED.has(table)) return "Not allowed.";
   const fieldError = studentFieldError(mutation, matching);
   if (fieldError) return fieldError;
@@ -456,6 +597,7 @@ export async function canUseFile(viewer: Viewer | null, path: string, mode: "rea
   if (!path) return false;
   if (viewer?.admin) return true;
   if (!viewer) return false;
+  if (isBranchAdmin(viewer)) return (await branchAdminPaths(viewer, [path])).has(path);
   // The file of a staff-only document is closed to the student: not to read,
   // overwrite or delete, wherever it is stored - including their own folder.
   if ((await staffOnlyFilePaths(viewer, [path])).has(path)) return false;

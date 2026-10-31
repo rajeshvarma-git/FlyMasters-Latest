@@ -72,6 +72,16 @@ const area = (path) => (AREAS.find(([p]) => path.startsWith(p)) || [null, "other
 
 const ADMINISH = ["admin", "super_admin", "branch_head", "accountant"];
 
+// Routes whose scope is not just detected in the code but proven by handler-level tests that cover a
+// permitted caller, a forbidden caller (nothing written) and the unrestricted callers.
+export const TESTED_ROUTES = {
+  "GET /api/case/inbox": "tests/adminScopeFollowup.test.mjs",
+  "GET /api/case/lead/:leadId": "tests/adminScopeFollowup.test.mjs",
+  "POST /api/case/lead/:leadId/messages": "tests/adminScopeFollowup.test.mjs",
+  "POST /api/case/lead/:leadId/messages/:messageId/review": "tests/adminScopeFollowup.test.mjs",
+  "POST /api/notifications": "tests/adminScopeFollowup.test.mjs",
+};
+
 /** route = { key, method, path, who: [roles], scoped: boolean } from the inventory. */
 export function classifyRoute(route) {
   const { key, method, path, who, scoped } = route;
@@ -82,7 +92,7 @@ export function classifyRoute(route) {
   if (path.startsWith("/__")) {
     return path === "/__public_media"
       ? { ...base, scope: "public", verdict: "ok", note: "public images only; student documents are never served here" }
-      : { ...base, scope: "viewer-policy", verdict: path === "/__auth" ? "ok" : "enforced", note: "decided by dataPolicy.ts; admins are global viewers only while ADMIN_SCOPE_ENFORCED is off, and branch-aware access for scoped Admins is not built yet" };
+      : { ...base, scope: "viewer-policy", verdict: path === "/__auth" ? "ok" : "enforced", note: "decided by dataPolicy.ts; Super Admin (and Admin while ADMIN_SCOPE_ENFORCED is off) is a global viewer, a scoped Admin reaches only the students of their branches (tests/adminScopeFollowup.test.mjs), everyone else is judged by student ownership" };
   }
   if (POLICY[key]) return { ...base, scope: "branch", verdict: "enforced", note: "checked by accessPolicy.mjs before any write (self-change, whole target scope, privileged roles, delegation)" };
   if (who.length === 1 && who[0] === "super_admin") return { ...base, scope: "super-only", verdict: "enforced", note: "Super Admin only" };
@@ -93,7 +103,7 @@ export function classifyRoute(route) {
   if (!adminish && !who.includes("any signed-in")) {
     return { ...base, scope: "own", verdict: "ok", note: `${who.join("/")} self-service: limited to the caller's own records or assignments (not changed by ACCESS-03)` };
   }
-  if (scoped) return { ...base, scope: "branch", verdict: "enforced", note: "branch scope applied in the handler (detected in code)" };
+  if (scoped) return { ...base, scope: "branch", verdict: "enforced", note: TESTED_ROUTES[key] ? `branch scope applied in the handler; permitted and forbidden access regression-tested in ${TESTED_ROUTES[key]}` : "branch scope applied in the handler (detected in code)" };
   if (DECISION_PREFIXES.some((p) => path.startsWith(p)) && method !== "GET") {
     return { ...base, scope: "global-config", verdict: "decision", note: "shared setting, writable by every Admin/Branch Head in the list; owner must decide who may change it" };
   }

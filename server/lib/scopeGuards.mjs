@@ -37,6 +37,20 @@ export async function checkStaffInScope(db, scope, id) {
   return { ok: true };
 }
 
+/**
+ * Anyone who can receive a notification: staff (by their branch memberships) or a student (by the
+ * branch of their lead/case, since a student has no staff membership). Every branch the account
+ * touches, from either source, must be inside the caller's scope; no known branch is a refusal.
+ */
+export async function checkRecipientInScope(db, scope, id) {
+  if (scope?.allBranches) return { ok: true };
+  const authId = id ? await staffAuthId(db, id) : null;
+  if (!authId) return deny("NOT_FOUND", "That person could not be found.", 404);
+  const target = await loadAccountTarget(db, authId);
+  if (!target) return deny("NOT_FOUND", "That person could not be found.", 404);
+  return allInScope(scope, [...target.branchIds, ...target.leadBranchIds]) ? { ok: true } : OUT("That person");
+}
+
 /** The lead's own branch must be one the caller manages. */
 export async function checkLeadInScope(db, scope, leadId) {
   if (scope?.allBranches) return { ok: true };

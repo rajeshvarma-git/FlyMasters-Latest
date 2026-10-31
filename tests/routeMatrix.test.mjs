@@ -86,3 +86,14 @@ test("POST /api/salary is judged by its own text: its check is inside the handle
   assert.equal(byKey.get("POST /api/salary").verdict, "enforced");
   assert.equal(byKey.get("POST /api/leads/bulk-assign-telecaller").verdict, "enforced", "scoped in the first 03B follow-up batch");
 });
+
+test("routes marked as regression-tested name a test file that exists and mentions the route's handler", async () => {
+  const { readFileSync, existsSync } = await import("node:fs");
+  const { TESTED_ROUTES } = await import("../server/lib/routeAccessMatrix.mjs");
+  assert.ok(Object.keys(TESTED_ROUTES).length >= 5);
+  for (const [key, file] of Object.entries(TESTED_ROUTES)) {
+    assert.ok(existsSync(file), `${key}: ${file} is missing`);
+    const path = key.split(" ")[1];
+    assert.ok(readFileSync(file, "utf8").includes(path), `${key} is not exercised by ${file}`);
+  }
+});

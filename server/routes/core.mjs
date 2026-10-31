@@ -36,7 +36,7 @@ import {
 import { assignRole, setAccountBranches, createAccount, AccountWriteError } from "../lib/accountWrites.mjs";
 import { decideAccountAction } from "../lib/accessPolicy.mjs";
 import { loadAccountTarget } from "../lib/accountTargets.mjs";
-import { allow, branchInScope, checkLeadInScope, checkStaffInScope, managerSeesConversation, requireGlobalScope, checkRowInScope, checkLeaveInScope } from "../lib/scopeGuards.mjs";
+import { allow, branchInScope, checkLeadInScope, checkRecipientInScope, checkStaffInScope, managerSeesConversation, requireGlobalScope, checkRowInScope, checkLeaveInScope } from "../lib/scopeGuards.mjs";
 import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
 import { branchExists, listBranches, allocateBranchCode, suggestBranchCode } from "../lib/branches.mjs";
 import {
@@ -3251,7 +3251,7 @@ router.post("/api/notifications", auth, async (req, res) => {
   const title = String(req.body.title || "").trim();
   const message = String(req.body.message || "").trim();
   if (!userId || !title) return res.status(400).json({ error: "Recipient and title are required." });
-  if (!(await allow(res, checkStaffInScope(pool, req.scope, userId)))) return;
+  if (!(await allow(res, checkRecipientInScope(pool, req.scope, userId)))) return;
   await notify(userId, title, message, req.body.type || "info", req.body.actionUrl || "");
   res.json({ ok: true });
 });
