@@ -13,6 +13,7 @@
 import jwt from "jsonwebtoken";
 import { JWT_SECRET } from "./env.mjs";
 import { pool } from "./db.mjs";
+import { scopeFor } from "./accessScope.mjs";
 import { noteWarnings, resolveAccountIdentity } from "./accountIdentity.mjs";
 
 export const ROLES = Object.freeze({
@@ -210,28 +211,20 @@ export async function partnerScope(req, res, next) {
 
 /**
  * Attaches req.scope — the branch filter every data route must apply.
- *   { allBranches: true }                -> super_admin / admin: no filter
+ *   { allBranches: true }                -> super_admin (and admin while ADMIN_SCOPE_ENFORCED is off): no filter
  *   { allBranches: false, branchId: id } -> everyone else: WHERE branch_id = id
  *
  * A branch-scoped user with no branch assigned is refused rather than silently
  * given everything, which is the failure mode that leaks data between branches.
  */
 export function branchScope(req, res, next) {
-  const role = req.user?.role;
-  if (!BRANCH_SCOPED_ROLES.includes(role)) {
-    req.scope = { allBranches: true, branchIds: [], branchId: null };
-    return next();
-  }
-  const branchIds = req.user?.branch_ids || [];
-  if (!branchIds.length) {
-    return res.status(403).json({ error: "No branch assigned to this account. Ask an admin." });
+  // The decision lives in accessScope.mjs so the student app's data API applies the same rule.
+  const scope = scopeFor(req.user);
+  if (!scope.allBranches && !scope.branchIds.length) {
+    return res.status(403).json({ error: "No branch assigned to this account. Ask an admin.", code: "NO_BRANCH_SCOPE" });
   }
   // branchId stays as the home branch, used when stamping new records.
-  req.scope = {
-    allBranches: false,
-    branchIds,
-    branchId: req.user?.branch_id || branchIds[0],
-  };
+  req.scope = scope;
   next();
 }
 

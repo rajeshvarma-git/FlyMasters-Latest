@@ -19,6 +19,7 @@
  */
 import { getPool } from "./postgres";
 import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
+import { isBranchLimited } from "../lib/accessScope.mjs";
 import { getSessionByToken, readBearerToken } from "./studentAuth";
 import { commonCountryDocumentsFor, countryDocumentsEnabled, canStudentUseCountryDocument } from "../lib/countryDocumentApproval.mjs";
 import { canStudentUploadAnything, canStudentUploadDocument } from "../lib/documentUploadAuthorization.mjs";
@@ -95,7 +96,8 @@ export async function viewerFromRequest(req: { headers?: Record<string, any>; ur
     ).catch(() => ({ rows: [] as any[] })),
   ]);
   const role: string = access.identity.role;
-  const admin = ADMIN_ROLES.has(role);
+  // Admins only see everything while ADMIN_SCOPE_ENFORCED is off; once on, only Super Admin does.
+  const admin = ADMIN_ROLES.has(role) && !isBranchLimited(role);
   const keys = new Set([userId, ...leads.rows.map((r) => String(r.id))]);
   return { userId, email, role, admin, keys };
 }
