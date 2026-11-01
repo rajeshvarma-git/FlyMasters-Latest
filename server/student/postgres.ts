@@ -524,10 +524,29 @@ export function rowMatches(row: any, specs: FilterSpec[] = []) {
 // branch in the record must store it there in the same statement (same transaction as the JSON).
 // A write that does not mention branch_id leaves the stored column alone; an empty value clears it;
 // an invalid or unknown branch fails the statement and the whole mutation rolls back.
+// An id is unique across ALL record types, so a write may only replace a record of its own type.
+// The guard lives in the statement itself (not in a lookup before it), so two simultaneous requests
+// using one id for different types cannot both win: the loser gets no row back and the whole
+// mutation rolls back with a 409.
+export class RecordTypeConflictError extends Error {
+  status = 409;
+  code = "RECORD_TYPE_CONFLICT";
+  constructor(public recordId: string) {
+    super("That id is already used by a different kind of record.");
+  }
+}
+
 const UPSERT_RECORD =
   "INSERT INTO app_records (id, table_name, data, branch_id) VALUES ($1, $2, $3::jsonb, $4::uuid) " +
   "ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now(), " +
-  "branch_id = CASE WHEN $5::boolean THEN EXCLUDED.branch_id ELSE app_records.branch_id END";
+  "branch_id = CASE WHEN $5::boolean THEN EXCLUDED.branch_id ELSE app_records.branch_id END " +
+  "WHERE app_records.table_name = EXCLUDED.table_name " +
+  "RETURNING id";
+
+async function writeRecord(client: any, id: string, table: string, json: string, written: any) {
+  const result = await client.query(UPSERT_RECORD, [id, table, json, ...branchParams(written)]);
+  if (!result.rows.length) throw new RecordTypeConflictError(String(id));
+}
 
 function branchParams(written: any): [string | null, boolean] {
   const has = Object.prototype.hasOwnProperty.call(written || {}, "branch_id") && written.branch_id !== undefined;
@@ -559,7 +578,7 @@ export async function mutateAppState(mutation: {
         updated_at: now,
       }));
       for (const item of items) {
-        await client.query(UPSERT_RECORD, [item.id, mutation.table, JSON.stringify(item, jsonSafe), ...branchParams(item)]);
+        await writeRecord(client, item.id, mutation.table, JSON.stringify(item, jsonSafe), item);
       }
       await client.query("COMMIT");
       return { data: items.length === 1 ? items[0] : items, count: items.length };
@@ -576,7 +595,7 @@ export async function mutateAppState(mutation: {
       for (const item of items) {
         const found = current.find((row) => String(row[key] ?? "") === String(item[key] ?? ""));
         const next = found ? { ...found, ...item, id: found.id, updated_at: now } : item;
-        await client.query(UPSERT_RECORD, [next.id, mutation.table, JSON.stringify(next, jsonSafe), ...branchParams(item)]);
+        await writeRecord(client, next.id, mutation.table, JSON.stringify(next, jsonSafe), item);
       }
       await client.query("COMMIT");
       return { data: items, count: items.length };
@@ -590,8 +609,8 @@ export async function mutateAppState(mutation: {
         const next = { ...row, ...(mutation.payload || {}), id: row.id, updated_at: now };
         const [branch, hasBranch] = branchParams(mutation.payload || {});
         await client.query(
-          "UPDATE app_records SET data = $2::jsonb, updated_at = now(), branch_id = CASE WHEN $4::boolean THEN $3::uuid ELSE branch_id END WHERE id = $1",
-          [row.id, JSON.stringify(next, jsonSafe), branch, hasBranch]
+          "UPDATE app_records SET data = $2::jsonb, updated_at = now(), branch_id = CASE WHEN $4::boolean THEN $3::uuid ELSE branch_id END WHERE id = $1 AND table_name = $5",
+          [row.id, JSON.stringify(next, jsonSafe), branch, hasBranch, mutation.table]
         );
         updated.push(next);
       }
@@ -601,7 +620,7 @@ export async function mutateAppState(mutation: {
 
     if (mutation.action === "delete") {
       for (const row of matched) {
-        await client.query("DELETE FROM app_records WHERE id = $1", [row.id]);
+        await client.query("DELETE FROM app_records WHERE id = $1 AND table_name = $2", [row.id, mutation.table]);
       }
       await client.query("COMMIT");
       return { data: matched, count: matched.length };

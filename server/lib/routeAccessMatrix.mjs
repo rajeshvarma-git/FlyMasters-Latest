@@ -90,6 +90,9 @@ export function classifyRoute(route) {
 
   if (who.length === 1 && who[0] === "public") return { ...base, scope: "public", verdict: "ok", note: "no sign-in; no account or branch data" };
   if (path.startsWith("/__")) {
+    if (key === "POST /__local_db") {
+      return { ...base, scope: "viewer-policy", verdict: "enforced", note: "decided by dataPolicy.ts (scoped Admin: owned records, assignees, branch moves, account links) and by the database write itself: a record id may only replace a record of its own type (409 RECORD_TYPE_CONFLICT, whole batch rolled back) and the SQL branch is stored with the JSON; PostgreSQL-tested in tests/dataApiRecordTypes.db.test.mjs and tests/appRecordsBranch.db.test.mjs" };
+    }
     return path === "/__public_media"
       ? { ...base, scope: "public", verdict: "ok", note: "public images only; student documents are never served here" }
       : { ...base, scope: "viewer-policy", verdict: path === "/__auth" ? "ok" : "enforced", note: "decided by dataPolicy.ts; Super Admin (and Admin while ADMIN_SCOPE_ENFORCED is off) is a global viewer, a scoped Admin reaches only the students of their branches (tests/adminScopeFollowup.test.mjs), everyone else is judged by student ownership" };

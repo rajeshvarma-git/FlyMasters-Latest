@@ -373,7 +373,17 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
         sendJson(res, viewer ? 403 : 401, { error: denied });
         return;
       }
-      const result = await mutateAppState(mutation);
+      let result;
+      try {
+        result = await mutateAppState(mutation);
+      } catch (error: any) {
+        // The whole mutation was rolled back; nothing was saved.
+        if (error?.code === "RECORD_TYPE_CONFLICT") {
+          sendJson(res, 409, { error: error.message, code: error.code });
+          return;
+        }
+        throw error;
+      }
       sendJson(res, 200, { ok: true, ...result });
       return;
     }
