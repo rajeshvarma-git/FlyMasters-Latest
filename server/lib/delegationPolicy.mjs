@@ -33,15 +33,21 @@ export function grantIsLive(grant, now = Date.now()) {
 }
 
 /**
- * actor:        { id, role, scope: { allBranches, branchIds } }
+ * actor:        { id, role, branchIds }   branchIds = the actor's canonical memberships read from SQL.
+ *                An Admin's delegation power is bounded by THESE, whatever the rollout switch says:
+ *                scope.allBranches (Admin unrestricted while ADMIN_SCOPE_ENFORCED is off) is never consulted.
  * grantee:      { id, role, branchIds }                 (loaded from SQL)
- * requested:    { action, roles, branchIds, expiresAt? }
+ * requested:    { action, roles, branchIds, reason, expiresAt? }
  * parentGrants: the actor's own grants.manage grants     (loaded from SQL)
  * Returns { ok:true, parentGrantId, expiresAt } or { ok:false, status, code, error }.
  */
 export function decideGrantIssue({ actor, grantee, requested = {}, parentGrants = [], now = Date.now() }) {
   const action = requested.action;
   if (!GRANT_ACTIONS.includes(action)) return deny(400, "UNKNOWN_ACTION", "Unknown grant type.");
+
+  const reason = String(requested.reason ?? "").trim();
+  if (!reason) return deny(400, "REASON_REQUIRED", "Say why this authority is being granted.");
+  if (reason.length > 500) return deny(400, "REASON_TOO_LONG", "The reason is limited to 500 characters.");
 
   const roles = ids(requested.roles);
   const branchIds = ids(requested.branchIds);
@@ -62,18 +68,19 @@ export function decideGrantIssue({ actor, grantee, requested = {}, parentGrants 
   }
   if (!within(branchIds, ids(grantee.branchIds))) return deny(403, "GRANTEE_OUT_OF_SCOPE", "That person does not work in all of those branches.");
 
-  if (actor.role === "super_admin") return { ok: true, parentGrantId: null, expiresAt: expiresAt === null ? null : new Date(expiresAt).toISOString() };
+  if (actor.role === "super_admin") return { ok: true, parentGrantId: null, reason, expiresAt: expiresAt === null ? null : new Date(expiresAt).toISOString() };
 
   if (actor.role !== "admin") return deny(403, "FORBIDDEN", "You cannot issue delegations.");
   if (action !== "staff.create") return deny(403, "NEEDS_HIGHER_AUTHORITY", "Only a Super Admin can give grant-management authority.");
-  if (!actor.scope?.allBranches && !within(branchIds, ids(actor.scope?.branchIds))) {
+  // Always the Admin's own memberships. A missing list means no branches, never every branch.
+  if (!within(branchIds, ids(actor.branchIds))) {
     return deny(403, "OUT_OF_SCOPE", "You can only delegate inside the branches you manage.");
   }
 
   // ONE parent grant must cover everything asked for; several grants are never added together.
   const parent = (parentGrants || []).find((g) =>
     g.action === "grants.manage" &&
-    (g.grantee_id === undefined || String(g.grantee_id) === String(actor.id)) &&
+    g.grantee_id != null && String(g.grantee_id) === String(actor.id) &&   // must name THIS Admin exactly
     grantIsLive(g, now) &&
     within(roles, ids(g.roles)) &&
     within(branchIds, ids(g.branch_ids)));
@@ -82,5 +89,5 @@ export function decideGrantIssue({ actor, grantee, requested = {}, parentGrants 
   // The child never outlives its parent.
   const parentEnd = time(parent.expires_at);
   if (parentEnd !== null) expiresAt = expiresAt === null ? parentEnd : Math.min(expiresAt, parentEnd);
-  return { ok: true, parentGrantId: parent.id, expiresAt: expiresAt === null ? null : new Date(expiresAt).toISOString() };
+  return { ok: true, parentGrantId: parent.id, reason, expiresAt: expiresAt === null ? null : new Date(expiresAt).toISOString() };
 }

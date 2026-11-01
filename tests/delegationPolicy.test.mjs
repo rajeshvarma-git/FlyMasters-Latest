@@ -11,43 +11,43 @@ const HOUR = 3600e3;
 const iso = (ms) => new Date(ms).toISOString();
 
 const superAdmin = { id: "sa", role: "super_admin", scope: { allBranches: true, branchIds: [] } };
-const adminA = { id: "adminA", role: "admin", scope: { allBranches: false, branchIds: [A] } };
+const adminA = { id: "adminA", role: "admin", branchIds: [A], scope: { allBranches: false, branchIds: [A] } };
 const bhA = { id: "bhA", role: "branch_head", scope: { allBranches: false, branchIds: [A] } };
 const headA = { id: "bhA", role: "branch_head", branchIds: [A] };
 const manageA = { id: "g-manage", action: "grants.manage", grantee_id: "adminA", roles: ["counselor"], branch_ids: [A], expires_at: null, revoked_at: null };
 
-const issue = (over) => decideGrantIssue({ now: NOW, actor: superAdmin, grantee: headA, requested: { action: "staff.create", roles: ["counselor"], branchIds: [A] }, parentGrants: [], ...over });
+const issue = (over) => decideGrantIssue({ now: NOW, actor: superAdmin, grantee: headA, requested: { action: "staff.create", roles: ["counselor"], branchIds: [A], reason: "covers hiring" }, parentGrants: [], ...over });
 
 test("Super Admin issues a creation grant to a Branch Head directly, and grant-management to an Admin", () => {
-  assert.deepEqual(issue({}), { ok: true, parentGrantId: null, expiresAt: null });
-  const r = issue({ grantee: { id: "adminA", role: "admin", branchIds: [A, B] }, requested: { action: "grants.manage", roles: ["counselor"], branchIds: [A] } });
+  assert.deepEqual(issue({}), { ok: true, parentGrantId: null, reason: "covers hiring", expiresAt: null });
+  const r = issue({ grantee: { id: "adminA", role: "admin", branchIds: [A, B] }, requested: { action: "grants.manage", roles: ["counselor"], branchIds: [A], reason: "r" } });
   assert.equal(r.ok, true);
 });
 
 test("roles: only ordinary employee roles can be delegated, and at least one is needed", () => {
   for (const role of ["admin", "branch_head", "super_admin", "student", "partner"]) {
-    assert.equal(issue({ requested: { action: "staff.create", roles: ["counselor", role], branchIds: [A] } }).code, "ROLE_NOT_GRANTABLE", role);
+    assert.equal(issue({ requested: { action: "staff.create", roles: ["counselor", role], branchIds: [A], reason: "r" } }).code, "ROLE_NOT_GRANTABLE", role);
   }
-  assert.equal(issue({ requested: { action: "staff.create", roles: [], branchIds: [A] } }).code, "NO_ROLES");
-  assert.equal(issue({ requested: { action: "staff.create", branchIds: [A] } }).code, "NO_ROLES");
+  assert.equal(issue({ requested: { action: "staff.create", roles: [], branchIds: [A], reason: "r" } }).code, "NO_ROLES");
+  assert.equal(issue({ requested: { action: "staff.create", branchIds: [A], reason: "r" } }).code, "NO_ROLES");
 });
 
 test("branches: at least one, and all of them must be branches the grantee works in", () => {
-  assert.equal(issue({ requested: { action: "staff.create", roles: ["counselor"], branchIds: [] } }).code, "NO_BRANCHES");
-  assert.equal(issue({ requested: { action: "staff.create", roles: ["counselor"], branchIds: [A, B] } }).code, "GRANTEE_OUT_OF_SCOPE");
-  assert.equal(issue({ requested: { action: "staff.create", roles: ["counselor"], branchIds: [B] } }).code, "GRANTEE_OUT_OF_SCOPE");
+  assert.equal(issue({ requested: { action: "staff.create", roles: ["counselor"], branchIds: [], reason: "r" } }).code, "NO_BRANCHES");
+  assert.equal(issue({ requested: { action: "staff.create", roles: ["counselor"], branchIds: [A, B], reason: "r" } }).code, "GRANTEE_OUT_OF_SCOPE");
+  assert.equal(issue({ requested: { action: "staff.create", roles: ["counselor"], branchIds: [B], reason: "r" } }).code, "GRANTEE_OUT_OF_SCOPE");
 });
 
 test("nobody grants to themselves, not even a Super Admin", () => {
   assert.equal(issue({ grantee: { ...headA, id: "sa" } }).code, "SELF_GRANT");
-  assert.equal(issue({ actor: adminA, grantee: { id: "adminA", role: "admin", branchIds: [A] }, requested: { action: "grants.manage", roles: ["counselor"], branchIds: [A] } }).code, "SELF_GRANT");
+  assert.equal(issue({ actor: adminA, grantee: { id: "adminA", role: "admin", branchIds: [A] }, requested: { action: "grants.manage", roles: ["counselor"], branchIds: [A], reason: "r" } }).code, "SELF_GRANT");
 });
 
 test("the right kind of grantee: creation grants go to a Branch Head, management grants to an Admin", () => {
   assert.equal(issue({ grantee: { id: "x", role: "counselor", branchIds: [A] } }).code, "WRONG_GRANTEE_ROLE");
   assert.equal(issue({ grantee: { id: "x", role: "admin", branchIds: [A] } }).code, "WRONG_GRANTEE_ROLE");
-  assert.equal(issue({ requested: { action: "grants.manage", roles: ["counselor"], branchIds: [A] } }).code, "WRONG_GRANTEE_ROLE");
-  assert.equal(issue({ requested: { action: "staff.delete", roles: ["counselor"], branchIds: [A] } }).code, "UNKNOWN_ACTION");
+  assert.equal(issue({ requested: { action: "grants.manage", roles: ["counselor"], branchIds: [A], reason: "r" } }).code, "WRONG_GRANTEE_ROLE");
+  assert.equal(issue({ requested: { action: "staff.delete", roles: ["counselor"], branchIds: [A], reason: "r" } }).code, "UNKNOWN_ACTION");
 });
 
 test("an Admin issues a creation grant only inside ONE of their own management grants", () => {
@@ -56,21 +56,21 @@ test("an Admin issues a creation grant only inside ONE of their own management g
   assert.equal(ok.ok, true);
   assert.equal(ok.parentGrantId, "g-manage");
   assert.equal(ask({ parentGrants: [] }).code, "NEEDS_DELEGATION");
-  assert.equal(ask({ requested: { action: "staff.create", roles: ["telecaller"], branchIds: [A] } }).code, "NEEDS_DELEGATION", "the grant covers Counselor only");
-  assert.equal(ask({ grantee: { id: "bhB", role: "branch_head", branchIds: [B] }, requested: { action: "staff.create", roles: ["counselor"], branchIds: [B] } }).code, "OUT_OF_SCOPE", "Branch B is not Admin A's branch");
+  assert.equal(ask({ requested: { action: "staff.create", roles: ["telecaller"], branchIds: [A], reason: "r" } }).code, "NEEDS_DELEGATION", "the grant covers Counselor only");
+  assert.equal(ask({ grantee: { id: "bhB", role: "branch_head", branchIds: [B] }, requested: { action: "staff.create", roles: ["counselor"], branchIds: [B], reason: "r" } }).code, "OUT_OF_SCOPE", "Branch B is not Admin A's branch");
 });
 
 test("two narrow management grants never add up to a broad one", () => {
   const narrowRole = { ...manageA, id: "g1", roles: ["counselor"], branch_ids: [A] };
   const narrowBranch = { ...manageA, id: "g2", roles: ["counselor", "telecaller"], branch_ids: [B] };
-  const admin = { ...adminA, scope: { allBranches: false, branchIds: [A, B] } };
+  const admin = { ...adminA, branchIds: [A, B], scope: { allBranches: false, branchIds: [A, B] } };
   const bh = { id: "bhAB", role: "branch_head", branchIds: [A, B] };
-  const r = issue({ actor: admin, grantee: bh, parentGrants: [narrowRole, narrowBranch], requested: { action: "staff.create", roles: ["counselor", "telecaller"], branchIds: [A, B] } });
+  const r = issue({ actor: admin, grantee: bh, parentGrants: [narrowRole, narrowBranch], requested: { action: "staff.create", roles: ["counselor", "telecaller"], branchIds: [A, B], reason: "r" } });
   assert.equal(r.code, "NEEDS_DELEGATION");
 });
 
 test("an Admin cannot give grant-management authority onward, and nobody else issues anything", () => {
-  const r = issue({ actor: adminA, parentGrants: [manageA], grantee: { id: "adminC", role: "admin", branchIds: [A] }, requested: { action: "grants.manage", roles: ["counselor"], branchIds: [A] } });
+  const r = issue({ actor: adminA, parentGrants: [manageA], grantee: { id: "adminC", role: "admin", branchIds: [A] }, requested: { action: "grants.manage", roles: ["counselor"], branchIds: [A], reason: "r" } });
   assert.equal(r.code, "NEEDS_HIGHER_AUTHORITY");
   for (const role of ["branch_head", "counselor", "telecaller", "accountant", "student", "partner"]) {
     assert.equal(issue({ actor: { id: "z", role, scope: { allBranches: false, branchIds: [A] } } }).code, "FORBIDDEN", role);
@@ -78,14 +78,14 @@ test("an Admin cannot give grant-management authority onward, and nobody else is
 });
 
 test("expiry: past dates are refused, and a child grant never outlives its parent", () => {
-  assert.equal(issue({ requested: { action: "staff.create", roles: ["counselor"], branchIds: [A], expiresAt: iso(NOW - HOUR) } }).code, "BAD_EXPIRY");
-  assert.equal(issue({ requested: { action: "staff.create", roles: ["counselor"], branchIds: [A], expiresAt: "not a date" } }).code, "BAD_EXPIRY");
+  assert.equal(issue({ requested: { action: "staff.create", roles: ["counselor"], branchIds: [A], reason: "r", expiresAt: iso(NOW - HOUR) } }).code, "BAD_EXPIRY");
+  assert.equal(issue({ requested: { action: "staff.create", roles: ["counselor"], branchIds: [A], reason: "r", expiresAt: "not a date" } }).code, "BAD_EXPIRY");
   const parent = { ...manageA, expires_at: iso(NOW + 24 * HOUR) };
   const capped = issue({ actor: adminA, parentGrants: [parent] });
   assert.equal(capped.expiresAt, parent.expires_at, "no expiry asked => the parent's expiry");
-  const later = issue({ actor: adminA, parentGrants: [parent], requested: { action: "staff.create", roles: ["counselor"], branchIds: [A], expiresAt: iso(NOW + 72 * HOUR) } });
+  const later = issue({ actor: adminA, parentGrants: [parent], requested: { action: "staff.create", roles: ["counselor"], branchIds: [A], reason: "r", expiresAt: iso(NOW + 72 * HOUR) } });
   assert.equal(later.expiresAt, parent.expires_at, "asking for longer is trimmed to the parent's");
-  const shorter = issue({ actor: adminA, parentGrants: [parent], requested: { action: "staff.create", roles: ["counselor"], branchIds: [A], expiresAt: iso(NOW + 2 * HOUR) } });
+  const shorter = issue({ actor: adminA, parentGrants: [parent], requested: { action: "staff.create", roles: ["counselor"], branchIds: [A], reason: "r", expiresAt: iso(NOW + 2 * HOUR) } });
   assert.equal(shorter.expiresAt, iso(NOW + 2 * HOUR));
 });
 
@@ -110,4 +110,33 @@ test("account creation: several narrow creation grants are judged one at a time,
   assert.notEqual(create("telecaller", [A]).ok, true);
   assert.notEqual(create("counselor", [A, B]).ok, true, "A+B is not covered by either grant");
   assert.notEqual(create("accountant", [A]).ok, true);
+});
+
+test("an Admin's delegation power is bounded by their canonical memberships, even while the rollout switch makes them unrestricted", () => {
+  // ADMIN_SCOPE_ENFORCED off => req.scope.allBranches is true for an Admin; memberships are still only A.
+  const unrestrictedAdmin = { id: "adminA", role: "admin", branchIds: [A], scope: { allBranches: true, branchIds: [] } };
+  const manageAB = { ...manageA, branch_ids: [A, B] };
+  const bhB = { id: "bhB", role: "branch_head", branchIds: [B] };
+  const toB = decideGrantIssue({ now: NOW, actor: unrestrictedAdmin, grantee: bhB, parentGrants: [manageAB], requested: { action: "staff.create", roles: ["counselor"], branchIds: [B], reason: "r" } });
+  assert.equal(toB.code, "OUT_OF_SCOPE", "B is in the parent grant but not in the Admin's memberships");
+  const toA = decideGrantIssue({ now: NOW, actor: unrestrictedAdmin, grantee: headA, parentGrants: [manageAB], requested: { action: "staff.create", roles: ["counselor"], branchIds: [A], reason: "r" } });
+  assert.equal(toA.ok, true);
+  const noMemberships = { id: "adminA", role: "admin", scope: { allBranches: true, branchIds: [] } };
+  assert.equal(decideGrantIssue({ now: NOW, actor: noMemberships, grantee: headA, parentGrants: [manageA], requested: { action: "staff.create", roles: ["counselor"], branchIds: [A], reason: "r" } }).code, "OUT_OF_SCOPE", "no membership list means no branches, never all");
+});
+
+test("a parent grant must name this exact Admin: a missing or different grantee_id is refused", () => {
+  const { grantee_id, ...anonymous } = manageA;
+  assert.equal(issue({ actor: adminA, parentGrants: [anonymous] }).code, "NEEDS_DELEGATION");
+  assert.equal(issue({ actor: adminA, parentGrants: [{ ...manageA, grantee_id: null }] }).code, "NEEDS_DELEGATION");
+  assert.equal(issue({ actor: adminA, parentGrants: [{ ...manageA, grantee_id: "adminB" }] }).code, "NEEDS_DELEGATION");
+  assert.equal(issue({ actor: adminA, parentGrants: [manageA] }).ok, true);
+});
+
+test("a reason is required, trimmed, and at most 500 characters; it is returned for the audit record", () => {
+  const ask = (reason) => issue({ requested: { action: "staff.create", roles: ["counselor"], branchIds: [A], reason } });
+  for (const bad of [undefined, null, "", "   "]) assert.equal(ask(bad).code, "REASON_REQUIRED", String(bad));
+  assert.equal(ask("x".repeat(501)).code, "REASON_TOO_LONG");
+  assert.equal(ask("  covers Vizag hiring  ").reason, "covers Vizag hiring");
+  assert.equal(ask("x".repeat(500)).ok, true);
 });
