@@ -20,6 +20,8 @@
 import { getPool } from "./postgres";
 import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
 import { isBranchLimited } from "../lib/accessScope.mjs";
+import { loadAccountTarget } from "../lib/accountTargets.mjs";
+import { checkStaffInScope } from "../lib/scopeGuards.mjs";
 import { getSessionByToken, readBearerToken } from "./studentAuth";
 import { commonCountryDocumentsFor, countryDocumentsEnabled, canStudentUseCountryDocument } from "../lib/countryDocumentApproval.mjs";
 import { canStudentUploadAnything, canStudentUploadDocument } from "../lib/documentUploadAuthorization.mjs";
@@ -187,33 +189,68 @@ async function branchAdminVisibleRows(viewer: Viewer & { branchIds: string[] }, 
   return mine;
 }
 
+/** Staff-assignment fields: the person named must work only inside the Admin's branches. */
+const ASSIGNMENT_FIELDS = ["assigned_counselor_id", "assigned_telecaller_id", "counselor_id", "telecaller_id", "assigned_to"];
+const OUT_OF_BRANCHES = "That record is outside the branches you manage.";
+
+/** Linking a lead to an account (by id or email): the account may belong only to the Admin's branches. */
+async function accountLinkError(keys: ScopeKeys, field: string, value: any): Promise<string | null> {
+  const db = getPool();
+  let id: string | null = String(value);
+  if (field === "email") {
+    const found = await db.query("SELECT id FROM auth_users WHERE lower(email) = lower($1) LIMIT 1", [String(value)]);
+    id = found.rows[0] ? String(found.rows[0].id) : null;
+    if (!id) return null; // a contact email with no account links to nobody
+  }
+  const target = await loadAccountTarget(db, id);
+  if (!target) return "That account could not be found.";
+  const branches = [...target.branchIds, ...target.leadBranchIds];
+  return branches.every((b) => keys.branchIds.has(String(b))) ? null : OUT_OF_BRANCHES;
+}
+
 async function branchAdminMutationError(viewer: Viewer & { branchIds: string[] }, mutation: Mutation, matching: any[]) {
   const table = String(mutation.table || "");
   if (!OWNED.has(table)) return "Not allowed.";
   const keys = await branchScopeKeys(viewer);
-  const OUT = "That record is outside the branches you manage.";
-  if (matching.some((row) => !rowInBranchScope(keys, row, table))) return OUT;
+  if (matching.some((row) => !rowInBranchScope(keys, row, table))) return OUT_OF_BRANCHES;
   if (mutation.action === "delete") return null;
-  if (mutation.action === "update") {
-    const payload = mutation.payload || {};
-    // Re-pointing a record at a student, or a lead at a branch, outside the Admin's branches.
-    for (const field of [...OWNER_ID_FIELDS, ...OWNER_EMAIL_FIELDS]) {
-      const value = payload[field];
-      if (value == null || value === "") continue;
-      const known = OWNER_EMAIL_FIELDS.includes(field)
-        ? keys.emails.has(String(value).trim().toLowerCase())
-        : keys.userIds.has(String(value)) || keys.leadIds.has(String(value));
-      if (!known && field !== "receiver_id") return OUT;
+  if (!["update", "insert", "upsert"].includes(mutation.action)) return "Not allowed.";
+
+  const isUpdate = mutation.action === "update";
+  const incoming: any[] = isUpdate ? [mutation.payload || {}] : Array.isArray(mutation.rows) ? mutation.rows : [];
+  const scope = { allBranches: false, branchIds: viewer.branchIds };
+  for (const row of incoming) {
+    if (!row || typeof row !== "object") return OUT_OF_BRANCHES;
+    const existing = isUpdate ? matching : matching.filter((m) => String(m.id) === String(row.id));
+    // A value is only judged when this write sets or changes it.
+    const changes = (field: string) => row[field] != null && row[field] !== ""
+      && (!existing.length || existing.some((m) => String(m[field] ?? "") !== String(row[field])));
+
+    // Whose record is it? Every owner named must be one of the Admin's students.
+    const ownerFields = [...OWNER_ID_FIELDS.filter((f) => f !== "receiver_id"), ...OWNER_EMAIL_FIELDS].filter((f) => row[f] != null && row[f] !== "");
+    if (!isUpdate && table !== "student_leads") {
+      if (!ownerFields.length || !ownerFields.every((f) => rowInBranchScope(keys, { [f]: row[f] }, table))) return OUT_OF_BRANCHES;
     }
-    if (table === "student_leads" && payload.branch_id && !keys.branchIds.has(String(payload.branch_id))) return OUT;
-    return null;
+    for (const field of ownerFields.filter(changes)) {
+      if (table === "student_leads" && (field === "user_id" || field === "email")) {
+        const error = await accountLinkError(keys, field, row[field]);
+        if (error) return error;
+      } else if (!rowInBranchScope(keys, { [field]: row[field] }, table)) {
+        return OUT_OF_BRANCHES;
+      }
+    }
+
+    // Which branch does it sit in? A lead must be created in, and never moved out of, these branches.
+    if (!isUpdate && table === "student_leads" && !(row.branch_id && keys.branchIds.has(String(row.branch_id)))) return OUT_OF_BRANCHES;
+    if (changes("branch_id") && !keys.branchIds.has(String(row.branch_id))) return OUT_OF_BRANCHES;
+
+    // Who is it assigned to? The same rule as the dedicated lead routes.
+    for (const field of ASSIGNMENT_FIELDS.filter(changes)) {
+      const checked = await checkStaffInScope(getPool(), scope, row[field]);
+      if (!checked.ok) return checked.error || OUT_OF_BRANCHES;
+    }
   }
-  if (mutation.action === "insert" || mutation.action === "upsert") {
-    const rows = Array.isArray(mutation.rows) ? mutation.rows : [];
-    if (!rows.every((row) => rowInBranchScope(keys, row, table) || (table === "student_leads" && row?.branch_id && keys.branchIds.has(String(row.branch_id))))) return OUT;
-    return null;
-  }
-  return "Not allowed.";
+  return null;
 }
 
 /** Stored files a branch Admin may reach: their students' folders, or files their students' records point at. */

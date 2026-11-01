@@ -298,6 +298,20 @@ const leadRows = [
   { id: "LN", branch_id: null, user_id: "uN", email: "n@x.test" }, // no branch at all
 ];
 
+// accounts the data-API checks can look up: staff by branch, students by their leads (see leadRows)
+const COUNSELOR_A = "cccccccc-0000-4000-8000-00000000000a";
+const COUNSELOR_B = "cccccccc-0000-4000-8000-00000000000b";
+const COUNSELOR_AB = "cccccccc-0000-4000-8000-0000000000ab";
+const accountsById = {
+  [COUNSELOR_A]: { email: "ca@x.test", staff: [A] },
+  [COUNSELOR_B]: { email: "cb@x.test", staff: [B] },
+  [COUNSELOR_AB]: { email: "cab@x.test", staff: [A, B] },
+  uA: { email: "a@x.test", staff: [] },
+  uB: { email: "b@x.test", staff: [] },
+  uM: { email: "m@x.test", staff: [] },
+  uFresh: { email: "fresh@x.test", staff: [] }, // account with no lead and no staff role yet
+};
+
 function dataWorld(extra = {}) {
   const db = studentPool();
   const original = db.query.bind(db);
@@ -310,6 +324,24 @@ function dataWorld(extra = {}) {
       return { rows: leadRows.filter((l) => !l.branch_id || !params[0].includes(l.branch_id)).map((l) => ({ user_id: l.user_id, email: l.email })) };
     }
     if (/FROM user_roles WHERE user_id = ANY/.test(text)) return { rows: [] };
+    // account lookups used by the assignee / account-link checks
+    if (/^SELECT id FROM auth_users WHERE id::text/.test(text)) return { rows: accountsById[params[0]] ? [{ id: params[0] }] : [] };
+    if (/^SELECT a\.id FROM counselor_users/.test(text)) return { rows: [] };
+    if (/^SELECT id FROM auth_users WHERE lower\(email\)/.test(text)) {
+      const hit = Object.entries(accountsById).find(([, a]) => a.email === String(params[0]).toLowerCase());
+      return { rows: hit ? [{ id: hit[0] }] : [] };
+    }
+    if (/^SELECT id, lower\(email\) AS email FROM auth_users WHERE id = \$1/.test(text)) {
+      const a = accountsById[params[0]]; return { rows: a ? [{ id: params[0], email: a.email }] : [] };
+    }
+    if (/^SELECT role, branch_id FROM user_roles WHERE user_id = \$1/.test(text)) {
+      const a = accountsById[params[0]]; return { rows: a?.staff?.length ? [{ role: "counselor", branch_id: a.staff[0] }] : [] };
+    }
+    if (/^SELECT branch_id FROM user_branches WHERE user_id = \$1/.test(text)) return { rows: (accountsById[params[0]]?.staff || []).map((b) => ({ branch_id: b })) };
+    if (/^SELECT DISTINCT branch_id FROM app_records/.test(text)) {
+      const a = accountsById[params[0]]; const mine = a ? leadRows.filter((l) => l.user_id === params[0] || l.email === a.email) : [];
+      return { rows: [...new Set(mine.map((l) => l.branch_id).filter(Boolean))].map((b) => ({ branch_id: b })) };
+    }
     if (/data->>'file_path' = ANY/.test(text)) return { rows: (extra.fileRows || []).filter((r) => params[0].includes(r.data.file_path)) };
     return { rows: [], rowCount: 0 };
   };
@@ -365,7 +397,7 @@ test("student data API: a scoped Admin may change their own branch's records and
     out(await checkMutation(v, { action: "insert", table: "documents", rows: [{ id: "n2", user_id: "uB" }] }, []));
     assert.equal(await checkMutation(v, { action: "insert", table: "student_leads", rows: [{ id: "new", branch_id: A }] }, []), null);
     out(await checkMutation(v, { action: "insert", table: "student_leads", rows: [{ id: "new", branch_id: B }] }, []));
-    assert.equal(await checkMutation(v, { action: "update", table: "student_leads", payload: { assigned_counselor_id: "c1" } }, [{ id: "LA" }]), null);
+    assert.equal(await checkMutation(v, { action: "update", table: "student_leads", payload: { assigned_counselor_id: COUNSELOR_A } }, [{ id: "LA" }]), null);
     out(await checkMutation(v, { action: "update", table: "student_leads", payload: { branch_id: B } }, [{ id: "LA" }]));
     out(await checkMutation(v, { action: "update", table: "student_leads", payload: {} }, [{ id: "LB" }]));
     assert.equal(await checkMutation(v, { action: "update", table: "audit_logs", payload: {} }, []), "Not allowed.");
@@ -389,5 +421,59 @@ test("student data API: stored files follow the same branches (folders and files
     const listing = [{ path: "uA/x.pdf" }, { path: "uB/y.pdf" }, { path: "uM/z.pdf" }, { path: "legacy/a.pdf" }, { path: "legacy/b.pdf" }];
     assert.deepEqual((await visibleStorageListing(v, listing)).map((r) => r.path), ["uA/x.pdf", "legacy/a.pdf"]);
     assert.deepEqual(await branchAdminFolders(v), ["uA"]);
+  } finally { w.restore(); }
+});
+
+test("student data API: a scoped Admin cannot assign a lead to staff outside their branches, by update, insert or upsert", async () => {
+  const w = dataWorld();
+  try {
+    const v = viewerFor([A]);
+    const lead = { id: "LA", branch_id: A, user_id: "uA" };
+    for (const field of ["assigned_counselor_id", "assigned_telecaller_id"]) {
+      const refused = async (target) => String(await checkMutation(v, { action: "update", table: "student_leads", payload: { [field]: target } }, [lead]));
+      assert.match(await refused(COUNSELOR_B), /outside the branches you manage/, `${field}: counselor of Branch B`);
+      assert.match(await refused(COUNSELOR_AB), /outside the branches you manage/, `${field}: counselor who also works in B`);
+      assert.match(await refused("cccccccc-0000-4000-8000-ffffffffffff"), /could not be found/, `${field}: unknown person`);
+      assert.equal(await checkMutation(v, { action: "update", table: "student_leads", payload: { [field]: COUNSELOR_A } }, [lead]), null, `${field}: Branch A staff is allowed`);
+      assert.equal(await checkMutation(v, { action: "update", table: "student_leads", payload: { [field]: null } }, [lead]), null, `${field}: unassigning is allowed`);
+    }
+    assert.match(String(await checkMutation(v, { action: "insert", table: "student_leads", rows: [{ id: "n1", branch_id: A, assigned_counselor_id: COUNSELOR_B }] }, [])), /outside the branches/);
+    assert.equal(await checkMutation(v, { action: "insert", table: "student_leads", rows: [{ id: "n2", branch_id: A, assigned_counselor_id: COUNSELOR_A }] }, []), null);
+    assert.match(String(await checkMutation(v, { action: "upsert", table: "student_leads", rows: [{ id: "LA", branch_id: A, assigned_telecaller_id: COUNSELOR_B }] }, [lead])), /outside the branches/);
+    assert.equal(await checkMutation(v, { action: "upsert", table: "student_leads", rows: [{ id: "LA", branch_id: A, assigned_telecaller_id: COUNSELOR_A }] }, [lead]), null);
+    // the same assignee that is already saved is not re-judged, so unrelated edits to an existing lead still work
+    assert.equal(await checkMutation(v, { action: "update", table: "student_leads", payload: { assigned_counselor_id: COUNSELOR_B, note: "x" } }, [{ ...lead, assigned_counselor_id: COUNSELOR_B }]), null);
+    // other tables carry the same fields
+    assert.match(String(await checkMutation(v, { action: "update", table: "applications", payload: { counselor_id: COUNSELOR_B } }, [{ id: "ap1", user_id: "uA" }])), /outside the branches/);
+    assert.equal(await checkMutation(v, { action: "update", table: "applications", payload: { counselor_id: COUNSELOR_A } }, [{ id: "ap1", user_id: "uA" }]), null);
+  } finally { w.restore(); }
+});
+
+test("student data API: a scoped Admin cannot move a lead, or link it to an account, outside their branches", async () => {
+  const w = dataWorld();
+  try {
+    const v = viewerFor([A]);
+    const lead = { id: "LA", branch_id: A, user_id: "uA" };
+    const out = /outside the branches|could not be found/;
+    // branch changes, by update / insert / upsert
+    assert.match(String(await checkMutation(v, { action: "update", table: "student_leads", payload: { branch_id: B } }, [lead])), out);
+    assert.match(String(await checkMutation(v, { action: "insert", table: "student_leads", rows: [{ id: "n1", branch_id: B }] }, [])), out);
+    assert.match(String(await checkMutation(v, { action: "insert", table: "student_leads", rows: [{ id: "n2" }] }, [])), out, "a new lead with no branch is refused");
+    assert.match(String(await checkMutation(v, { action: "upsert", table: "student_leads", rows: [{ id: "LA", branch_id: B }] }, [lead])), out);
+    assert.equal(await checkMutation(v, { action: "update", table: "student_leads", payload: { branch_id: A } }, [lead]), null);
+    // account links: id and email
+    assert.match(String(await checkMutation(v, { action: "update", table: "student_leads", payload: { user_id: "uB" } }, [lead])), out, "account of a Branch B student");
+    assert.match(String(await checkMutation(v, { action: "update", table: "student_leads", payload: { user_id: "uM" } }, [lead])), out, "account that also has a Branch B lead");
+    assert.match(String(await checkMutation(v, { action: "update", table: "student_leads", payload: { user_id: COUNSELOR_B } }, [lead])), out, "a Branch B staff account");
+    assert.match(String(await checkMutation(v, { action: "update", table: "student_leads", payload: { user_id: "uGhost" } }, [lead])), out, "no such account");
+    assert.match(String(await checkMutation(v, { action: "update", table: "student_leads", payload: { email: "b@x.test" } }, [lead])), out, "email of a Branch B student's account");
+    assert.equal(await checkMutation(v, { action: "update", table: "student_leads", payload: { user_id: "uFresh" } }, [lead]), null, "a new account with no other branch can be linked");
+    assert.equal(await checkMutation(v, { action: "update", table: "student_leads", payload: { email: "someone@elsewhere.test" } }, [lead]), null, "contact email with no account");
+    assert.match(String(await checkMutation(v, { action: "insert", table: "student_leads", rows: [{ id: "n3", branch_id: A, user_id: "uB" }] }, [])), out);
+    assert.equal(await checkMutation(v, { action: "insert", table: "student_leads", rows: [{ id: "n4", branch_id: A, user_id: "uFresh" }] }, []), null);
+    // rows of other tables must belong wholly to the Admin's students, not "any one field matches"
+    assert.match(String(await checkMutation(v, { action: "insert", table: "documents", rows: [{ id: "d1", user_id: "uA", student_id: "LB" }] }, [])), out);
+    assert.match(String(await checkMutation(v, { action: "insert", table: "documents", rows: [{ id: "d2", file_path: "x" }] }, [])), out, "no owner at all");
+    assert.equal(await checkMutation(v, { action: "insert", table: "documents", rows: [{ id: "d3", user_id: "uA", student_id: "LA" }] }, []), null);
   } finally { w.restore(); }
 });
