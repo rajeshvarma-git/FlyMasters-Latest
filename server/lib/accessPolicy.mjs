@@ -47,19 +47,30 @@ export function decideAccountAction({ actor, action, target = {}, requested = {}
   if (role === "super_admin") return ok();
 
   // What this actor may touch: which roles, and which branches (null = every branch).
-  let allowedRoles, allowedBranches;
   if (role === "admin") {
-    allowedRoles = MANAGEABLE;
-    allowedBranches = actor.scope?.allBranches ? null : ids(actor.scope?.branchIds);
-  } else {
-    const grant = grants.find((g) => g.action === action);
-    if (!grant) return deny(403, "NEEDS_DELEGATION", "A Branch Head can only do this with an explicit delegation from a Super Admin.");
-    allowedRoles = ids(grant.roles).filter((r) => ORDINARY_STAFF.includes(r)); // never privileged roles
-    const mine = actor.scope?.allBranches ? null : ids(actor.scope?.branchIds);
-    const granted = ids(grant.branch_ids);
-    allowedBranches = mine === null ? granted : granted.filter((b) => mine.includes(b));
+    return judge({ actor, action, target, requested, allowedRoles: MANAGEABLE, allowedBranches: actor.scope?.allBranches ? null : ids(actor.scope?.branchIds) });
   }
 
+  // Branch Head: ONE delegation must cover the whole request. Delegations are judged one at a time and
+  // never added together, so two narrow grants cannot make a broad one.
+  const candidates = grants.filter((g) => g.action === action);
+  if (!candidates.length) return deny(403, "NEEDS_DELEGATION", "A Branch Head can only do this with an explicit delegation.");
+  const mine = actor.scope?.allBranches ? null : ids(actor.scope?.branchIds);
+  let firstDenial = null;
+  for (const grant of candidates) {
+    const granted = ids(grant.branch_ids);
+    const decision = judge({
+      actor, action, target, requested,
+      allowedRoles: ids(grant.roles).filter((r) => ORDINARY_STAFF.includes(r)), // never privileged roles
+      allowedBranches: mine === null ? granted : granted.filter((b) => mine.includes(b)),
+    });
+    if (decision.ok) return decision;
+    firstDenial ||= decision;
+  }
+  return firstDenial;
+}
+
+function judge({ action, target, requested, allowedRoles, allowedBranches }) {
   const requestedBranches = ids(requested.branchIds);
   if (!inside(requestedBranches, allowedBranches)) return deny(403, "OUT_OF_SCOPE", "You can only assign branches you manage.");
 
