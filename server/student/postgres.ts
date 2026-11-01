@@ -520,6 +520,21 @@ export function rowMatches(row: any, specs: FilterSpec[] = []) {
   });
 }
 
+// ACCESS-03B: branch permissions read the SQL column app_records.branch_id, so a write that names a
+// branch in the record must store it there in the same statement (same transaction as the JSON).
+// A write that does not mention branch_id leaves the stored column alone; an empty value clears it;
+// an invalid or unknown branch fails the statement and the whole mutation rolls back.
+const UPSERT_RECORD =
+  "INSERT INTO app_records (id, table_name, data, branch_id) VALUES ($1, $2, $3::jsonb, $4::uuid) " +
+  "ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now(), " +
+  "branch_id = CASE WHEN $5::boolean THEN EXCLUDED.branch_id ELSE app_records.branch_id END";
+
+function branchParams(written: any): [string | null, boolean] {
+  const has = Object.prototype.hasOwnProperty.call(written || {}, "branch_id") && written.branch_id !== undefined;
+  const value = has ? written.branch_id : null;
+  return [value === undefined || value === null || value === "" ? null : String(value), has];
+}
+
 export async function mutateAppState(mutation: {
   action: "insert" | "update" | "delete" | "upsert";
   table: string;
@@ -544,10 +559,7 @@ export async function mutateAppState(mutation: {
         updated_at: now,
       }));
       for (const item of items) {
-        await client.query(
-          "INSERT INTO app_records (id, table_name, data) VALUES ($1, $2, $3::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
-          [item.id, mutation.table, JSON.stringify(item, jsonSafe)]
-        );
+        await client.query(UPSERT_RECORD, [item.id, mutation.table, JSON.stringify(item, jsonSafe), ...branchParams(item)]);
       }
       await client.query("COMMIT");
       return { data: items.length === 1 ? items[0] : items, count: items.length };
@@ -564,10 +576,7 @@ export async function mutateAppState(mutation: {
       for (const item of items) {
         const found = current.find((row) => String(row[key] ?? "") === String(item[key] ?? ""));
         const next = found ? { ...found, ...item, id: found.id, updated_at: now } : item;
-        await client.query(
-          "INSERT INTO app_records (id, table_name, data) VALUES ($1, $2, $3::jsonb) ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()",
-          [next.id, mutation.table, JSON.stringify(next, jsonSafe)]
-        );
+        await client.query(UPSERT_RECORD, [next.id, mutation.table, JSON.stringify(next, jsonSafe), ...branchParams(item)]);
       }
       await client.query("COMMIT");
       return { data: items, count: items.length };
@@ -579,9 +588,10 @@ export async function mutateAppState(mutation: {
       const updated = [];
       for (const row of matched) {
         const next = { ...row, ...(mutation.payload || {}), id: row.id, updated_at: now };
+        const [branch, hasBranch] = branchParams(mutation.payload || {});
         await client.query(
-          "UPDATE app_records SET data = $2::jsonb, updated_at = now() WHERE id = $1",
-          [row.id, JSON.stringify(next, jsonSafe)]
+          "UPDATE app_records SET data = $2::jsonb, updated_at = now(), branch_id = CASE WHEN $4::boolean THEN $3::uuid ELSE branch_id END WHERE id = $1",
+          [row.id, JSON.stringify(next, jsonSafe), branch, hasBranch]
         );
         updated.push(next);
       }
