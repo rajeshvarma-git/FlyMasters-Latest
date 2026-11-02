@@ -1850,12 +1850,40 @@ const TELECALLER_LEAD_FIELDS = [
 
 const CALL_OUTCOMES = ["connected", "no_answer", "busy", "wrong_number", "not_interested", "callback"];
 
+/**
+ * Every id that belongs to the same person as `id`. One person can carry two:
+ * the id they sign in with (auth_users.id) and a separate one minted when they
+ * were promoted between roles (counselor_users.id). Admin screens may assign a
+ * lead to either, so ownership has to be judged by person, not by one id.
+ */
+function sameLoginIds(users, counselors, id) {
+  const people = [
+    ...(users || []).map((u) => ({ ids: [u.id], email: u.email })),
+    ...(counselors || []).map((c) => ({ ids: [c.id, c.auth_user_id, c.user_id], email: c.email })),
+  ];
+  const ids = new Set([String(id)]);
+  const emails = new Set(
+    people
+      .filter((p) => p.ids.some((x) => x != null && String(x) === String(id)))
+      .map((p) => String(p.email || "").trim().toLowerCase())
+      .filter(Boolean),
+  );
+  for (const p of people) {
+    if (!emails.has(String(p.email || "").trim().toLowerCase())) continue;
+    for (const x of p.ids) if (x != null && x !== "") ids.add(String(x));
+  }
+  return ids;
+}
+
 async function ownedLead(telecallerId, leadId) {
   const rows = await jsonTable("student_leads");
   const lead = rows.find((row) => String(row.id) === String(leadId));
   if (!lead) return { error: "Lead not found." };
   if (String(lead.assigned_telecaller_id || "") !== String(telecallerId)) {
-    return { error: "That lead is not assigned to you." };
+    const [users, counselors] = await Promise.all([loadUsers(), loadCounselors()]);
+    if (!sameLoginIds(users, counselors, telecallerId).has(String(lead.assigned_telecaller_id || ""))) {
+      return { error: "That lead is not assigned to you." };
+    }
   }
   return { lead };
 }
@@ -1897,9 +1925,8 @@ router.get("/api/telecaller/state", telecallerAuth, async (req, res) => {
     // it was filed under. Branch scope used to hide it: the admin saw it on the
     // telecaller's page while the telecaller's own queue stayed empty.
     const leadSource = req.scope?.allBranches ? state : await loadState(null);
-    const mine = leadSource.leads.filter(
-      (lead) => String(lead.assigned_telecaller_id || "") === String(req.user.id),
-    );
+    const myIds = sameLoginIds(leadSource.users, leadSource.counselors, req.user.id);
+    const mine = leadSource.leads.filter((lead) => myIds.has(String(lead.assigned_telecaller_id || "")));
     const mineOpen = mine.filter(
       (lead) => lead.entity_type !== "student" && lead.lead_status !== "converted",
     );
