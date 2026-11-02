@@ -6,6 +6,7 @@ import { clearSession } from "@shared/lib/session";
 import Referrals from "@partner/screens/Referrals";
 import Commissions from "@partner/screens/Commissions";
 
+import { useCopy } from "@shared/hooks/useCopy";
 /**
  * Agent / Freelancer portal.
  *
@@ -16,7 +17,7 @@ import Commissions from "@partner/screens/Commissions";
 export default function App() {
   const [profile, setProfile] = useState<PartnerProfile | null>(null);
   const [error, setError] = useState("");
-  const [copied, setCopied] = useState(false);
+  const { state: copyState, copy } = useCopy();
 
   useEffect(() => {
     void api<{ partner: PartnerProfile }>("/me")
@@ -73,17 +74,11 @@ export default function App() {
             <div className="mt-1 flex flex-wrap items-center gap-2">
               <code className="break-all rounded bg-white px-2 py-1 text-xs text-slate-700">{link}</code>
               <button
-                onClick={() => {
-                  const done = () => { setCopied(true); setTimeout(() => setCopied(false), 2000); };
-                  if (navigator.clipboard?.writeText) {
-                    navigator.clipboard.writeText(link).then(done).catch(() => window.prompt("Copy this link:", link));
-                  } else {
-                    window.prompt("Copy this link:", link);
-                  }
-                }}
-                className="rounded-lg bg-navy-900 px-3 py-1 text-xs text-white"
+                onClick={() => void copy(link)}
+                className={`rounded-lg px-3 py-1 text-xs text-white transition ${copyState === "copied" ? "bg-emerald-600" : copyState === "failed" ? "bg-rose-600" : "bg-navy-900"}`}
+                aria-live="polite"
               >
-                {copied ? "Link copied" : "Copy"}
+                {copyState === "copied" ? "✓ Link copied" : copyState === "failed" ? "Copy failed — select the link" : "Copy link"}
               </button>
               <span className="text-xs text-slate-500">
                 or ask the student to enter <strong>{profile.code}</strong> when they sign up

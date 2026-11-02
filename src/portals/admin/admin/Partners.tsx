@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useState } from "react";
 import { Handshake, KeyRound, Eye } from "lucide-react";
+import { useCopy } from "@shared/hooks/useCopy";
 import { api } from "@admin/lib/api";
 import { useAuth } from "@admin/context/AuthContext";
 import type { Branch } from "@admin/lib/types";
@@ -48,6 +49,13 @@ const BASIS_LABEL: Record<string, string> = {
 export default function Partners() {
   const { user } = useAuth();
   const isSuperAdmin = user?.role === "super_admin";
+  const { state: copyStatus, copy: copyLink } = useCopy();
+  const [copiedId, setCopiedId] = useState("");
+  const copyState = { id: copiedId, state: copyStatus };
+  const copy = async (text: string, id: string) => {
+    setCopiedId(id);
+    await copyLink(text);
+  };
   // CRM 2.6.2 — status visibility is configurable per agent account, not
   // globally. Defaults are "show", so nothing changes for existing agents
   // until a Super Admin deliberately turns something off.
@@ -193,7 +201,16 @@ export default function Partners() {
                   </span>
                   {p.email ? <p className="text-xs text-slate-500">{p.email}</p> : null}
                 </td>
-                <td className="py-3 font-mono text-xs text-slate-700">{p.referral_code}</td>
+                <td className="py-3 font-mono text-xs text-slate-700">
+                  {p.referral_code}
+                  <button
+                    type="button"
+                    onClick={() => void copy(`${window.location.origin}/r/${p.referral_code}`, p.id)}
+                    className="ml-2 rounded border border-slate-200 px-1.5 py-0.5 font-sans text-[11px] text-sky-700 hover:bg-sky-50"
+                  >
+                    {copyState.id === p.id && copyState.state === "copied" ? "✓ Link copied" : copyState.id === p.id && copyState.state === "failed" ? "Copy failed" : "Copy link"}
+                  </button>
+                </td>
                 <td className="py-3 text-slate-600">{p.branch_name || "—"}</td>
                 <td className="py-3 text-slate-600">
                   {p.commission_basis === "percent_of_fee"
