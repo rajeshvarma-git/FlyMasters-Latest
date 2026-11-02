@@ -56,7 +56,7 @@ export function TelecallerProfile() {
           <dt className="text-slate-500">Phone</dt>
           <dd className="font-medium">{user?.phone || "—"}</dd>
           <dt className="text-slate-500">Role</dt>
-          <dd className="font-medium">Telecaller</dd>
+          <dd className="font-medium">{user?.role === "telecaller" ? "Telecaller" : (user?.role || "Telecaller")}</dd>
         </dl>
         <p className="mt-4 text-xs text-slate-500">To change your details or password, ask an admin.</p>
       </Card>
