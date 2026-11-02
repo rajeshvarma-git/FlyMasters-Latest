@@ -6,6 +6,7 @@ import { api } from "@admin/lib/api";
 import { useAuth } from "@admin/context/AuthContext";
 import { refreshStore, useAdminStore } from "@admin/lib/store";
 import { counselorOwns, displayName, initials, isConvertedStudent, studentOwns, telecallerLabel } from "@admin/lib/utils";
+import DeleteButton from "@admin/components/DeleteButton";
 import { Badge } from "@admin/components/ui/Badge";
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
@@ -487,6 +488,14 @@ export default function CounselorDetail() {
               <Trash2 className="h-4 w-4" />
               {busyAction === "remove" ? "Removing..." : "Remove counselor"}
             </Button>
+          )}
+          {isSuperAdmin && (
+            <DeleteButton
+              kind="staff"
+              id={String(counselor.auth_user_id || counselor.id)}
+              name={displayName(counselor.first_name, counselor.last_name, counselor.email)}
+              onDeleted={() => navigate("/students")}
+            />
           )}
         </div>
         {(students.length > 0 || leads.length > 0) && (

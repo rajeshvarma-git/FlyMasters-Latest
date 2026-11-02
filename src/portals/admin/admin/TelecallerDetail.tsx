@@ -5,6 +5,7 @@ import { api } from "@admin/lib/api";
 import { useAuth } from "@admin/context/AuthContext";
 import { refreshStore, useAdminStore } from "@admin/lib/store";
 import { counselorLabel, displayName, initials, isConvertedStudent, studentOwns } from "@admin/lib/utils";
+import DeleteButton from "@admin/components/DeleteButton";
 import { Badge } from "@admin/components/ui/Badge";
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
@@ -342,6 +343,14 @@ export default function TelecallerDetail() {
               <Trash2 className="h-4 w-4" />
               {busyAction === "remove" ? "Removing..." : "Remove telecaller"}
             </Button>
+          )}
+          {isSuperAdmin && (
+            <DeleteButton
+              kind="staff"
+              id={telecaller.id}
+              name={displayName(telecaller.first_name, telecaller.last_name, telecaller.email)}
+              onDeleted={() => navigate("/telecallers")}
+            />
           )}
         </div>
         {open.length > 0 && (
