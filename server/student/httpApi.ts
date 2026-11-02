@@ -198,6 +198,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
           email: body.email,
           password: body.password,
           user_metadata: body.user_metadata || body.data || {},
+          referral_code: body.referral_code,
         });
         if (result.error) {
           sendJson(res, result.status || 400, { error: result.error });

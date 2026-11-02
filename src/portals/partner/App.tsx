@@ -16,6 +16,7 @@ import Commissions from "@partner/screens/Commissions";
 export default function App() {
   const [profile, setProfile] = useState<PartnerProfile | null>(null);
   const [error, setError] = useState("");
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     void api<{ partner: PartnerProfile }>("/me")
@@ -72,10 +73,17 @@ export default function App() {
             <div className="mt-1 flex flex-wrap items-center gap-2">
               <code className="break-all rounded bg-white px-2 py-1 text-xs text-slate-700">{link}</code>
               <button
-                onClick={() => void navigator.clipboard?.writeText(link)}
+                onClick={() => {
+                  const done = () => { setCopied(true); setTimeout(() => setCopied(false), 2000); };
+                  if (navigator.clipboard?.writeText) {
+                    navigator.clipboard.writeText(link).then(done).catch(() => window.prompt("Copy this link:", link));
+                  } else {
+                    window.prompt("Copy this link:", link);
+                  }
+                }}
                 className="rounded-lg bg-navy-900 px-3 py-1 text-xs text-white"
               >
-                Copy
+                {copied ? "Link copied" : "Copy"}
               </button>
               <span className="text-xs text-slate-500">
                 or ask the student to enter <strong>{profile.code}</strong> when they sign up

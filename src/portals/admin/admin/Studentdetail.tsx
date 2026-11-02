@@ -2368,6 +2368,12 @@ export default function StudentDetail() {
                 <dd className="font-medium">{student.email}</dd>
                 <dt className="text-slate-500">Phone</dt>
                 <dd className="font-medium">{student.phone || "—"}</dd>
+                <dt className="text-slate-500">Referred by</dt>
+                <dd className="font-medium">
+                  {student.referred_by_name
+                    ? `${student.referred_by_name} (${student.referred_by_type || "partner"}) · ${student.referral_code_entered || ""}`
+                    : "Direct (no agent / partner)"}
+                </dd>
                 <dt className="text-slate-500">Countries</dt>
                 <dd className="font-medium">{(student.preferred_countries || []).join(", ") || "—"}</dd>
                 <dt className="text-slate-500">Field</dt>

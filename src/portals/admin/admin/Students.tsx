@@ -238,6 +238,11 @@ export default function Students() {
                   {(student.preferred_countries || []).join(", ") || "No country"} ·{" "}
                   {student.field_of_interest || "No field"}
                 </span>
+                {student.referred_by_name && (
+                  <span className="mt-1 inline-block rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800">
+                    Referred by {student.referred_by_name} ({student.referred_by_type || "partner"})
+                  </span>
+                )}
                 <span className="mt-1 block text-xs text-slate-400">
                   {student.assigned_counselor_id
                     ? `${counselorLabel(store.counselors, student.assigned_counselor_id)} · `

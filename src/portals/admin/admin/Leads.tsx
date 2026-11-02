@@ -591,6 +591,11 @@ export default function Leads() {
                 <div className="mt-1 flex flex-wrap gap-3 text-sm text-slate-500">
                   <span className="flex items-center gap-1"><Mail className="h-3 w-3" />{lead.email}</span>
                   {lead.phone && <span className="flex items-center gap-1"><Phone className="h-3 w-3" />{lead.phone}</span>}
+                  {lead.referred_by_name && (
+                    <span className="rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800" title={`Code ${lead.referral_code_entered || ""}`}>
+                      Referred by {lead.referred_by_name} ({lead.referred_by_type || "partner"})
+                    </span>
+                  )}
                 </div>
                 <p className="mt-2 text-sm">
                   {(lead.preferred_countries || []).join(", ") || "No country"} · {lead.field_of_interest || "No field"} · {lead.academic_score || "No score"}

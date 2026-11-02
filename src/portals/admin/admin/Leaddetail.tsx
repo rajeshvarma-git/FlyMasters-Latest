@@ -163,6 +163,11 @@ export default function LeadDetail() {
               {(lead.preferred_countries || []).join(", ") || "No country"} · {lead.field_of_interest || "No field"} ·{" "}
               {lead.academic_score || "No score"} · source {(lead.lead_source || "manual").replace(/_/g, " ")}
             </p>
+            {lead.referred_by_name && (
+              <p className="mt-2 text-sm font-medium text-amber-800">
+                Referred by {lead.referred_by_name} ({lead.referred_by_type || "partner"}) · code {lead.referral_code_entered}
+              </p>
+            )}
           </div>
         </div>
       </Card>

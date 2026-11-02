@@ -14,7 +14,7 @@ interface AuthContextType {
   loading: boolean;
   roleLoading: boolean;
   profileLoading: boolean;
-  signUp: (email: string, password: string, firstName: string, lastName: string) => Promise<{ error: any }>;
+  signUp: (email: string, password: string, firstName: string, lastName: string, referralCode?: string) => Promise<{ error: any }>;
   signIn: (email: string, password: string) => Promise<{ error: any }>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<{ error: any }>;
@@ -192,12 +192,14 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     email: string,
     password: string,
     firstName: string,
-    lastName: string
+    lastName: string,
+    referralCode?: string
   ) => {
     const { error } = await supabase.auth.signUp({
       email,
       password,
       options: {
+        referralCode: referralCode?.trim() || undefined,
         emailRedirectTo: `${window.location.origin}/`,
         data: {
           first_name: firstName,

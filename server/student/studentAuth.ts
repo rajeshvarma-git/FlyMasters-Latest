@@ -3,6 +3,7 @@ import { isEmailConfigured, sendVerificationEmail } from "./emailVerification";
 import { hashPassword, needsRehash, verifyPassword } from "./password";
 import { ensureSchema, getPool } from "./postgres";
 import { upsertUserRole } from "../lib/accountWrites.mjs";
+import { attachReferral } from "../lib/partners.mjs";
 import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
 
 const SESSION_DAYS = 30;
@@ -171,10 +172,13 @@ export async function signUpUser(input: {
   email: string;
   password: string;
   user_metadata?: Record<string, any>;
+  /** Code from a /r/<CODE> link or typed on the sign-up form. Optional. */
+  referral_code?: string;
 }): Promise<{ session?: AuthSession; error?: string; status?: number }> {
   await ensureSchema();
   const email = normalizeEmail(input.email);
   const password = String(input.password || "");
+  const referralCode = String(input.referral_code || "").trim().slice(0, 40);
   const firstName = String(input.user_metadata?.first_name || "").trim();
   const lastName = String(input.user_metadata?.last_name || "").trim();
   if (!email || !email.includes("@")) return { error: "Enter a valid email address.", status: 400 };
@@ -211,10 +215,11 @@ export async function signUpUser(input: {
   // them exist or none do, so a failure can't leave half a student behind.
   const now = new Date().toISOString();
   const record = (table: string, data: Record<string, any>) => ({ table, data: { ...data, created_at: now, updated_at: now } });
+  const leadId = crypto.randomUUID();
   const records = [
     record("profiles", { id: crypto.randomUUID(), user_id: user.id, first_name: firstName, last_name: lastName }),
     record("student_leads", {
-      id: crypto.randomUUID(),
+      id: leadId,
       user_id: user.id,
       email,
       first_name: firstName,
@@ -252,6 +257,17 @@ export async function signUpUser(input: {
     throw error;
   } finally {
     client.release();
+  }
+
+  // Attribute the referral only after the account is safely committed. This is
+  // best-effort on purpose: a bad or expired code must never block a sign-up.
+  // attachReferral writes every attempt (accepted or refused) to referral_events.
+  if (referralCode) {
+    try {
+      await attachReferral(leadId, referralCode, { source: "signup" });
+    } catch (error) {
+      console.error("referral attach failed at sign-up", error);
+    }
   }
 
   return { session: await createSession(publicUser(user)) };

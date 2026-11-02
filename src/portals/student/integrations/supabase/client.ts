@@ -486,7 +486,7 @@ export const supabase = {
     }: {
       email: string;
       password: string;
-      options?: { data?: Record<string, any>; emailRedirectTo?: string };
+      options?: { data?: Record<string, any>; emailRedirectTo?: string; referralCode?: string };
     }) {
       try {
         const payload = await fetchJson(apiUrl("/__auth"), {
@@ -494,6 +494,7 @@ export const supabase = {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "signup",
+            referral_code: options?.referralCode || undefined,
             email: String(email || "").trim(),
             password,
             user_metadata: options?.data || {},

@@ -1327,6 +1327,35 @@ async function scopedRows(table, orderBy, scope) {
     .catch(() => ({ rows: [] }));
 }
 
+/**
+ * Who referred each lead. The referrer lives in columns on app_records (not in
+ * the JSON data), so the generic table reader never returned it and no admin
+ * screen could show it. One query, keyed by lead id.
+ */
+async function loadReferralMap() {
+  const { rows } = await pool.query(
+    `SELECT r.id, r.referred_by_partner_id, r.referral_code_entered, r.referral_source,
+            p.type, COALESCE(NULLIF(p.business_name, ''), p.full_name) AS name
+       FROM app_records r
+       JOIN partners p ON p.id = r.referred_by_partner_id
+      WHERE r.table_name = 'student_leads' AND r.referred_by_partner_id IS NOT NULL`,
+  ).catch(() => ({ rows: [] }));
+  return new Map(rows.map((row) => [String(row.id), row]));
+}
+
+function withReferral(lead, referralMap) {
+  const ref = referralMap.get(String(lead.id));
+  if (!ref) return lead;
+  return {
+    ...lead,
+    referred_by_partner_id: String(ref.referred_by_partner_id),
+    referred_by_name: ref.name,
+    referred_by_type: ref.type,
+    referral_code_entered: ref.referral_code_entered,
+    referral_source: ref.referral_source,
+  };
+}
+
 async function loadState(scope = null) {
   const [
     sqlLeads,
@@ -1397,10 +1426,11 @@ async function loadState(scope = null) {
     loadUsers(),
   ]);
 
+  const referralMap = await loadReferralMap();
   const allLeads = mergeLeadSources(
     sqlLeads.rows.map(asLead),
     jsonLeads.map(asLead),
-  ).map((lead) => {
+  ).map((lead) => withReferral(lead, referralMap)).map((lead) => {
     const person = directory.find((item) => item.user_id === String(lead.user_id) || emailsMatch(item.email, lead.email));
     if (!person) return lead;
     return {
