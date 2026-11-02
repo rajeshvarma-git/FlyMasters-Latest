@@ -152,6 +152,14 @@ export function counselorOwns(
  * Documents, applications, shortlists and conversations key off a student id that may
  * be either the lead's user_id or the lead's own id. Always check both.
  */
+/** A shortlist belongs to the student by id (user_id or lead id) or, failing that, by email. */
+export function ownsShortlist(student: { id: string; user_id?: string; email?: string | null }, row: { student_id?: string | null; student_email?: string | null }) {
+  if (studentOwns(student, row.student_id)) return true;
+  const a = String(student.email || "").trim().toLowerCase();
+  const b = String(row.student_email || "").trim().toLowerCase();
+  return Boolean(a && b && a === b);
+}
+
 export function studentOwns(student: { id: string; user_id?: string }, ownerId?: string | null) {
   if (!ownerId) return false;
   return ownerId === student.user_id || ownerId === student.id;

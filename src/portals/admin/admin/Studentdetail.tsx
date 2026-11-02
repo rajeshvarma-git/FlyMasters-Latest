@@ -1948,7 +1948,7 @@ import { format } from "date-fns";
 import { ArrowLeft, BookOpen, ClipboardCheck, FileText, MessageCircle, MessagesSquare, PhoneCall, University, User } from "lucide-react";
 import { api } from "@admin/lib/api";
 import { refreshStore, useAdminStore } from "@admin/lib/store";
-import { counselorLabel, counselorOwns, displayName, initials, isConvertedStudent, studentOwns, telecallerLabel } from "@admin/lib/utils";
+import { counselorLabel, counselorOwns, displayName, initials, isConvertedStudent, ownsShortlist, studentOwns, telecallerLabel } from "@admin/lib/utils";
 import { Badge } from "@admin/components/ui/Badge";
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
@@ -2065,7 +2065,7 @@ export default function StudentDetail() {
     [student, store.applications],
   );
   const shortlists = useMemo(
-    () => (student ? store.shortlists.filter((row) => studentOwns(student, row.student_id)) : []),
+    () => (student ? store.shortlists.filter((row) => ownsShortlist(student, row as any)) : []),
     [student, store.shortlists],
   );
   const messages = useMemo(() => {

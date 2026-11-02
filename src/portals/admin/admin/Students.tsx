@@ -152,7 +152,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronRight, GraduationCap } from "lucide-react";
 import { useAdminStore } from "@admin/lib/store";
-import { counselorLabel, displayName, initials, isConvertedStudent, studentOwns } from "@admin/lib/utils";
+import { counselorLabel, displayName, initials, isConvertedStudent, ownsShortlist, studentOwns } from "@admin/lib/utils";
 import { Badge } from "@admin/components/ui/Badge";
 import { Card } from "@admin/components/ui/Card";
 import { Input } from "@admin/components/ui/Field";
@@ -183,7 +183,7 @@ export default function Students() {
   const summarise = (student: Lead) => {
     const docs = store.documents.filter((doc) => !doc.archived && studentOwns(student, doc.user_id));
     const apps = store.applications.filter((app) => studentOwns(student, app.user_id));
-    const lists = store.shortlists.filter((row) => studentOwns(student, row.student_id));
+    const lists = store.shortlists.filter((row) => ownsShortlist(student, row as any));
     const threadIds = new Set(
       store.conversations.filter((row) => studentOwns(student, row.student_id)).map((row) => row.id),
     );
