@@ -82,7 +82,7 @@ export default function NotificationBell({
       {open && (
         <div className={`z-50 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg ${
           placement === "side"
-            ? "fixed bottom-20 left-3 right-3 md:absolute md:bottom-0 md:left-full md:right-auto md:ml-2 md:w-[22rem]"
+            ? "fixed left-3 right-3 top-16 md:absolute md:left-full md:right-auto md:top-0 md:ml-2 md:w-[22rem]"
             : "absolute right-0 top-full mt-2 w-[min(22rem,calc(100vw-2rem))]"
         }`}>
           <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">

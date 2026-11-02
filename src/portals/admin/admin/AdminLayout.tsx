@@ -152,10 +152,12 @@ export default function AdminLayout() {
         <div className="flex h-9 w-9 items-center justify-center rounded-full bg-sky-500 text-white">
           <Shield className="h-5 w-5" />
         </div>
-        <div>
+        <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-white">Admin Portal</p>
           <p className="text-xs text-slate-400">Fly Masters</p>
         </div>
+        {/* The one bell: at the top of the sidebar so it is always in view, never scrolled away. */}
+        <NotificationBell placement="side" light extraCount={alertCount} />
       </div>
       <nav className="flex-1 overflow-y-auto py-4">
         {groups
@@ -215,7 +217,6 @@ export default function AdminLayout() {
             <p className="truncate text-sm font-medium text-white">{displayName(user?.firstName, user?.lastName)}</p>
             <p className="text-xs capitalize text-slate-400">{user?.role?.replace("_", " ")}</p>
           </div>
-          <NotificationBell placement="side" light extraCount={alertCount} />
         </div>
         <Button
           variant="ghost"
@@ -236,7 +237,7 @@ export default function AdminLayout() {
       <Button variant="ghost" size="sm" className="fixed left-3 top-3 z-50 md:hidden" onClick={() => setOpen(!open)}>
         {open ? <X /> : <Menu />}
       </Button>
-      <aside className="hidden w-64 flex-col bg-navy-950 md:flex">
+      <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col bg-navy-950 md:flex">
         {renderNav()}
       </aside>
       {open && (
@@ -248,7 +249,7 @@ export default function AdminLayout() {
         </>
       )}
       <main className="flex-1 overflow-y-auto">
-        {/* No top header: the bell lives in the sidebar, next to the signed-in user. */}
+        {/* No top header: the bell lives at the top of the sidebar. */}
         <AlertCenter fetchJson={api} hideBadge onUnread={setAlertCount} />
         <div className="p-4 pt-14 md:p-8 md:pt-8">
         {store.error && (
