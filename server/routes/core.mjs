@@ -2946,13 +2946,19 @@ router.post("/api/salary", auth, async (req, res) => {
   if (!counselorId || !month) return res.status(400).json({ error: "Counselor, month, and amount are required." });
   if (!isUuid(counselorId)) return res.status(400).json({ error: "This counselor record is not linked to HR tables yet." });
   if (!(await allow(res, checkStaffInScope(pool, req.scope, counselorId)))) return;
-  const row = await pool.query(
-    `INSERT INTO counselor_salary_records (counselor_id, month, year, net_salary, notes)
-     VALUES ($1,$2,$3,$4,$5)
-     ON CONFLICT (counselor_id, month, year) DO UPDATE SET net_salary = EXCLUDED.net_salary, notes = EXCLUDED.notes
-     RETURNING *`,
+  // Update-then-insert rather than ON CONFLICT: the table has no unique index on every database.
+  let row = await pool.query(
+    `UPDATE counselor_salary_records SET net_salary = $4, notes = $5
+      WHERE counselor_id = $1 AND month = $2 AND year = $3 RETURNING *`,
     [counselorId, month, year, net, notes],
   );
+  if (!row.rows[0]) {
+    row = await pool.query(
+      `INSERT INTO counselor_salary_records (counselor_id, month, year, net_salary, notes)
+       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+      [counselorId, month, year, net, notes],
+    );
+  }
   await notify(counselorId, "Salary posted", `${month} ${year}: ₹${net}`, "info", "/counselor/salary");
   res.json(row.rows[0]);
 });
