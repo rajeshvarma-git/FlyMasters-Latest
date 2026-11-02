@@ -48,7 +48,7 @@ interface Lead {
 
 interface CounselorStats {
   totalAssignedLeads: number;
-  hotLeads: number;
+  applications: number;
   conversionsThisMonth: number;
   followUpsToday: number;
   averageResponseTime: number;
@@ -61,7 +61,7 @@ export function CounselorDashboard() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [stats, setStats] = useState<CounselorStats>({
     totalAssignedLeads: 0,
-    hotLeads: 0,
+    applications: 0,
     conversionsThisMonth: 0,
     followUpsToday: 0,
     averageResponseTime: 0,
@@ -123,7 +123,13 @@ export function CounselorDashboard() {
       today.setHours(0, 0, 0, 0);
 
       const totalAssignedLeads = leads?.length || 0;
-      const hotLeads = leads?.filter(lead => lead.lead_stage === 'hot').length || 0;
+      // Applications of the students assigned to this counselor (replaces the old "hot leads" count).
+      const studentIds = [...new Set((leads || []).flatMap((lead: any) => [lead.user_id, lead.id]).filter(Boolean))] as string[];
+      let applications = 0;
+      if (studentIds.length) {
+        const { data: apps } = await supabase.from('applications').select('*').in('user_id', studentIds);
+        applications = apps?.length || 0;
+      }
       const conversionsThisMonth = leads?.filter(lead => 
         lead.lead_stage === 'converted' && 
         lead.conversion_date && 
@@ -143,7 +149,7 @@ export function CounselorDashboard() {
 
       setStats({
         totalAssignedLeads,
-        hotLeads,
+        applications,
         conversionsThisMonth,
         followUpsToday,
         averageResponseTime: 2.5, // This would be calculated from actual response times
@@ -356,10 +362,10 @@ export function CounselorDashboard() {
             
             <Card>
               <CardContent className="p-4 text-center">
-                <div className="text-2xl font-bold text-red-600">{stats.hotLeads}</div>
+                <div className="text-2xl font-bold text-red-600">{stats.applications}</div>
                 <div className="text-sm text-muted-foreground flex items-center justify-center gap-1">
                   <TrendingUp className="h-3 w-3" />
-                  Hot Leads
+                  Applications
                 </div>
               </CardContent>
             </Card>
