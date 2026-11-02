@@ -9,14 +9,14 @@ import NotFound from "@admin/pages/NotFound";
 import AdminLayout from "@admin/admin/AdminLayout";
 import Dashboard from "@admin/admin/Dashboard";
 import LeadAlerts from "@admin/admin/Leadalerts";
-import Leads from "@admin/admin/Leads";
+import PipelineHub from "@admin/admin/PipelineHub";
+import PeopleHub from "@admin/admin/PeopleHub";
+import TeamStatus from "@admin/admin/TeamStatus";
 import LeadDetail from "@admin/admin/Leaddetail";
 import CounselorsHub from "@admin/admin/CounselorsHub";
 import CounselorDetail from "@admin/admin/Counselordetail";
 import StudentDetail from "@admin/admin/Studentdetail";
-import Students from "@admin/admin/Students";
 import Documents from "@admin/admin/Documents";
-import Applications from "@admin/admin/Applications";
 import Shortlists from "@admin/admin/Shortlists";
 import ChatMonitor from "@admin/admin/ChatMonitor";
 import AiChat from "@admin/admin/AiChat";
@@ -91,13 +91,13 @@ export default function App() {
             >
               <Route index element={<Dashboard />} />
               <Route path="alerts" element={<LeadAlerts />} />
-              <Route path="leads" element={<Leads />} />
+              <Route path="leads" element={<PipelineHub />} />
               <Route path="leads/:id" element={<LeadDetail />} />
               <Route path="unassigned" element={<Navigate to="/counselors?tab=assign" replace />} />
-              <Route path="students" element={<Students />} />
+              <Route path="students" element={<PeopleHub />} />
               <Route path="students/:id" element={<StudentDetail />} />
               <Route path="documents" element={<Documents />} />
-              <Route path="applications" element={<Applications />} />
+              <Route path="applications" element={<Navigate to="/leads?view=applications" replace />} />
               <Route path="shortlists" element={<Shortlists />} />
               <Route path="chat" element={<ChatMonitor />} />
               <Route path="whatsapp" element={<WhatsAppChat />} />
@@ -126,6 +126,7 @@ export default function App() {
               <Route path="escalations" element={<Escalations />} />
               <Route path="change-history" element={<ChangeHistory />} />
               <Route path="notifications" element={<Notifications />} />
+              <Route path="team-status" element={<TeamStatus />} />
               <Route path="telecallers" element={<Telecallers />} />
               <Route path="telecallers/:id" element={<TelecallerDetail />} />
               <Route path="help" element={<Help />} />

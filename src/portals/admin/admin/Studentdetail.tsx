@@ -2418,6 +2418,32 @@ export default function StudentDetail() {
                 <p className="mt-5 whitespace-pre-wrap text-xs text-slate-500">{student.notes}</p>
               )}
             </Card>
+
+            <Card className="p-5 lg:col-span-2">
+              <div className="mb-3 flex items-center justify-between">
+                <p className="font-bold">Shortlisted universities ({shortlists.length})</p>
+                {shortlists.length > 0 && (
+                  <button type="button" className="text-xs font-semibold text-sky-700" onClick={() => setTab("shortlists")}>
+                    View all
+                  </button>
+                )}
+              </div>
+              {shortlists.length === 0 ? (
+                <p className="text-sm text-slate-500">No universities shortlisted yet.</p>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {shortlists.slice(0, 6).map((row) => (
+                    <div key={row.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold">{row.university_name}</p>
+                        <p className="truncate text-xs text-slate-500">{row.course_name}{row.location ? ` · ${row.location}` : ""}</p>
+                      </div>
+                      <Badge value={row.status || "requested"} />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </Card>
           </div>
         )}
 

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
-import { Flame, LogIn, LogOut, Phone, Target, Timer, TrendingUp, Users } from "lucide-react";
+import { BookOpen, GraduationCap, LogIn, LogOut, Phone, Target, Timer, TrendingUp, Users } from "lucide-react";
 import { format } from "date-fns";
 import { useAuth } from "@counselor/context/AuthContext";
 import { addAttendance, updateAttendance, useLocalStore } from "@counselor/lib/store";
@@ -70,17 +70,25 @@ export default function CounselorHome() {
 
   const students = leads.filter((lead) => isConvertedStudent(lead));
   const openLeads = leads.filter((lead) => isOpenLead(lead));
-  const hot = openLeads.filter((lead) => lead.lead_status === "hot");
+  const mine = (userId: string) => leads.some((lead) => lead.user_id === userId || lead.id === userId);
+  const myApplications = store.applications.filter((row) => mine(row.user_id));
+  const pendingApplications = myApplications.filter((row) => row.status === "pending_counselor" || row.status === "submitted");
+  const myShortlists = store.shortlists.filter((row) => mine(row.student_id));
+  const nameOf = (userId: string) => {
+    const lead = leads.find((row) => row.user_id === userId || row.id === userId);
+    return lead ? `${lead.first_name || ""} ${lead.last_name || ""}`.trim() || lead.email : "Student";
+  };
   const followUps = openLeads.filter((lead) => lead.next_follow_up_date?.slice(0, 10) === today);
   const rate = leads.length ? Math.round((students.length / leads.length) * 100) : 0;
 
   const stats = useMemo(() => [
     { label: "Assigned leads", value: openLeads.length, icon: Phone },
     { label: "My students", value: students.length, icon: Users },
-    { label: "Hot leads", value: hot.length, icon: Flame },
+    { label: "Applications", value: myApplications.length, icon: BookOpen },
+    { label: "Shortlisted", value: myShortlists.length, icon: GraduationCap },
     { label: "Follow-ups today", value: followUps.length, icon: Target },
     { label: "Conversion rate", value: `${rate}%`, icon: TrendingUp },
-  ], [openLeads.length, students.length, hot.length, followUps.length, rate]);
+  ], [openLeads.length, students.length, myApplications.length, myShortlists.length, followUps.length, rate]);
 
   return (
     <div>
@@ -109,7 +117,7 @@ export default function CounselorHome() {
         </Card>
       </div>
 
-      <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
         {stats.map((item) => (
           <Card key={item.label} className="p-4">
             <item.icon className="h-5 w-5 text-sky-500" />
@@ -117,6 +125,35 @@ export default function CounselorHome() {
             <p className="text-sm text-slate-500">{item.label}</p>
           </Card>
         ))}
+      </div>
+
+      <div className="mt-6 grid gap-4 lg:grid-cols-2">
+        <Card className="p-5">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="font-semibold">Applications needing review ({pendingApplications.length})</h2>
+            <Link to="/applications" className="text-sm text-sky-600">Open Applications</Link>
+          </div>
+          {pendingApplications.length === 0 && <p className="text-sm text-slate-500">No applications waiting.</p>}
+          {pendingApplications.slice(0, 5).map((row) => (
+            <div key={row.id} className="border-t py-3 first:border-0">
+              <p className="font-medium">{nameOf(row.user_id)}</p>
+              <p className="text-xs text-slate-500">{row.university_name} — {row.course_name}</p>
+            </div>
+          ))}
+        </Card>
+        <Card className="p-5">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="font-semibold">Shortlisted candidates ({myShortlists.length})</h2>
+            <Link to="/shortlists" className="text-sm text-sky-600">Open Shortlists</Link>
+          </div>
+          {myShortlists.length === 0 && <p className="text-sm text-slate-500">No shortlists yet.</p>}
+          {myShortlists.slice(0, 5).map((row) => (
+            <div key={row.id} className="border-t py-3 first:border-0">
+              <p className="font-medium">{nameOf(row.student_id)}</p>
+              <p className="text-xs text-slate-500">{row.university_name} — {row.course_name}</p>
+            </div>
+          ))}
+        </Card>
       </div>
 
       <Card className="mt-6 p-5">

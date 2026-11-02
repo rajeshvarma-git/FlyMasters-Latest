@@ -3,7 +3,7 @@ import { format } from "date-fns";
 import { BookOpen } from "lucide-react";
 import { api } from "@admin/lib/api";
 import { refreshStore, useAdminStore } from "@admin/lib/store";
-import { personName } from "@admin/lib/utils";
+import { counselorLabel, personName } from "@admin/lib/utils";
 import { Badge } from "@admin/components/ui/Badge";
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
@@ -32,6 +32,11 @@ export default function Applications() {
       .filter((app) => `${personName(store.leads, app.user_id)} ${app.university_name} ${app.course_name}`.toLowerCase().includes(q))
       .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
   }, [store.applications, store.leads, query, statusFilter]);
+
+  const counselorOf = (userId: string) => {
+    const lead = store.leads.find((row) => row.user_id === userId || row.id === userId);
+    return counselorLabel(store.counselors, lead?.assigned_counselor_id);
+  };
 
   const reviewApp = store.applications.find((app) => app.id === reviewId) || null;
 
@@ -72,7 +77,7 @@ export default function Applications() {
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="font-semibold">{app.university_name} — {app.course_name}</p>
-                <p className="text-sm text-slate-500">{personName(store.leads, app.user_id)} · {app.country} {app.intake_term && `· ${app.intake_term}`}</p>
+                <p className="text-sm text-slate-500">{personName(store.leads, app.user_id)} · Counselor: <span className="font-medium text-slate-700">{counselorOf(app.user_id)}</span> · {app.country} {app.intake_term && `· ${app.intake_term}`}</p>
                 {app.created_at && <p className="text-xs text-slate-400">{format(new Date(app.created_at), "PP p")}</p>}
               </div>
               <div className="flex items-center gap-2">

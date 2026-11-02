@@ -5,6 +5,7 @@ import {
   BellRing,
   Building2,
   FileText,
+  Activity,
   Flag,
   Eye,
   History,
@@ -64,10 +65,10 @@ const groups = [
     title: "CRM",
     roles: OPERATIONS,
     items: [
-      { to: "/leads", label: "Leads", icon: PhoneCall, end: false },
+      { to: "/leads", label: "Leads & Applications", icon: PhoneCall, end: false },
       { to: "/telecallers", label: "Telecallers", icon: Phone, end: false },
-      { to: "/students", label: "Students", icon: GraduationCap, end: false },
-      { to: "/counselors", label: "Counselors", icon: Shield, end: false },
+      { to: "/students", label: "Students & Counselors", icon: GraduationCap, end: false },
+      { to: "/team-status", label: "Team status", icon: Activity, end: false },
     ],
   },
   {
