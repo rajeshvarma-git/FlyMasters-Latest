@@ -252,7 +252,7 @@ export default function Dashboard() {
     { label: "Leads", value: leads.length, icon: PhoneCall, to: "/leads" },
     { label: "Hot leads", value: hot.length, icon: Flame, to: "/leads" },
     { label: "Students", value: students.length, icon: GraduationCap, to: "/students" },
-    { label: "Need counselor", value: unassignedCounselor.length, icon: Target, to: "/counselors?tab=assign" },
+    { label: "Need counselor", value: unassignedCounselor.length, icon: Target, to: "/students?view=assign" },
     { label: "With a counselor", value: withCounselor, icon: Users, to: "/students" },
     { label: "Converted this month", value: convertedThisMonth, icon: GraduationCap, to: "/students" },
     { label: "Docs to review", value: pendingDocs.length, icon: FileText, to: "/documents" },

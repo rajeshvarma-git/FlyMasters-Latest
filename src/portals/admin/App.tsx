@@ -2,7 +2,7 @@ import { Component, type ReactNode } from "react";
 import { RequireAuth } from "@admin/components/RequireAuth";
 import CaseInbox from "@shared/components/CaseInbox";
 import RedirectToStaffSignIn from "@shared/RedirectToStaffSignIn";
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useSearchParams } from "react-router-dom";
 import { AuthProvider } from "@admin/context/AuthContext";
 import Auth from "@admin/pages/Auth";
 import NotFound from "@admin/pages/NotFound";
@@ -12,8 +12,13 @@ import LeadAlerts from "@admin/admin/Leadalerts";
 import PipelineHub from "@admin/admin/PipelineHub";
 import PeopleHub from "@admin/admin/PeopleHub";
 import TeamStatus from "@admin/admin/TeamStatus";
+
+/** The old Counselors menu entry now lives inside Students & Counselors; keep old links working. */
+function CounselorsRedirect() {
+  const [params] = useSearchParams();
+  return <Navigate to={params.get("tab") === "assign" ? "/students?view=assign" : "/students?view=counselors"} replace />;
+}
 import LeadDetail from "@admin/admin/Leaddetail";
-import CounselorsHub from "@admin/admin/CounselorsHub";
 import CounselorDetail from "@admin/admin/Counselordetail";
 import StudentDetail from "@admin/admin/Studentdetail";
 import Documents from "@admin/admin/Documents";
@@ -93,7 +98,7 @@ export default function App() {
               <Route path="alerts" element={<LeadAlerts />} />
               <Route path="leads" element={<PipelineHub />} />
               <Route path="leads/:id" element={<LeadDetail />} />
-              <Route path="unassigned" element={<Navigate to="/counselors?tab=assign" replace />} />
+              <Route path="unassigned" element={<Navigate to="/students?view=assign" replace />} />
               <Route path="students" element={<PeopleHub />} />
               <Route path="students/:id" element={<StudentDetail />} />
               <Route path="documents" element={<Documents />} />
@@ -106,7 +111,7 @@ export default function App() {
               <Route path="branches" element={<Branches />} />
               <Route path="partners" element={<Partners />} />
               <Route path="finance" element={<Finance />} />
-              <Route path="counselors" element={<CounselorsHub />} />
+              <Route path="counselors" element={<CounselorsRedirect />} />
               <Route path="counselors/:id" element={<CounselorDetail />} />
               <Route path="hr" element={<HR />} />
               <Route path="universities" element={<Universities />} />

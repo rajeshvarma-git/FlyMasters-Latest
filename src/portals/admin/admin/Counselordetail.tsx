@@ -202,7 +202,7 @@ export default function CounselorDetail() {
   if (!counselor) {
     return (
       <div>
-        <Link to="/counselors" className="mb-4 inline-flex items-center gap-2 text-sm text-slate-600 hover:text-sky-600">
+        <Link to="/students?view=counselors" className="mb-4 inline-flex items-center gap-2 text-sm text-slate-600 hover:text-sky-600">
           <ArrowLeft className="h-4 w-4" /> Back to counselors
         </Link>
         <Card className="p-8 text-center text-sm text-slate-500">
@@ -358,7 +358,7 @@ export default function CounselorDetail() {
         body: transferTargetId ? { targetCounselorId: transferTargetId } : {},
       });
       await refreshStore();
-      navigate("/counselors", { replace: true });
+      navigate("/students?view=counselors", { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not remove counselor.");
     } finally {
@@ -390,7 +390,7 @@ export default function CounselorDetail() {
 
   return (
     <div>
-      <Link to="/counselors" className="mb-4 inline-flex items-center gap-2 text-sm text-slate-600 hover:text-sky-600">
+      <Link to="/students?view=counselors" className="mb-4 inline-flex items-center gap-2 text-sm text-slate-600 hover:text-sky-600">
         <ArrowLeft className="h-4 w-4" /> Back to counselors
       </Link>
 
@@ -431,7 +431,7 @@ export default function CounselorDetail() {
             </p>
             {counselor.bio && <p className="mt-3 text-sm text-slate-600">{counselor.bio}</p>}
           </div>
-          <Link to="/counselors?tab=assign">
+          <Link to="/students?view=assign">
             <Button size="sm">Assign students</Button>
           </Link>
         </div>
