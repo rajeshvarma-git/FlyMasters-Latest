@@ -75,13 +75,19 @@ function playTone(name: string) {
 export default function AlertCenter({
   fetchJson,
   pollMs = 20000,
+  hideBadge = false,
+  onUnread,
 }: {
   /** the portal's own api helper, so this component carries no auth logic */
   fetchJson: <T>(path: string, options?: { method?: string; body?: unknown }) => Promise<T>;
   pollMs?: number;
+  /** a portal that shows the count inside its own bell hides the separate red pill */
+  hideBadge?: boolean;
+  onUnread?: (count: number) => void;
 }) {
   const [queue, setQueue] = useState<Alert[]>([]);
   const [unread, setUnread] = useState(0);
+  useEffect(() => { onUnread?.(unread); }, [unread, onUnread]);
   const seen = useRef<Set<string>>(new Set());
 
   const poll = useCallback(async () => {
@@ -130,7 +136,7 @@ export default function AlertCenter({
 
   return (
     <>
-      {unread > 0 && (
+      {unread > 0 && !hideBadge && (
         <span
           className="inline-flex items-center gap-1 rounded-full bg-rose-500 px-2 py-0.5 text-[11px] font-semibold text-white"
           title={`${unread} alert${unread === 1 ? "" : "s"} waiting`}

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { Bot, GraduationCap, Headphones, MessageCircle, RefreshCw, Search, Send, User } from "lucide-react";
+import { Bot, GraduationCap, Headphones, MessageCircle, Search, Send, User } from "lucide-react";
 
 /**
  * Staff side of the one-student-one-conversation chat (server/routes/cases.mjs).
@@ -249,13 +249,6 @@ export default function CaseInbox({ title = "Student Chat" }: { title?: string }
           <h1 className="text-xl font-semibold">{title}</h1>
           <p className="text-sm text-slate-500">One conversation per student — AI advisor, telecaller and counselor in the same thread.</p>
         </div>
-        <button
-          type="button"
-          onClick={() => loadList().catch(() => {})}
-          className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm hover:bg-slate-50"
-        >
-          <RefreshCw className="h-4 w-4" /> Refresh
-        </button>
       </div>
 
       <div className="flex min-h-0 flex-1 overflow-hidden rounded-xl border bg-white">

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CheckCircle2, RefreshCw, XCircle } from "lucide-react";
+import { CheckCircle2, XCircle } from "lucide-react";
 import { api } from "@admin/lib/api";
 import { Card } from "@admin/components/ui/Card";
 
@@ -55,8 +55,13 @@ export default function WhatsAppHealth() {
     }
   };
 
+  // Updates itself: no Refresh button. Quiet background reloads every 10s while the tab is visible.
   useEffect(() => {
-    load();
+    void load();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void load();
+    }, 10000);
+    return () => window.clearInterval(timer);
   }, []);
 
   const ok = data && data.problems.length === 0;
@@ -70,12 +75,10 @@ export default function WhatsAppHealth() {
             WhatsApp health
           </h2>
           <p className="text-xs text-slate-500">
-            Send "hi" from a phone to the Fly Masters WhatsApp number, then press Refresh. Logs start from the last server restart{data ? ` (${when(data.since)})` : ""}.
+            Send "hi" from a phone to the Fly Masters WhatsApp number, this list updates by itself. Logs start from the last server restart{data ? ` (${when(data.since)})` : ""}.
           </p>
         </div>
-        <button type="button" onClick={load} className="inline-flex items-center gap-1 rounded-lg border px-2.5 py-1.5 text-xs hover:bg-slate-50">
-          <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} /> Refresh
-        </button>
+        {loading ? <span className="text-xs text-slate-400">Updating…</span> : null}
       </div>
 
       {error && <p className="mt-3 text-sm text-red-600">{error}</p>}
