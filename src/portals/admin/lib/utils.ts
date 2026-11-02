@@ -23,6 +23,20 @@ export function counselorLabel(
   return displayName(found.first_name, found.last_name, found.email || "Counselor");
 }
 
+/** Counselor on an application: the one who started it, else the one assigned to the student (matched by id or email). */
+export function applicationCounselorLabel(
+  counselors: Array<{ id: string; auth_user_id?: string | null; first_name?: string; last_name?: string; email?: string }>,
+  leads: Array<{ id: string; user_id?: string | null; email?: string | null; assigned_counselor_id?: string | null }>,
+  app: { user_id: string; counselor_id?: string | null; student_email?: string | null },
+) {
+  const email = String(app.student_email || "").trim().toLowerCase();
+  const lead = leads.find((row) => row.user_id === app.user_id || row.id === app.user_id)
+    || (email ? leads.find((row) => String(row.email || "").trim().toLowerCase() === email) : undefined);
+  const known = (id?: string | null) => Boolean(id && counselors.some((row) => row.id === id || row.auth_user_id === id));
+  const id = known(app.counselor_id) ? app.counselor_id : known(lead?.assigned_counselor_id) ? lead?.assigned_counselor_id : app.counselor_id || lead?.assigned_counselor_id;
+  return counselorLabel(counselors, id);
+}
+
 export function telecallerLabel(
   telecallers: Array<{ id: string; first_name?: string; last_name?: string; email?: string }>,
   id?: string | null,

@@ -132,6 +132,8 @@ export interface ApplicationRow {
   created_at: string | null;
   submitted_at?: string | null;
   started_by?: string | null;
+  counselor_id?: string | null;
+  student_email?: string | null;
 }
 
 export interface ShortlistRow {
