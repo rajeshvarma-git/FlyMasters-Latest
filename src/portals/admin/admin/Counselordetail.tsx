@@ -489,14 +489,13 @@ export default function CounselorDetail() {
               {busyAction === "remove" ? "Removing..." : "Remove counselor"}
             </Button>
           )}
-          {isSuperAdmin && (
-            <DeleteButton
+          <DeleteButton
               kind="staff"
+              targetRole="counselor"
               id={String(counselor.auth_user_id || counselor.id)}
               name={displayName(counselor.first_name, counselor.last_name, counselor.email)}
               onDeleted={() => navigate("/students")}
             />
-          )}
         </div>
         {(students.length > 0 || leads.length > 0) && (
           <p className="mt-3 text-xs text-slate-500">

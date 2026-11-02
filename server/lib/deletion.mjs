@@ -41,10 +41,10 @@ export const DELETE_KINDS = ["lead", "student", "staff", "partner"];
 
 // ----------------------------------------------------------------------------- leads / students
 async function findLead(db, id) {
-  const sql = await tryRun(db, "SELECT * FROM student_leads WHERE id::text = $1", [id]);
+  const sql = await tryRun(db, "SELECT * FROM student_leads WHERE id::text = $1 OR user_id::text = $1", [id]);
   const json = await tryRun(
     db,
-    "SELECT id, data FROM app_records WHERE table_name = 'student_leads' AND (id = $1 OR data->>'id' = $1)",
+    "SELECT id, data FROM app_records WHERE table_name = 'student_leads' AND (id = $1 OR data->>'id' = $1 OR data->>'user_id' = $1)",
     [id],
   );
   const sqlRow = sql.rows[0] || null;

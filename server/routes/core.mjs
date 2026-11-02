@@ -4194,14 +4194,27 @@ router.patch("/api/partners/:id", auth, async (req, res) => {
   }
 });
 
+/** Who may delete what. A Super Admin may delete anything (except a Super Admin account); an Admin only students and
+ *  telecaller / counselor / accountant accounts. Leads, partners and other admins stay Super Admin only. */
+const ADMIN_DELETABLE_STAFF = ["telecaller", "counselor", "accountant"];
+const deleteAuth = [session, requireRole(ADMIN_ROLES, "Admin"), branchScope];
+
 /**
- * Super Admin only: permanently delete a lead/student, an employee, or a partner.
+ * Permanently delete a lead/student, an employee, or a partner (see the rule above).
  * The caller must send confirm: "DELETE". Everything removed is snapshotted into audit_log first,
  * and the delete refuses (409) rather than orphaning commissions, owned leads or referral history.
  */
-router.post("/api/admin/delete/:kind/:id", superAdminAuth, async (req, res) => {
+router.post("/api/admin/delete/:kind/:id", deleteAuth, async (req, res) => {
   const { kind, id } = req.params;
   if (!DELETE_KINDS.includes(kind)) return res.status(400).json({ error: "Unknown kind of record." });
+  if (req.user.role !== "super_admin") {
+    let allowed = kind === "student";
+    if (kind === "staff") {
+      const target = await pool.query("SELECT role FROM user_roles WHERE user_id = $1", [String(id)]).catch(() => ({ rows: [] }));
+      allowed = ADMIN_DELETABLE_STAFF.includes(String(target.rows[0]?.role || ""));
+    }
+    if (!allowed) return res.status(403).json({ error: "Only a Super Admin can delete this." });
+  }
   if (String(req.body?.confirm || "") !== "DELETE") {
     return res.status(400).json({ error: 'Type DELETE to confirm. Nothing was deleted.' });
   }

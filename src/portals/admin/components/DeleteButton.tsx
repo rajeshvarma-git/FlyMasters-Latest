@@ -8,9 +8,16 @@ import { Input, Label } from "@admin/components/ui/Field";
 
 export type DeleteKind = "lead" | "student" | "staff" | "partner";
 
+/** Mirrors the server: Super Admin deletes anything; Admin only students and telecaller / counselor / accountant accounts. */
+export function canDelete(role: string | undefined, kind: DeleteKind, targetRole?: string) {
+  if (role === "super_admin") return kind !== "staff" || targetRole !== "super_admin";
+  if (role === "admin") return kind === "student" || (kind === "staff" && ["telecaller", "counselor", "accountant"].includes(String(targetRole)));
+  return false;
+}
+
 /**
- * Super Admin only. Permanently deletes a lead, student, employee or partner.
- * Renders nothing for anyone else (the server enforces it too). The person must type DELETE, and the
+ * Permanently deletes a lead, student, employee or partner. Super Admin: anything; Admin: students and
+ * telecaller / counselor / accountant accounts. Renders nothing otherwise (the server enforces it too). The person must type DELETE, and the
  * server refuses to orphan commissions, owned leads or referral history, so a refusal is shown as is.
  */
 export default function DeleteButton({
@@ -19,7 +26,9 @@ export default function DeleteButton({
   name,
   onDeleted,
   size = "sm",
+  targetRole,
 }: {
+  targetRole?: string;
   kind: DeleteKind;
   id: string;
   name: string;
@@ -33,7 +42,7 @@ export default function DeleteButton({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
-  if (user?.role !== "super_admin") return null;
+  if (!canDelete(user?.role, kind, targetRole)) return null;
 
   const close = () => { setOpen(false); setTyped(""); setReason(""); setError(""); };
 

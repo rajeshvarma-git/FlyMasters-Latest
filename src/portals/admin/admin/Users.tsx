@@ -305,8 +305,14 @@ export default function UsersPage() {
                 </Select>
               )}
               <Button size="sm" variant="secondary" onClick={() => void resetPassword(user.id)}>Reset password</Button>
-              {!["super_admin", "student", "partner"].includes(String(user.role)) && user.id !== currentUser?.id && (
-                <DeleteButton kind="staff" id={user.id} name={displayName(user.first_name, user.last_name, user.email)} />
+              {String(user.role) !== "partner" && user.id !== currentUser?.id && (
+                <DeleteButton
+                  kind={user.role === "student" ? "student" : "staff"}
+                  targetRole={user.role}
+                  id={user.id}
+                  name={displayName(user.first_name, user.last_name, user.email)}
+                  onDeleted={() => void refreshStore()}
+                />
               )}
             </div>
           </Card>

@@ -344,14 +344,13 @@ export default function TelecallerDetail() {
               {busyAction === "remove" ? "Removing..." : "Remove telecaller"}
             </Button>
           )}
-          {isSuperAdmin && (
-            <DeleteButton
+          <DeleteButton
               kind="staff"
+              targetRole="telecaller"
               id={telecaller.id}
               name={displayName(telecaller.first_name, telecaller.last_name, telecaller.email)}
               onDeleted={() => navigate("/telecallers")}
             />
-          )}
         </div>
         {open.length > 0 && (
           <p className="mt-3 text-xs text-slate-500">
