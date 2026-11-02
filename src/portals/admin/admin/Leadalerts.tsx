@@ -1202,7 +1202,6 @@ export default function LeadAlerts() {
           </p>
         </div>
         <div className="text-right text-sm text-slate-500">
-          <p>Auto-reminder every {interval}h · repeats at most every {repeatHours}h</p>
           <p>Last check: {status ? clockTime(status.lastRunAt) : "—"} · Next: {status ? countdown(status.nextRunAt) : "—"}</p>
         </div>
         <Button variant="secondary" size="sm" disabled={busy} onClick={() => void runNow()}>

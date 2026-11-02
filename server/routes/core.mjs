@@ -2026,6 +2026,99 @@ async function markNotificationsRead(req, res) {
 }
 
 router.post("/api/telecaller/notifications/read", telecallerAuth, markNotificationsRead);
+
+// ---------------------------------------------------------------------------
+// Telecaller self-service HR: attendance (clock in/out), leave and salary.
+// Same tables the counselor portal uses (the id column is called counselor_id
+// but holds any staff user id), so the admin HR page and the staff-status view
+// see telecallers without a second system. Time is taken from the SERVER in
+// India time so a phone clock cannot rewrite a shift.
+// ---------------------------------------------------------------------------
+function indiaNow() {
+  const now = new Date();
+  const date = now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  const time = now.toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata", hour12: false });
+  return { date, time };
+}
+
+router.get("/api/telecaller/me/hr", telecallerAuth, async (req, res) => {
+  try {
+    const [attendance, leave, salary] = await Promise.all([
+      pool.query(
+        `SELECT id, date::text AS date, clock_in::text AS clock_in, clock_out::text AS clock_out, total_hours, status
+           FROM counselor_attendance WHERE counselor_id = $1 ORDER BY date DESC LIMIT 90`,
+        [req.user.id],
+      ),
+      pool.query(
+        `SELECT id, leave_type, start_date::text AS start_date, end_date::text AS end_date, reason, total_days, status, applied_on
+           FROM counselor_leave_requests WHERE counselor_id = $1 ORDER BY applied_on DESC LIMIT 50`,
+        [req.user.id],
+      ),
+      pool.query(
+        "SELECT id, month, year, net_salary, notes FROM counselor_salary_records WHERE counselor_id = $1 ORDER BY year DESC, id DESC",
+        [req.user.id],
+      ),
+    ]);
+    res.json({ today: indiaNow().date, attendance: attendance.rows, leave: leave.rows, salary: salary.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not load your HR records" });
+  }
+});
+
+router.post("/api/telecaller/me/clock-in", telecallerAuth, async (req, res) => {
+  try {
+    const { date, time } = indiaNow();
+    await pool.query(
+      `INSERT INTO counselor_attendance (counselor_id, date, clock_in, status)
+       SELECT $1, $2::date, $3::time, 'present'
+        WHERE NOT EXISTS (SELECT 1 FROM counselor_attendance WHERE counselor_id = $1 AND date = $2::date)`,
+      [req.user.id, date, time],
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not clock in" });
+  }
+});
+
+router.post("/api/telecaller/me/clock-out", telecallerAuth, async (req, res) => {
+  try {
+    const { date, time } = indiaNow();
+    const { rows } = await pool.query(
+      "SELECT id, clock_in::text AS clock_in, clock_out FROM counselor_attendance WHERE counselor_id = $1 AND date = $2",
+      [req.user.id, date],
+    );
+    const row = rows[0];
+    if (!row?.clock_in) return res.status(400).json({ error: "Clock in first." });
+    if (row.clock_out) return res.json({ ok: true });
+    const hours = (new Date(`${date}T${time}`) - new Date(`${date}T${row.clock_in}`)) / 3600000;
+    await pool.query(
+      "UPDATE counselor_attendance SET clock_out = $2, total_hours = $3 WHERE id = $1",
+      [row.id, time, Math.max(0, Number(hours.toFixed(2)))],
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not clock out" });
+  }
+});
+
+router.post("/api/telecaller/me/leave", telecallerAuth, async (req, res) => {
+  try {
+    const start = String(req.body.start_date || "").slice(0, 10);
+    const end = String(req.body.end_date || start).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || end < start) {
+      return res.status(400).json({ error: "Choose a valid start and end date." });
+    }
+    const days = Math.round((new Date(end) - new Date(start)) / 86400000) + 1;
+    await pool.query(
+      `INSERT INTO counselor_leave_requests (counselor_id, leave_type, start_date, end_date, reason, total_days, status)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending')`,
+      [req.user.id, String(req.body.leave_type || "casual").slice(0, 40), start, end, String(req.body.reason || "").slice(0, 500), days],
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not submit leave" });
+  }
+});
 // Admin bell had no way to clear anything; same handler.
 router.post("/api/notifications/read", auth, markNotificationsRead);
 
