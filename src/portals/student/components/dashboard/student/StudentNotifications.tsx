@@ -9,13 +9,13 @@ import {
   Bell, 
   CheckCircle, 
   AlertCircle, 
-  Info, 
-  RefreshCw
+  Info
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 import { loadStudentInbox, markInboxRead, type StudentInboxItem } from '@student/lib/studentInbox';
 
+import { useAutoRefresh } from '@shared/hooks/useAutoRefresh';
 export function StudentNotifications() {
   const { user } = useAuth();
   const [notifications, setNotifications] = useState<StudentInboxItem[]>([]);
@@ -30,6 +30,8 @@ export function StudentNotifications() {
     }, 4000);
     return () => window.clearInterval(poll);
   }, [user?.id]);
+
+  useAutoRefresh(() => fetchNotifications());
 
   const fetchNotifications = async (silent = false) => {
     if (!user) return;
@@ -124,10 +126,6 @@ export function StudentNotifications() {
           </div>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={() => void fetchNotifications()}>
-            <RefreshCw className="w-4 h-4 mr-1" />
-            Refresh
-          </Button>
           {unreadCount > 0 && (
             <Button variant="outline" size="sm" onClick={markAllAsRead}>
               Mark All Read ({unreadCount})

@@ -11,9 +11,10 @@ import { Badge } from '@student/components/ui/badge';
 import { Progress } from '@student/components/ui/progress';
 import { Skeleton } from '@student/components/ui/skeleton';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@student/components/ui/dialog';
-import { FileText, Upload, Check, X, Clock, Trash2, Download, Search, Filter, Eye, RefreshCw, AlertCircle } from 'lucide-react';
+import { FileText, Upload, Check, X, Clock, Trash2, Download, Search, Filter, Eye, AlertCircle } from 'lucide-react';
 import { Tables } from '@student/integrations/supabase/types';
 
+import { useAutoRefresh } from '@shared/hooks/useAutoRefresh';
 type Document = Tables<'documents'>;
 type DocumentChecklist = Tables<'document_checklists'>;
 
@@ -40,6 +41,8 @@ export function OriginalDocumentsSection() {
       }
     }
   }, [user, selectedCountry, selectedDegree]);
+
+  useAutoRefresh(() => { if (user) { void fetchDocuments(); if (selectedCountry && selectedDegree) void fetchChecklist(); } });
 
   const fetchDocuments = async () => {
     try {
@@ -290,17 +293,6 @@ export function OriginalDocumentsSection() {
             <p className="text-muted-foreground">Upload and manage your application documents</p>
           </div>
         </div>
-        <Button 
-          variant="outline" 
-          size="sm" 
-          onClick={() => {
-            fetchDocuments();
-            if (selectedCountry && selectedDegree) fetchChecklist();
-          }}
-        >
-          <RefreshCw className="w-4 h-4 mr-2" />
-          Refresh
-        </Button>
       </div>
 
       {/* Country and Degree Selection */}

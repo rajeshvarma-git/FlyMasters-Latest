@@ -11,12 +11,12 @@ import {
   AlertCircle, 
   Info, 
   Trash2,
-  ExternalLink,
-  RefreshCw
+  ExternalLink
 } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 
+import { useAutoRefresh } from '@shared/hooks/useAutoRefresh';
 interface Notification {
   id: string;
   title: string;
@@ -39,6 +39,8 @@ export function StudentNotifications() {
       fetchNotifications();
     }
   }, [user]);
+
+  useAutoRefresh(() => fetchNotifications());
 
   const fetchNotifications = async () => {
     if (!user) return;
@@ -184,10 +186,6 @@ export function StudentNotifications() {
           </div>
         </div>
         <div className="flex gap-2">
-          <Button variant="outline" size="sm" onClick={fetchNotifications}>
-            <RefreshCw className="w-4 h-4 mr-1" />
-            Refresh
-          </Button>
           {unreadCount > 0 && (
             <Button variant="outline" size="sm" onClick={markAllAsRead}>
               Mark All Read ({unreadCount})

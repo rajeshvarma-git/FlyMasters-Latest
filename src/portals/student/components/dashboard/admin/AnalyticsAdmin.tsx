@@ -19,7 +19,6 @@ import {
   Globe,
   CalendarIcon,
   Download,
-  RefreshCw,
   Filter
 } from 'lucide-react';
 import { 
@@ -331,15 +330,6 @@ export function AnalyticsAdmin() {
               </div>
             </PopoverContent>
           </Popover>
-
-          <Button 
-            variant="outline" 
-            size="sm" 
-            onClick={fetchAnalyticsData}
-            disabled={refreshing}
-          >
-            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
-          </Button>
 
           <Button variant="outline" size="sm">
             <Download className="w-4 h-4 mr-2" />
