@@ -8,16 +8,37 @@ import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
 import { Input, Label, Select, Textarea } from "@admin/components/ui/Field";
 
-function counselorName(
-  counselors: Array<{ id: string; auth_user_id?: string | null; first_name?: string; last_name?: string; email?: string }>,
-  id: string,
-) {
-  const found = counselors.find((row) => row.id === id || row.auth_user_id === id);
-  return found ? displayName(found.first_name, found.last_name, found.email || "Counselor") : "Counselor";
+type Person = { id: string; auth_user_id?: string | null; first_name?: string; last_name?: string; email?: string; role?: string };
+
+const ROLE_LABEL: Record<string, string> = { counselor: "Counselor", telecaller: "Telecaller", branch_head: "Branch head" };
+
+/** Everyone who has HR records: counselors plus telecallers and branch heads (deduped by email). */
+function employeesOf(counselors: Person[], users: Person[]): Person[] {
+  const out: Person[] = counselors.map((row) => ({ ...row, role: "counselor" }));
+  const seen = new Set(out.map((row) => String(row.email || "").toLowerCase()).filter(Boolean));
+  for (const user of users) {
+    if (!["telecaller", "branch_head", "counselor"].includes(String(user.role))) continue;
+    const mail = String(user.email || "").toLowerCase();
+    if (mail && seen.has(mail)) {
+      // A promoted counselor keeps their counselor entry, but is also a telecaller by login: remember that role.
+      const existing = out.find((row) => String(row.email || "").toLowerCase() === mail);
+      if (existing && user.role === "telecaller") existing.role = "telecaller";
+      continue;
+    }
+    if (mail) seen.add(mail);
+    out.push(user);
+  }
+  return out;
+}
+
+function staffName(people: Person[], id: string) {
+  const found = people.find((row) => row.id === id || row.auth_user_id === id);
+  return found ? displayName(found.first_name, found.last_name, found.email || "Staff") : "Staff member";
 }
 
 export default function HR() {
   const store = useAdminStore();
+  const people = employeesOf(store.counselors as Person[], store.users as unknown as Person[]);
   const [tab, setTab] = useState<"leave" | "attendance" | "salary">("leave");
   const [busy, setBusy] = useState(false);
   const [comments, setComments] = useState("");
@@ -76,12 +97,12 @@ export default function HR() {
 
       {tab === "leave" && (
         <div className="grid gap-3">
-          <Textarea placeholder="Optional comment to the counselor" value={comments} onChange={(e) => setComments(e.target.value)} />
+          <Textarea placeholder="Optional comment to the employee" value={comments} onChange={(e) => setComments(e.target.value)} />
           {store.leave.map((row) => (
             <Card key={row.id} className="p-5">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
-                  <p className="font-semibold">{counselorName(store.counselors, row.counselor_id)}</p>
+                  <p className="font-semibold">{staffName(people, row.counselor_id)}</p>
                   <p className="text-sm text-slate-500">{row.leave_type} · {row.start_date} to {row.end_date} · {row.total_days} days</p>
                   {row.reason && <p className="mt-2 text-sm">{row.reason}</p>}
                 </div>
@@ -106,7 +127,7 @@ export default function HR() {
           {store.attendance.map((row) => (
             <Card key={row.id} className="flex flex-wrap items-center justify-between gap-3 p-4">
               <div>
-                <p className="font-medium">{counselorName(store.counselors, row.counselor_id)}</p>
+                <p className="font-medium">{staffName(people, row.counselor_id)}</p>
                 <p className="text-sm text-slate-500">
                   {row.date} · in {row.clock_in || "—"} · out {row.clock_out || "—"} · {row.total_hours == null ? "—" : `${Number(row.total_hours).toFixed(2)} hrs`}
                 </p>
@@ -124,11 +145,13 @@ export default function HR() {
             <p className="font-semibold">Post salary</p>
             <form className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3" onSubmit={(e) => void postSalary(e)}>
               <div>
-                <Label>Counselor</Label>
+                <Label>Employee</Label>
                 <Select name="counselorId" required defaultValue="">
                   <option value="" disabled>Choose</option>
-                  {store.counselors.map((item) => (
-                    <option key={item.id} value={item.id}>{displayName(item.first_name, item.last_name, item.email)}</option>
+                  {people.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {displayName(item.first_name, item.last_name, item.email)}{item.role ? ` · ${ROLE_LABEL[item.role] || item.role}` : ""}
+                    </option>
                   ))}
                 </Select>
               </div>
@@ -143,7 +166,7 @@ export default function HR() {
             {store.salary.map((row) => (
               <Card key={row.id} className="flex items-center justify-between p-4">
                 <div>
-                  <p className="font-medium">{counselorName(store.counselors, row.counselor_id)}</p>
+                  <p className="font-medium">{staffName(people, row.counselor_id)}</p>
                   <p className="text-sm text-slate-500">{row.month} {row.year}{row.notes ? ` · ${row.notes}` : ""}</p>
                 </div>
                 <p className="font-semibold">₹{Number(row.net_salary).toLocaleString()}</p>
