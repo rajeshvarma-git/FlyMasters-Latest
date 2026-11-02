@@ -33,6 +33,9 @@ export interface Referral {
   name: string;
   country: string;
   referredOn: string;
+  /** true once the lead has become a student — the point at which a commission is raised */
+  converted: boolean;
+  commission: { amount: number; status: string } | null;
   stage?: string;
   /** CRM 2.6.2 — only present when the Super Admin has enabled that field for this agent. */
   applicationStatus?: { code: string; label: string; color: string } | null;
