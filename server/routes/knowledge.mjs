@@ -147,6 +147,7 @@ router.put("/api/knowledge/:id", anySession, canEdit, async (req, res) => {
 });
 
 router.delete("/api/knowledge/:id", anySession, canEdit, async (req, res) => {
+  if (req.user?.role !== "super_admin") return res.status(403).json({ error: "Only a Super Admin can delete." });
   try {
     const existing = await findArticle(req.params.id);
     if (!existing) return res.status(404).json({ error: "Not found." });

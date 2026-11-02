@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { format } from "date-fns";
 import { ArrowLeft, ArrowRightLeft, FileText, MessageCircle, MessageSquare, PhoneCall, Trash2, Users } from "lucide-react";
 import { api } from "@admin/lib/api";
+import { useAuth } from "@admin/context/AuthContext";
 import { refreshStore, useAdminStore } from "@admin/lib/store";
 import { counselorOwns, displayName, initials, isConvertedStudent, studentOwns, telecallerLabel } from "@admin/lib/utils";
 import { Badge } from "@admin/components/ui/Badge";
@@ -90,6 +91,7 @@ function profileUrl(lead: Lead, counselorId: string) {
 export default function CounselorDetail() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
+  const isSuperAdmin = useAuth().user?.role === "super_admin";
   const store = useAdminStore();
   const [tab, setTab] = useState<Tab>("students");
   const [openStudentId, setOpenStudentId] = useState<string | null>(null);
@@ -475,15 +477,17 @@ export default function CounselorDetail() {
             <ArrowRightLeft className="h-4 w-4" />
             {busyAction === "transfer" ? "Transferring..." : "Transfer data"}
           </Button>
-          <Button
-            size="sm"
-            variant="danger"
-            disabled={busyAction !== null}
-            onClick={() => void removeCounselor()}
-          >
-            <Trash2 className="h-4 w-4" />
-            {busyAction === "remove" ? "Removing..." : "Remove counselor"}
-          </Button>
+          {isSuperAdmin && (
+            <Button
+              size="sm"
+              variant="danger"
+              disabled={busyAction !== null}
+              onClick={() => void removeCounselor()}
+            >
+              <Trash2 className="h-4 w-4" />
+              {busyAction === "remove" ? "Removing..." : "Remove counselor"}
+            </Button>
+          )}
         </div>
         {(students.length > 0 || leads.length > 0) && (
           <p className="mt-3 text-xs text-slate-500">

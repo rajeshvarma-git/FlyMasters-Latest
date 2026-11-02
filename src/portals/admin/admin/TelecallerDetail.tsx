@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ArrowRightLeft, CheckCircle2, MessageCircle, MessageSquare, PhoneCall, Trash2 } from "lucide-react";
 import { api } from "@admin/lib/api";
+import { useAuth } from "@admin/context/AuthContext";
 import { refreshStore, useAdminStore } from "@admin/lib/store";
 import { counselorLabel, displayName, initials, isConvertedStudent, studentOwns } from "@admin/lib/utils";
 import { Badge } from "@admin/components/ui/Badge";
@@ -87,6 +88,7 @@ function waitLabel(lead: Lead) {
 export default function TelecallerDetail() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
+  const isSuperAdmin = useAuth().user?.role === "super_admin";
   const store = useAdminStore();
   const [tab, setTab] = useState<Tab>("open");
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
@@ -330,15 +332,17 @@ export default function TelecallerDetail() {
             <ArrowRightLeft className="h-4 w-4" />
             {busyAction === "transfer" ? "Transferring..." : "Transfer data"}
           </Button>
-          <Button
-            size="sm"
-            variant="danger"
-            disabled={busyAction !== null}
-            onClick={() => void removeTelecaller()}
-          >
-            <Trash2 className="h-4 w-4" />
-            {busyAction === "remove" ? "Removing..." : "Remove telecaller"}
-          </Button>
+          {isSuperAdmin && (
+            <Button
+              size="sm"
+              variant="danger"
+              disabled={busyAction !== null}
+              onClick={() => void removeTelecaller()}
+            >
+              <Trash2 className="h-4 w-4" />
+              {busyAction === "remove" ? "Removing..." : "Remove telecaller"}
+            </Button>
+          )}
         </div>
         {open.length > 0 && (
           <p className="mt-3 text-xs text-slate-500">

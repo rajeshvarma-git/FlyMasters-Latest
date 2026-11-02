@@ -3213,7 +3213,7 @@ router.post("/api/telecallers/:id/transfer", auth, async (req, res) => {
   }
 });
 
-router.post("/api/telecallers/:id/remove", auth, async (req, res) => {
+router.post("/api/telecallers/:id/remove", superAdminAuth, async (req, res) => {
   try {
     const targetTelecallerId = req.body.targetTelecallerId ? String(req.body.targetTelecallerId) : "";
     if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;
@@ -3252,7 +3252,7 @@ router.post("/api/telecallers/:id/remove", auth, async (req, res) => {
   }
 });
 
-router.post("/api/counselors/:id/remove", auth, async (req, res) => {
+router.post("/api/counselors/:id/remove", superAdminAuth, async (req, res) => {
   try {
     const targetCounselorId = req.body.targetCounselorId ? String(req.body.targetCounselorId) : "";
     if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;
@@ -3346,6 +3346,9 @@ router.post("/api/universities/import-csv", auth, async (req, res) => {
     const csv = String(req.body.csv || "");
     const fileName = String(req.body.fileName || "upload.csv").trim();
     const replaceAll = req.body.replace === true;
+    if (replaceAll && req.user?.role !== "super_admin") {
+      return res.status(403).json({ error: "Only a Super Admin can replace the entire catalog." });
+    }
     if (!csv.trim()) return res.status(400).json({ error: "CSV content is required." });
 
     const parsedRows = parseCatalogCsv(csv);
@@ -3375,7 +3378,7 @@ router.post("/api/universities/import-csv", auth, async (req, res) => {
   }
 });
 
-router.delete("/api/universities/catalog", auth, async (req, res) => {
+router.delete("/api/universities/catalog", superAdminAuth, async (req, res) => {
   try {
     await jsonClearTable("university_programs");
     await jsonClearTable("universities");
@@ -3394,7 +3397,7 @@ router.patch("/api/universities/:id", auth, async (req, res) => {
   res.json(next);
 });
 
-router.delete("/api/universities/:id", auth, async (req, res) => {
+router.delete("/api/universities/:id", superAdminAuth, async (req, res) => {
   await jsonDelete(req.params.id);
   res.json({ ok: true });
 });
