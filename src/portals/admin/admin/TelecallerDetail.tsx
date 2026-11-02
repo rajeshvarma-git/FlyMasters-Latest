@@ -358,6 +358,12 @@ export default function TelecallerDetail() {
             transfer or remove. Converted students stay linked for reporting only.
           </p>
         )}
+        {open.length === 0 && (
+          <p className="mt-3 text-xs text-amber-700">
+            Transfer data is off because this telecaller has no open leads to move. It turns on as soon as a lead is
+            assigned to them and you choose who to transfer to. Converted students stay linked for reporting only.
+          </p>
+        )}
       </Card>
 
       {error && <Card className="mt-4 border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}</Card>}

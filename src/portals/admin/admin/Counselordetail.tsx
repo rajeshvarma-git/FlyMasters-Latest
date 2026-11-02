@@ -503,6 +503,12 @@ export default function CounselorDetail() {
             {leads.length === 1 ? "" : "s"} will move with their chat history when you transfer or remove.
           </p>
         )}
+        {students.length === 0 && (
+          <p className="mt-3 text-xs text-amber-700">
+            Transfer data is off because this counselor has no students to move. It turns on as soon as a student is
+            assigned to them and you choose who to transfer to.
+          </p>
+        )}
       </Card>
 
       {error && <Card className="mt-4 border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}</Card>}
