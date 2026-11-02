@@ -2034,6 +2034,19 @@ router.post("/api/telecaller/notifications/read", telecallerAuth, markNotificati
 // see telecallers without a second system. Time is taken from the SERVER in
 // India time so a phone clock cannot rewrite a shift.
 // ---------------------------------------------------------------------------
+// HR for telecallers is OFF until it is switched on deliberately (TELECALLER_HR_ENABLED=true).
+// Telecaller ids are "user-<uuid>" but counselor_attendance / leave / salary key on a UUID
+// column, so turning this on needs those columns widened to TEXT first. Until then the
+// endpoints refuse instead of failing in PostgreSQL (22P02).
+const telecallerHrEnabled = () => String(process.env.TELECALLER_HR_ENABLED || "").toLowerCase() === "true";
+const hrGate = (_req, res, next) => (telecallerHrEnabled()
+  ? next()
+  : res.status(403).json({ error: "Attendance, leave and salary are not available for telecallers yet.", enabled: false }));
+
+router.get("/api/telecaller/me/features", telecallerAuth, (_req, res) => {
+  res.json({ hr: telecallerHrEnabled() });
+});
+
 function indiaNow() {
   const now = new Date();
   const date = now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
@@ -2041,7 +2054,7 @@ function indiaNow() {
   return { date, time };
 }
 
-router.get("/api/telecaller/me/hr", telecallerAuth, async (req, res) => {
+router.get("/api/telecaller/me/hr", telecallerAuth, hrGate, async (req, res) => {
   try {
     const [attendance, leave, salary] = await Promise.all([
       pool.query(
@@ -2065,7 +2078,7 @@ router.get("/api/telecaller/me/hr", telecallerAuth, async (req, res) => {
   }
 });
 
-router.post("/api/telecaller/me/clock-in", telecallerAuth, async (req, res) => {
+router.post("/api/telecaller/me/clock-in", telecallerAuth, hrGate, async (req, res) => {
   try {
     const { date, time } = indiaNow();
     await pool.query(
@@ -2080,7 +2093,7 @@ router.post("/api/telecaller/me/clock-in", telecallerAuth, async (req, res) => {
   }
 });
 
-router.post("/api/telecaller/me/clock-out", telecallerAuth, async (req, res) => {
+router.post("/api/telecaller/me/clock-out", telecallerAuth, hrGate, async (req, res) => {
   try {
     const { date, time } = indiaNow();
     const { rows } = await pool.query(
@@ -2101,7 +2114,7 @@ router.post("/api/telecaller/me/clock-out", telecallerAuth, async (req, res) => 
   }
 });
 
-router.post("/api/telecaller/me/leave", telecallerAuth, async (req, res) => {
+router.post("/api/telecaller/me/leave", telecallerAuth, hrGate, async (req, res) => {
   try {
     const start = String(req.body.start_date || "").slice(0, 10);
     const end = String(req.body.end_date || start).slice(0, 10);

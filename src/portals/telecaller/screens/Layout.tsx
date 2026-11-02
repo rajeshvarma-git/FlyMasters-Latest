@@ -1,4 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
+import { useEffect, useState } from "react";
 import {
   Bell, CalendarDays, CheckCircle2, Clock, IndianRupee, LogOut, MessageCircle, PhoneCall, User,
 } from "lucide-react";
@@ -15,17 +16,23 @@ const work = [
   { to: "/converted", label: "Converted", icon: CheckCircle2 },
   { to: "/notifications", label: "Notifications", icon: Bell },
 ];
-const me = [
-  { to: "/profile", label: "My Profile", icon: User },
+const profileItem = { to: "/profile", label: "My Profile", icon: User };
+// Shown only when the server says telecaller HR is switched on.
+const hrItems = [
   { to: "/attendance", label: "Attendance", icon: Clock },
   { to: "/leave", label: "Leave", icon: CalendarDays },
   { to: "/salary", label: "Salary", icon: IndianRupee },
 ];
-const all = [...work, ...me];
 
 export default function Layout() {
   const { user, signOut } = useAuth();
   const store = useStore();
+  const [hrOn, setHrOn] = useState(false);
+  useEffect(() => {
+    api<{ hr: boolean }>("/telecaller/me/features").then((d) => setHrOn(Boolean(d.hr))).catch(() => setHrOn(false));
+  }, []);
+  const me = hrOn ? [profileItem, ...hrItems] : [profileItem];
+  const all = [...work, ...me];
   const open = store.leads.filter((lead) => !isConvertedStudent(lead)).length;
   // Same count as the per-student badges in Student Chat.
   const unreadChats = useCaseUnread();

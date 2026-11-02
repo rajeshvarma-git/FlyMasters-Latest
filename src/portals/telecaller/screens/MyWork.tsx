@@ -8,6 +8,7 @@ import { Badge } from "@telecaller/components/ui/Badge";
 import { Button } from "@telecaller/components/ui/Button";
 import { Card } from "@telecaller/components/ui/Card";
 import { Input, Label, Select, Textarea } from "@telecaller/components/ui/Field";
+import { telecallerHref } from "@telecaller/lib/notificationLink";
 
 /**
  * Telecaller self-service: profile, attendance (clock in/out), leave, salary and
@@ -203,17 +204,26 @@ export function TelecallerNotifications() {
   const rows = [...store.notifications].sort((a, b) => String(b.created_at).localeCompare(String(a.created_at)));
   const unread = rows.filter((r) => !r.is_read).length;
 
-  const markAll = () => {
-    markNotificationsReadLocal("all");
-    api("/telecaller/notifications/read", { method: "POST", body: {} }).catch(() => {});
+  const [error, setError] = useState("");
+  // Only mark them read here once the server has accepted it, so the screen never
+  // shows a success that did not happen.
+  const markAll = async () => {
+    setError("");
+    try {
+      await api("/telecaller/notifications/read", { method: "POST", body: {} });
+      markNotificationsReadLocal("all");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not mark notifications as read.");
+    }
   };
 
   return (
     <div>
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold">Notifications</h1>
-        {unread > 0 && <Button variant="secondary" size="sm" onClick={markAll}>Mark all read</Button>}
+        {unread > 0 && <Button variant="secondary" size="sm" onClick={() => void markAll()}>Mark all read</Button>}
       </div>
+      {error && <p className="mt-2 text-sm text-rose-600">{error}</p>}
       <div className="mt-4 space-y-2">
         {rows.map((row) => (
           <Card
@@ -221,7 +231,7 @@ export function TelecallerNotifications() {
             className={`flex cursor-pointer gap-3 p-4 ${row.is_read ? "" : "border-sky-200 bg-sky-50/40"}`}
           >
             <Bell className="mt-0.5 h-4 w-4 shrink-0 text-sky-600" />
-            <button className="min-w-0 flex-1 text-left" onClick={() => row.action_url && navigate(row.action_url)}>
+            <button className="min-w-0 flex-1 text-left" onClick={() => navigate(telecallerHref(row.action_url))}>
               <p className="text-sm font-semibold">{row.title}</p>
               <p className="text-sm text-slate-600">{row.message}</p>
               <p className="mt-1 text-xs text-slate-400">{new Date(row.created_at).toLocaleString("en-IN")}</p>
