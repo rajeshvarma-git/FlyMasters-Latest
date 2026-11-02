@@ -43,6 +43,7 @@ const ACTION_OVERRIDES = {
   "POST /api/leads/:id/branch": "lead.branch.move",
   "POST /api/leads/bulk-assign": "lead.assign",
   "POST /api/leads/bulk-assign-telecaller": "lead.assign",
+  "POST /api/admin/delete/:kind/:id": "record.delete",
 };
 
 // Branch-owned data or actions that no branch check protects today (found by reading each handler).

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import DeleteButton from "@admin/components/DeleteButton";
 import { format } from "date-fns";
 import { ArrowLeft, MessageCircle, User } from "lucide-react";
 import { useAdminStore } from "@admin/lib/store";
@@ -51,6 +52,7 @@ function whenLabel(value?: string | null) {
 
 export default function LeadDetail() {
   const { id = "" } = useParams();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const store = useAdminStore();
   const [tab, setTab] = useState<Tab>(() => parseTab(searchParams.get("tab")));
@@ -154,6 +156,7 @@ export default function LeadDetail() {
             <div className="flex flex-wrap items-center gap-3">
               <h1 className="text-2xl font-bold">{displayName(lead.first_name, lead.last_name, lead.email)}</h1>
               <Badge value={lead.lead_status || "warm"} />
+              <DeleteButton kind="lead" id={lead.id} name={displayName(lead.first_name, lead.last_name, lead.email)} onDeleted={() => navigate(backTo)} />
               {isWhatsAppLead(lead) && <Badge value="whatsapp" className="normal-case" />}
             </div>
             <p className="mt-1 text-sm text-slate-600">

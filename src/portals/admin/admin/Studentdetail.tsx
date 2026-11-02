@@ -1942,7 +1942,8 @@
 // }
 
 import { useEffect, useMemo, useState } from "react";
-import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import DeleteButton from "@admin/components/DeleteButton";
 import { format } from "date-fns";
 import { ArrowLeft, BookOpen, ClipboardCheck, FileText, MessageCircle, MessagesSquare, PhoneCall, University, User } from "lucide-react";
 import { api } from "@admin/lib/api";
@@ -2021,6 +2022,7 @@ function docBadge(status: string) {
 
 export default function StudentDetail() {
   const { id = "" } = useParams();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const store = useAdminStore();
   const [tab, setTab] = useState<Tab>(() => parseTab(searchParams.get("tab")));
@@ -2242,6 +2244,7 @@ export default function StudentDetail() {
               <h1 className="text-2xl font-bold">
                 {displayName(student.first_name, student.last_name, student.email)}
               </h1>
+              <DeleteButton kind="student" id={student.id} name={displayName(student.first_name, student.last_name, student.email)} onDeleted={() => navigate("/students")} />
               {isConvertedStudent(student) ? (
                 <Badge value="converted" />
               ) : (

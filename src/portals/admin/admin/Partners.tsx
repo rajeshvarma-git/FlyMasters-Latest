@@ -3,6 +3,7 @@ import { Handshake, KeyRound, Eye } from "lucide-react";
 import { api } from "@admin/lib/api";
 import { useAuth } from "@admin/context/AuthContext";
 import type { Branch } from "@admin/lib/types";
+import DeleteButton from "@admin/components/DeleteButton";
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
 import { Input, Label, Select } from "@admin/components/ui/Field";
@@ -218,6 +219,7 @@ export default function Partners() {
                       <Eye className="h-3 w-3" /> Visibility
                     </button>
                   ) : null}
+                  {isSuperAdmin ? <span className="mr-2"><DeleteButton kind="partner" id={p.id} name={p.business_name || p.full_name} onDeleted={() => void load()} /></span> : null}
                   {p.login_enabled ? (
                     <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs text-emerald-700">Active</span>
                   ) : isSuperAdmin ? (
