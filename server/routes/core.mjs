@@ -2085,6 +2085,22 @@ function indiaNow() {
   return { date, time };
 }
 
+/** The branch to file a staff member's HR rows under, so their branch head can see them. */
+async function staffHomeBranch(userId) {
+  const home = await pool.query("SELECT branch_id FROM user_roles WHERE user_id = $1", [String(userId)]).catch(() => ({ rows: [] }));
+  if (home.rows[0]?.branch_id) return String(home.rows[0].branch_id);
+  const member = await pool
+    .query("SELECT branch_id FROM user_branches WHERE user_id = $1 ORDER BY created_at ASC LIMIT 1", [String(userId)])
+    .catch(() => ({ rows: [] }));
+  return member.rows[0]?.branch_id ? String(member.rows[0].branch_id) : null;
+}
+
+/** Where a person's leave / salary notification should open, by role. */
+async function hrLinkFor(userId, page) {
+  const role = (await pool.query("SELECT role FROM user_roles WHERE user_id = $1", [String(userId)]).catch(() => ({ rows: [] }))).rows[0]?.role;
+  return `/${role === "telecaller" ? "telecaller" : "counselor"}/${page}`;
+}
+
 router.get("/api/telecaller/me/hr", telecallerAuth, hrGate, async (req, res) => {
   try {
     const [attendance, leave, salary] = await Promise.all([
@@ -2113,10 +2129,10 @@ router.post("/api/telecaller/me/clock-in", telecallerAuth, hrGate, async (req, r
   try {
     const { date, time } = indiaNow();
     await pool.query(
-      `INSERT INTO counselor_attendance (counselor_id, date, clock_in, status)
-       SELECT $1, $2::date, $3::time, 'present'
+      `INSERT INTO counselor_attendance (counselor_id, date, clock_in, status, branch_id)
+       SELECT $1, $2::date, $3::time, 'present', $4::uuid
         WHERE NOT EXISTS (SELECT 1 FROM counselor_attendance WHERE counselor_id = $1 AND date = $2::date)`,
-      [req.user.id, date, time],
+      [req.user.id, date, time, await staffHomeBranch(req.user.id)],
     );
     res.json({ ok: true });
   } catch (error) {
@@ -2154,9 +2170,9 @@ router.post("/api/telecaller/me/leave", telecallerAuth, hrGate, async (req, res)
     }
     const days = Math.round((new Date(end) - new Date(start)) / 86400000) + 1;
     await pool.query(
-      `INSERT INTO counselor_leave_requests (counselor_id, leave_type, start_date, end_date, reason, total_days, status)
-       VALUES ($1,$2,$3,$4,$5,$6,'pending')`,
-      [req.user.id, String(req.body.leave_type || "casual").slice(0, 40), start, end, String(req.body.reason || "").slice(0, 500), days],
+      `INSERT INTO counselor_leave_requests (counselor_id, leave_type, start_date, end_date, reason, total_days, status, branch_id)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7::uuid)`,
+      [req.user.id, String(req.body.leave_type || "casual").slice(0, 40), start, end, String(req.body.reason || "").slice(0, 500), days, await staffHomeBranch(req.user.id)],
     );
     res.json({ ok: true });
   } catch (error) {
@@ -2931,7 +2947,7 @@ router.patch("/api/leave/:id", auth, async (req, res) => {
   ).catch(() => ({ rows: [] }));
   const row = updated.rows[0];
   if (row?.counselor_id) {
-    await notify(row.counselor_id, `Leave ${status}`, comments || `Your leave request was ${status}.`, status === "approved" ? "success" : "warning", "/counselor/leave");
+    await notify(row.counselor_id, `Leave ${status}`, comments || `Your leave request was ${status}.`, status === "approved" ? "success" : "warning", await hrLinkFor(row.counselor_id, "leave"));
   }
   res.json({ ok: true, row });
 });
@@ -2943,7 +2959,6 @@ router.post("/api/salary", auth, async (req, res) => {
   const net = Number(req.body.netSalary || 0);
   const notes = String(req.body.notes || "");
   if (!counselorId || !month) return res.status(400).json({ error: "Counselor, month, and amount are required." });
-  if (!isUuid(counselorId)) return res.status(400).json({ error: "This counselor record is not linked to HR tables yet." });
   if (!(await allow(res, checkStaffInScope(pool, req.scope, counselorId)))) return;
   // Update-then-insert rather than ON CONFLICT: the table has no unique index on every database.
   let row = await pool.query(
@@ -2953,12 +2968,12 @@ router.post("/api/salary", auth, async (req, res) => {
   );
   if (!row.rows[0]) {
     row = await pool.query(
-      `INSERT INTO counselor_salary_records (counselor_id, month, year, net_salary, notes)
-       VALUES ($1,$2,$3,$4,$5) RETURNING *`,
-      [counselorId, month, year, net, notes],
+      `INSERT INTO counselor_salary_records (counselor_id, month, year, net_salary, notes, branch_id)
+       VALUES ($1,$2,$3,$4,$5,$6::uuid) RETURNING *`,
+      [counselorId, month, year, net, notes, await staffHomeBranch(counselorId)],
     );
   }
-  await notify(counselorId, "Salary posted", `${month} ${year}: ₹${net}`, "info", "/counselor/salary");
+  await notify(counselorId, "Salary posted", `${month} ${year}: ₹${net}`, "info", await hrLinkFor(counselorId, "salary"));
   res.json(row.rows[0]);
 });
 
