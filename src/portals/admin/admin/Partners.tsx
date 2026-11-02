@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
+import { useAutoRefresh } from "@shared/hooks/useAutoRefresh";
 import { Handshake, KeyRound, Eye } from "lucide-react";
 import { useCopy } from "@shared/hooks/useCopy";
 import { api } from "@admin/lib/api";
@@ -68,6 +69,7 @@ export default function Partners() {
   const [activating, setActivating] = useState<Partner | null>(null);
 
   const load = () => api<{ partners: Partner[] }>("/partners").then((d) => setRows(d.partners));
+  useAutoRefresh(load);
 
   useEffect(() => {
     void load().catch((e) => setError(e instanceof Error ? e.message : "Could not load partners"));
