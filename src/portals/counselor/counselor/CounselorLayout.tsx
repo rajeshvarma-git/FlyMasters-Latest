@@ -50,6 +50,7 @@ const account = [
 export default function CounselorLayout() {
   const { user, signOut } = useAuth();
   const [open, setOpen] = useState(false);
+  const [alertCount, setAlertCount] = useState(0);
   const store = useLocalStore();
   const unread = store.notifications.filter((item) => item.user_id === user?.id && !item.is_read).length;
   const unreadChats = useCaseUnread();
@@ -159,8 +160,8 @@ export default function CounselorLayout() {
       )}
       <main className="flex-1 overflow-y-auto p-4 pt-14 md:p-8 md:pt-8">
         <div className="mb-4 flex justify-end md:mb-6">
-          <NotificationBell />
-            <AlertCenter fetchJson={api} />
+          <NotificationBell extraCount={alertCount} />
+          <AlertCenter fetchJson={api} hideBadge onUnread={setAlertCount} />
         </div>
         <Outlet />
       </main>

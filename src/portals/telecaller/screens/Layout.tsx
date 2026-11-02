@@ -36,7 +36,8 @@ export default function Layout() {
   const open = store.leads.filter((lead) => !isConvertedStudent(lead)).length;
   // Same count as the per-student badges in Student Chat.
   const unreadChats = useCaseUnread();
-  const unreadNotices = store.notifications.filter((n) => !n.is_read).length;
+  const [alertCount, setAlertCount] = useState(0);
+  const unreadNotices = store.notifications.filter((n) => !n.is_read).length + alertCount;
 
   const badge = (label: string) => {
     if (label === "My queue" && open > 0) return { n: open, tone: "bg-sky-500" };
@@ -87,7 +88,7 @@ export default function Layout() {
           <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-sky-500/20 text-xs font-bold text-sky-300">
             {initials(user?.firstName, user?.lastName, user?.email)}
           </div>
-          <div className="flex-1"><AlertCenter fetchJson={api} /></div>
+          <div className="flex-1"><AlertCenter fetchJson={api} hideBadge onUnread={setAlertCount} /></div>
           <button onClick={signOut} className="rounded-lg p-2 text-slate-300 transition hover:bg-white/10" aria-label="Sign out">
             <LogOut className="h-4 w-4" />
           </button>
