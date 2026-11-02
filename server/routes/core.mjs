@@ -1893,7 +1893,11 @@ async function ownedStudentLead(telecallerId, studentId) {
 router.get("/api/telecaller/state", telecallerAuth, async (req, res) => {
   try {
     const state = await loadState(req.scope);
-    const mine = state.leads.filter(
+    // A lead assigned to this telecaller is always theirs to work, whatever branch
+    // it was filed under. Branch scope used to hide it: the admin saw it on the
+    // telecaller's page while the telecaller's own queue stayed empty.
+    const leadSource = req.scope?.allBranches ? state : await loadState(null);
+    const mine = leadSource.leads.filter(
       (lead) => String(lead.assigned_telecaller_id || "") === String(req.user.id),
     );
     const mineOpen = mine.filter(
