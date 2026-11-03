@@ -179,9 +179,15 @@ test("rule 7: checklist writes are not open to Branch Head", () => {
 
 // ---- Rule 8: HR is out of this release --------------------------------------------------------------------
 
-test("rule 8 (target): HR routes are disabled unless HR_ENABLED=true", { todo: "stream 1 step 4" }, () => {
-  const src = read("server/routes/core.mjs") + read("server/routes/counselor.mjs");
-  assert.match(src, /HR_ENABLED/);
+test("rule 8: every HR route checks the HR_ENABLED switch first", () => {
+  const core = read("server/routes/core.mjs");
+  const counselor = read("server/routes/counselor.mjs");
+  for (const [src, marker] of [
+    [core, 'router.patch("/api/leave/:id"'], [core, 'router.post("/api/salary"'], [core, 'router.get("/api/hr/state"'],
+    [counselor, 'router.post("/api/counselor/leave"'], [counselor, 'router.post("/api/counselor/attendance"'],
+    [counselor, 'router.patch("/api/counselor/attendance/:id"'],
+  ]) assert.match(block(src, marker), /if \(!hrEnabled\(\)\) return hrOff\(res\);/, marker);
+  assert.match(read("server/lib/hrSwitch.mjs"), /process\.env\.HR_ENABLED/);
 });
 
 // ---- Guard on the contract itself ------------------------------------------------------------------------

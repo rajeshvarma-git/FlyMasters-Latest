@@ -2,6 +2,8 @@
 // system alerts/auto-assign, partners, referral, finance payments). Real handlers; only the database is replaced.
 // A refused request must write nothing; an allowed one must return and save the right thing.
 process.env.DATABASE_URL = process.env.DATABASE_URL || "postgresql://nobody:nothing@127.0.0.1:1/none";
+// The leave and salary routes are HR, which is off by default. These tests check their branch limits, so turn HR on.
+process.env.HR_ENABLED = "true";
 
 import test from "node:test";
 import assert from "node:assert/strict";

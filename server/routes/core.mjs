@@ -34,6 +34,7 @@ import {
   WHATSAPP,
 } from "../lib/env.mjs";
 import { assignRole, setAccountBranches, createAccount, discardAccount, AccountWriteError } from "../lib/accountWrites.mjs";
+import { hrEnabled, hrOff } from "../lib/hrSwitch.mjs";
 import { decideAccountAction } from "../lib/accessPolicy.mjs";
 import { loadAccountTarget } from "../lib/accountTargets.mjs";
 import { allow, branchInScope, checkLeadInScope, checkRecipientInScope, checkStaffInScope, managerSeesConversation, requireGlobalScope, checkRowInScope, checkLeaveInScope } from "../lib/scopeGuards.mjs";
@@ -1516,15 +1517,15 @@ async function loadState(scope = null) {
       message: row.message || "",
       is_read: Boolean(row.is_read),
     })),
-    leave: sqlLeave.rows,
-    attendance: sqlAtt.rows.map((row) => ({
+    leave: hrEnabled() ? sqlLeave.rows : [],
+    attendance: (hrEnabled() ? sqlAtt.rows : []).map((row) => ({
       ...row,
       clock_in: row.clock_in ? String(row.clock_in).slice(0, 8) : null,
       clock_out: row.clock_out ? String(row.clock_out).slice(0, 8) : null,
       date: String(row.date || "").slice(0, 10),
       total_hours: row.total_hours == null ? null : Number(row.total_hours),
     })),
-    salary: sqlSalary.rows.map((row) => ({ ...row, net_salary: Number(row.net_salary || 0) })),
+    salary: (hrEnabled() ? sqlSalary.rows : []).map((row) => ({ ...row, net_salary: Number(row.net_salary || 0) })),
     notifications: mergeById(
       sqlNotes.rows.map((row) => ({ ...row, message: row.message || row.body || "" })),
       jsonNotes,
@@ -2772,6 +2773,7 @@ router.patch("/api/applications/:id", auth, async (req, res) => {
 });
 
 router.patch("/api/leave/:id", auth, async (req, res) => {
+  if (!hrEnabled()) return hrOff(res);
   const status = String(req.body.status || "");
   if (!["approved", "rejected", "pending"].includes(status)) return res.status(400).json({ error: "Invalid leave status." });
   const comments = String(req.body.comments || "");
@@ -2788,6 +2790,7 @@ router.patch("/api/leave/:id", auth, async (req, res) => {
 });
 
 router.post("/api/salary", auth, async (req, res) => {
+  if (!hrEnabled()) return hrOff(res);
   const counselorId = String(req.body.counselorId || "");
   const month = String(req.body.month || "");
   const year = Number(req.body.year || new Date().getFullYear());
@@ -3913,6 +3916,7 @@ router.post("/api/leads/:id/branch", [session, requireRole(ADMIN_ROLES, "Admin")
  * everything outside finance and HR comes back empty.
  */
 router.get("/api/hr/state", [session, requireRole([ROLES.ACCOUNTANT, ...ADMIN_ROLES], "Finance"), branchScope], async (req, res) => {
+  if (!hrEnabled()) return hrOff(res);
   try {
     const [leave, attendance, salary, counselors, users] = await Promise.all([
       scopedRows("counselor_leave_requests", "applied_on DESC", req.scope),

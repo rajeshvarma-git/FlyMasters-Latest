@@ -20,6 +20,7 @@ import { sendVerificationEmail } from "../lib/email.mjs";
 import { syncConversationFromLead } from "../lib/whatsappStore.mjs";
 import { pool, jsonTable, jsonUpsert } from "../lib/db.mjs";
 import { createAccount } from "../lib/accountWrites.mjs";
+import { hrEnabled, hrOff } from "../lib/hrSwitch.mjs";
 import { documentAppliesToStudent, staffOnlyDocumentTypes, studentForTargeting } from "../lib/documentTargeting.mjs";
 import { staffOnlyForStudentRef } from "../lib/staffOnlyDocuments.mjs";
 import {
@@ -1091,15 +1092,15 @@ router.get("/api/counselor/state", counselorAuth, async (req, res) => {
     ).filter((sl) => ownsStudent(sl.student_id, sl.student_email)),
     applications: (shared.applications || []).filter((a) => ownsStudent(a.user_id)),
     application_events: (shared.application_events || []).filter((e) => ownsStudent(e.student_id)),
-    leave: leave.rows,
-    attendance: attendance.rows.map((row) => ({
+    leave: hrEnabled() ? leave.rows : [],
+    attendance: (hrEnabled() ? attendance.rows : []).map((row) => ({
       ...row,
       clock_in: row.clock_in ? String(row.clock_in).slice(0, 8) : null,
       clock_out: row.clock_out ? String(row.clock_out).slice(0, 8) : null,
       date: String(row.date || "").slice(0, 10),
       total_hours: row.total_hours == null ? null : Number(row.total_hours),
     })),
-    salary: salary.rows.map((row) => ({
+    salary: (hrEnabled() ? salary.rows : []).map((row) => ({
       ...row,
       net_salary: Number(row.net_salary || 0),
     })),
@@ -1186,6 +1187,7 @@ router.post("/api/counselor/leads/:id/claim", counselorAuth, async (req, res) =>
 });
 
 router.post("/api/counselor/leave", counselorAuth, async (req, res) => {
+  if (!hrEnabled()) return hrOff(res);
   await pool.query(
     `INSERT INTO counselor_leave_requests (counselor_id, leave_type, start_date, end_date, reason, total_days, status)
      VALUES ($1,$2,$3,$4,$5,$6,'pending')`,
@@ -1195,6 +1197,7 @@ router.post("/api/counselor/leave", counselorAuth, async (req, res) => {
 });
 
 router.post("/api/counselor/attendance", counselorAuth, async (req, res) => {
+  if (!hrEnabled()) return hrOff(res);
   const date = String(req.body.date || "").slice(0, 10);
   const clockIn = String(req.body.clock_in || "").slice(0, 8);
   const existing = await pool.query(
@@ -1212,6 +1215,7 @@ router.post("/api/counselor/attendance", counselorAuth, async (req, res) => {
 });
 
 router.patch("/api/counselor/attendance/:id", counselorAuth, async (req, res) => {
+  if (!hrEnabled()) return hrOff(res);
   await pool.query(
     `UPDATE counselor_attendance SET clock_out = $2, total_hours = $3 WHERE id = $1`,
     [req.params.id, req.body.clock_out, req.body.total_hours],
