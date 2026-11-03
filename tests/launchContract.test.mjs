@@ -159,13 +159,13 @@ test("rule 6: university delete, catalog clear, edit and CSV import are Super Ad
 
 // ---- Rule 7: company-wide configuration -----------------------------------------------------------------
 
-test("rule 7 (target): writes to /api/config/* are Super Admin only", { todo: "stream 1 step 4" }, () => {
+test("rule 7: writes to /api/config/* are Super Admin only", () => {
   const writes = routes.filter((r) => r.path.startsWith("/api/config/") && r.method !== "GET");
   assert.ok(writes.length >= 11, "expected the config write routes to be found");
   for (const r of writes) assert.deepEqual(r.who, ["super_admin"], r.key);
 });
 
-test("rule 7 (target): comms rules, reminders, approve and retire are Super Admin only", { todo: "stream 1 step 4" }, () => {
+test("rule 7: comms rules, reminders, approve and retire are Super Admin only", () => {
   for (const key of [
     "POST /api/comms/rules", "PATCH /api/comms/rules/:id", "PUT /api/comms/reminders",
     "POST /api/comms/reminders/run", "POST /api/comms/events/:event",

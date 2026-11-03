@@ -80,7 +80,7 @@ router.get("/api/config/documents", staffAuth, async (req, res) => {
   } catch (error) { fail(res, error); }
 });
 
-router.post("/api/config/documents", configAuth, async (req, res) => {
+router.post("/api/config/documents", superOnly, async (req, res) => {
   try {
     const body = req.body || {};
     const name = String(body.name || "").trim();
@@ -131,7 +131,7 @@ const DOC_FIELDS = [
   "country_scope", "restricted_visible", "retention_days", "secure_download", "is_active",
 ];
 
-router.patch("/api/config/documents/:id", configAuth, async (req, res) => {
+router.patch("/api/config/documents/:id", superOnly, async (req, res) => {
   try {
     const before = (await pool.query("SELECT * FROM document_master WHERE id = $1", [req.params.id])).rows[0];
     if (!before) throw Object.assign(new Error("Document not found."), { status: 404 });
@@ -186,7 +186,7 @@ router.get("/api/config/reasons", staffAuth, async (req, res) => {
   } catch (error) { fail(res, error); }
 });
 
-router.post("/api/config/reasons", configAuth, async (req, res) => {
+router.post("/api/config/reasons", superOnly, async (req, res) => {
   try {
     const body = req.body || {};
     const kind = String(body.kind || "rejection");
@@ -207,7 +207,7 @@ router.post("/api/config/reasons", configAuth, async (req, res) => {
   } catch (error) { fail(res, error); }
 });
 
-router.patch("/api/config/reasons/:id", configAuth, async (req, res) => {
+router.patch("/api/config/reasons/:id", superOnly, async (req, res) => {
   try {
     const before = (await pool.query("SELECT * FROM document_reason_master WHERE id = $1", [req.params.id])).rows[0];
     if (!before) throw Object.assign(new Error("Reason not found."), { status: 404 });
@@ -258,7 +258,7 @@ router.get("/api/config/statuses", anySession, async (req, res) => {
   } catch (error) { fail(res, error); }
 });
 
-router.post("/api/config/statuses", configAuth, async (req, res) => {
+router.post("/api/config/statuses", superOnly, async (req, res) => {
   try {
     const body = req.body || {};
     const kind = String(body.kind || "");
@@ -290,7 +290,7 @@ router.post("/api/config/statuses", configAuth, async (req, res) => {
 });
 
 // Retiring a status never deletes it — historical records still reference it.
-router.patch("/api/config/statuses/:id", configAuth, async (req, res) => {
+router.patch("/api/config/statuses/:id", superOnly, async (req, res) => {
   try {
     const before = (await pool.query("SELECT * FROM status_vocabulary WHERE id = $1", [req.params.id])).rows[0];
     if (!before) throw Object.assign(new Error("Status not found."), { status: 404 });
@@ -374,7 +374,7 @@ router.get("/api/config/checklists/version/:id", staffAuth, async (req, res) => 
 });
 
 /** Creates version 1 of a new family, as a draft. */
-router.post("/api/config/checklists", configAuth, async (req, res) => {
+router.post("/api/config/checklists", superOnly, async (req, res) => {
   try {
     const body = req.body || {};
     const name = String(body.name || "").trim();
@@ -405,7 +405,7 @@ router.post("/api/config/checklists", configAuth, async (req, res) => {
  * Replaces the items on a DRAFT version. An active or inactive version is
  * immutable — that is the whole point of pinning students to a version.
  */
-router.put("/api/config/checklists/version/:id/items", configAuth, async (req, res) => {
+router.put("/api/config/checklists/version/:id/items", superOnly, async (req, res) => {
   const client = await pool.connect();
   try {
     const template = (await client.query("SELECT * FROM checklist_templates WHERE id = $1", [req.params.id])).rows[0];
@@ -465,7 +465,7 @@ router.put("/api/config/checklists/version/:id/items", configAuth, async (req, r
  * at this one via superseded_by. It keeps every row it had: students pinned to
  * it continue to see exactly the checklist they started with.
  */
-router.post("/api/config/checklists/version/:id/publish", configAuth, async (req, res) => {
+router.post("/api/config/checklists/version/:id/publish", superOnly, async (req, res) => {
   const client = await pool.connect();
   try {
     const template = (await client.query("SELECT * FROM checklist_templates WHERE id = $1", [req.params.id])).rows[0];
@@ -517,7 +517,7 @@ router.post("/api/config/checklists/version/:id/publish", configAuth, async (req
 });
 
 /** Clones the live (or newest) version into a fresh draft. Never edits in place. */
-router.post("/api/config/checklists/:familyId/revise", configAuth, async (req, res) => {
+router.post("/api/config/checklists/:familyId/revise", superOnly, async (req, res) => {
   const client = await pool.connect();
   try {
     const source = (await client.query(
@@ -578,7 +578,7 @@ router.post("/api/config/checklists/:familyId/revise", configAuth, async (req, r
 });
 
 /** Retires the live version of a family. Rows are kept; nothing is deleted. */
-router.post("/api/config/checklists/:familyId/retire", configAuth, async (req, res) => {
+router.post("/api/config/checklists/:familyId/retire", superOnly, async (req, res) => {
   try {
     const { rows } = await pool.query(
       "UPDATE checklist_templates SET status = 'inactive', updated_at = now() WHERE family_id = $1 AND status = 'active' RETURNING *",

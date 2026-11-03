@@ -232,7 +232,7 @@ router.post("/api/comms/templates/version/:id/submit", staffAuth, async (req, re
  * Approves and publishes. The previously live version goes inactive and points
  * at this one. Nothing is deleted.
  */
-router.post("/api/comms/templates/version/:id/approve", commsAdmin, async (req, res) => {
+router.post("/api/comms/templates/version/:id/approve", superOnly, async (req, res) => {
   const client = await pool.connect();
   try {
     const template = (await client.query("SELECT * FROM message_templates WHERE id = $1", [req.params.id])).rows[0];
@@ -324,7 +324,7 @@ router.post("/api/comms/templates/:familyId/revise", commsAdmin, async (req, res
   } catch (error) { fail(res, error); }
 });
 
-router.post("/api/comms/templates/:familyId/retire", commsAdmin, async (req, res) => {
+router.post("/api/comms/templates/:familyId/retire", superOnly, async (req, res) => {
   try {
     const { rows } = await pool.query(
       "UPDATE message_templates SET status = 'retired', updated_at = now() WHERE family_id = $1 AND status = 'active' RETURNING *",
@@ -424,11 +424,11 @@ router.get("/api/comms/reminders", commsAdmin, async (_req, res) => {
   try { res.json(await withUsage(await getReminderSettings())); } catch (error) { fail(res, error); }
 });
 
-router.put("/api/comms/reminders", commsAdmin, async (req, res) => {
+router.put("/api/comms/reminders", superOnly, async (req, res) => {
   try { res.json(await withUsage(await saveReminderSettings(req.body || {}))); } catch (error) { fail(res, error); }
 });
 
-router.post("/api/comms/reminders/run", commsAdmin, async (_req, res) => {
+router.post("/api/comms/reminders/run", superOnly, async (_req, res) => {
   try { res.json(await runAllReminders({ ignoreHours: true })); } catch (error) { fail(res, error); }
 });
 
@@ -450,7 +450,7 @@ router.get("/api/comms/rules", commsAdmin, async (_req, res) => {
   } catch (error) { fail(res, error); }
 });
 
-router.post("/api/comms/rules", commsAdmin, async (req, res) => {
+router.post("/api/comms/rules", superOnly, async (req, res) => {
   try {
     const body = req.body || {};
     const event = String(body.event || "");
@@ -484,7 +484,7 @@ router.post("/api/comms/rules", commsAdmin, async (req, res) => {
   } catch (error) { fail(res, error); }
 });
 
-router.patch("/api/comms/rules/:id", commsAdmin, async (req, res) => {
+router.patch("/api/comms/rules/:id", superOnly, async (req, res) => {
   try {
     const before = (await pool.query("SELECT * FROM communication_rules WHERE id = $1", [req.params.id])).rows[0];
     if (!before) throw Object.assign(new Error("Rule not found."), { status: 404 });
@@ -561,7 +561,7 @@ router.post("/api/comms/rules/:id/test", commsAdmin, async (req, res) => {
 });
 
 /** Lets any module fire an event. Used by the CRM screens and by scripts. */
-router.post("/api/comms/events/:event", commsAdmin, async (req, res) => {
+router.post("/api/comms/events/:event", superOnly, async (req, res) => {
   try {
     if (!AUTOMATION_EVENTS.includes(req.params.event)) throw new Error("Unknown event.");
     const results = await runEvent(req.params.event, req.body || {}, deps);
