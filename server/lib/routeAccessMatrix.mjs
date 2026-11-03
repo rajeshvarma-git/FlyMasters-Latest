@@ -82,6 +82,29 @@ export const TESTED_ROUTES = {
   "POST /api/notifications": "tests/adminScopeFollowup.test.mjs",
 };
 
+// Shared-setting routes whose launch ruling is "unchanged" in docs/release/permission-matrix.md. The ruling holds only
+// while the route is open to exactly these roles: if the guard changes, the route goes back to "decision".
+const AS = ["admin", "super_admin"];
+const STAFF_ALL = ["admin", "super_admin", "branch_head", "counselor", "telecaller", "accountant"];
+const FROZEN_RULINGS = {
+  "POST /api/comms/templates": { who: AS, note: "template authors are Admin and Super Admin; approval is Super Admin only" },
+  "PATCH /api/comms/templates/version/:id": { who: AS, note: "template authors are Admin and Super Admin; approval is Super Admin only" },
+  "POST /api/comms/templates/:familyId/revise": { who: AS, note: "template authors are Admin and Super Admin; approval is Super Admin only" },
+  "POST /api/comms/templates/version/:id/submit": { who: STAFF_ALL, note: "any staff role may submit a draft for approval; it changes nothing until a Super Admin approves" },
+  "POST /api/comms/templates/version/:id/preview": { who: STAFF_ALL, note: "preview renders a template and saves nothing" },
+  "PUT /api/comms/auto-response": { who: STAFF_ALL, note: "a non-admin can change only their own auto-reply (handler, regression-tested in tests/autoResponseScope.test.mjs)" },
+  "POST /api/alerts/raise": { who: AS, note: "Admin and Super Admin may raise a system alert" },
+  "POST /api/checklists": { who: AS, note: "company document checklist: Admin and Super Admin, not Branch Head (tests/adminOnly.test.mjs)" },
+  "PATCH /api/checklists/:id": { who: AS, note: "company document checklist: Admin and Super Admin, not Branch Head (tests/adminOnly.test.mjs)" },
+  "POST /api/knowledge": { who: ["any signed-in"], note: "the handler refuses everyone except Admin and Super Admin (EDIT_ROLES in knowledge.mjs)" },
+  "PUT /api/knowledge/:id": { who: ["any signed-in"], note: "the handler refuses everyone except Admin and Super Admin (EDIT_ROLES in knowledge.mjs)" },
+  "DELETE /api/knowledge/:id": { who: ["any signed-in"], note: "the handler refuses everyone except Admin and Super Admin (EDIT_ROLES in knowledge.mjs)" },
+  "PUT /api/admin/universities/:id/info": { who: AS, note: "university information pages: Admin and Super Admin" },
+  "POST /api/admin/universities/:id/info/publish": { who: AS, note: "university information pages: Admin and Super Admin" },
+  "POST /api/admin/universities/:id/info/unpublish": { who: AS, note: "university information pages: Admin and Super Admin" },
+  "POST /api/admin/universities/:id/assets": { who: AS, note: "university information pages: Admin and Super Admin" },
+};
+
 /** route = { key, method, path, who: [roles], scoped: boolean } from the inventory. */
 export function classifyRoute(route) {
   const { key, method, path, who, scoped } = route;
@@ -107,6 +130,10 @@ export function classifyRoute(route) {
     return { ...base, scope: "own", verdict: "ok", note: `${who.join("/")} self-service: limited to the caller's own records or assignments (not changed by ACCESS-03)` };
   }
   if (scoped) return { ...base, scope: "branch", verdict: "enforced", note: TESTED_ROUTES[key] ? `branch scope applied in the handler; permitted and forbidden access regression-tested in ${TESTED_ROUTES[key]}` : "branch scope applied in the handler (detected in code)" };
+  const frozen = FROZEN_RULINGS[key];
+  if (frozen && frozen.who.length === who.length && frozen.who.every((r) => who.includes(r))) {
+    return { ...base, scope: "global-config", verdict: "ok", note: `launch ruling (docs/release/permission-matrix.md): ${frozen.note}` };
+  }
   if (DECISION_PREFIXES.some((p) => path.startsWith(p)) && method !== "GET") {
     return { ...base, scope: "global-config", verdict: "decision", note: "shared setting, writable by every Admin/Branch Head in the list; owner must decide who may change it" };
   }

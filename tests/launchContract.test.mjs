@@ -13,6 +13,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { decideAccountAction } from "../server/lib/accessPolicy.mjs";
 import { readRoutes } from "../scripts/access-route-inventory.mjs";
+import { classifyAll } from "../server/lib/routeAccessMatrix.mjs";
 
 const A = "aaaaaaaa-0000-0000-0000-000000000001";
 const B = "bbbbbbbb-0000-0000-0000-000000000002";
@@ -188,6 +189,14 @@ test("rule 8: every HR route checks the HR_ENABLED switch first", () => {
     [counselor, 'router.patch("/api/counselor/attendance/:id"'],
   ]) assert.match(block(src, marker), /if \(!hrEnabled\(\)\) return hrOff\(res\);/, marker);
   assert.match(read("server/lib/hrSwitch.mjs"), /process\.env\.HR_ENABLED/);
+});
+
+// ---- Nothing is left undecided ------------------------------------------------------------------------------
+
+test("every shared-setting route has a launch ruling: no open 'decision' or 'gap' remains", () => {
+  const matrix = classifyAll(routes);
+  const open = matrix.filter((m) => m.verdict === "decision" || m.verdict === "gap").map((m) => `${m.key} (${m.who.join(", ")})`);
+  assert.deepEqual(open, [], "a route was widened or added without a ruling: decide it in docs/release/permission-matrix.md, then in routeAccessMatrix.mjs");
 });
 
 // ---- Guard on the contract itself ------------------------------------------------------------------------
