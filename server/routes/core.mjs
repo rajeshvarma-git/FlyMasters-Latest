@@ -33,7 +33,7 @@ import {
   TELECALLER_SIGNUP_CODE,
   WHATSAPP,
 } from "../lib/env.mjs";
-import { assignRole, setAccountBranches, createAccount, AccountWriteError } from "../lib/accountWrites.mjs";
+import { assignRole, setAccountBranches, createAccount, discardAccount, AccountWriteError } from "../lib/accountWrites.mjs";
 import { decideAccountAction } from "../lib/accessPolicy.mjs";
 import { loadAccountTarget } from "../lib/accountTargets.mjs";
 import { allow, branchInScope, checkLeadInScope, checkRecipientInScope, checkStaffInScope, managerSeesConversation, requireGlobalScope, checkRowInScope, checkLeaveInScope } from "../lib/scopeGuards.mjs";
@@ -92,6 +92,14 @@ const WHATSAPP_OTP_TEMPLATE_NAME = WHATSAPP.otpTemplate;
 const WHATSAPP_OUTREACH_TEMPLATE_NAME = WHATSAPP.outreachTemplate;
 
 const ADMIN_ID = "local-admin-1";
+
+// Express 4 does not catch an error thrown inside an async handler: the request just hangs.
+// Wrap a handler that has no try/catch of its own so any failure answers with a clean 500.
+const safely = (handler) => (req, res, next) =>
+  Promise.resolve(handler(req, res, next)).catch((error) => {
+    console.error(`${req.method} ${req.path} failed:`, error);
+    if (!res.headersSent) res.status(500).json({ error: "Something went wrong. Nothing was saved. Try again." });
+  });
 
 function isUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ""));
@@ -1661,16 +1669,21 @@ router.post("/api/auth/signup", async (req, res) => {
       metadata: { first_name: firstName, last_name: lastName },
       role: "admin",
     });
-    await jsonUpsert("profiles", {
-      id: `profile-${id}`,
-      user_id: id,
-      first_name: firstName,
-      last_name: lastName,
-      phone,
-      country: "India",
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    });
+    try {
+      await jsonUpsert("profiles", {
+        id: `profile-${id}`,
+        user_id: id,
+        first_name: firstName,
+        last_name: lastName,
+        phone,
+        country: "India",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    } catch (error) {
+      await discardAccount(pool, { id }).catch((cleanup) => console.error("Could not remove the half-created account:", id, cleanup));
+      throw error;
+    }
     const user = publicUser({ id, email, first_name: firstName, last_name: lastName, phone }, "admin");
     res.json({ token: signUser(user), user });
   } catch (error) {
@@ -1712,16 +1725,21 @@ router.post("/api/auth/telecaller-signup", async (req, res) => {
       role: "telecaller",
       allowUnassigned: true,
     });
-    await jsonUpsert("profiles", {
-      id: `profile-${id}`,
-      user_id: id,
-      first_name: firstName,
-      last_name: lastName,
-      phone,
-      country: "India",
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    });
+    try {
+      await jsonUpsert("profiles", {
+        id: `profile-${id}`,
+        user_id: id,
+        first_name: firstName,
+        last_name: lastName,
+        phone,
+        country: "India",
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    } catch (error) {
+      await discardAccount(pool, { id }).catch((cleanup) => console.error("Could not remove the half-created account:", id, cleanup));
+      throw error;
+    }
     const users = await loadUsers();
     for (const admin of users.filter((row) => ADMIN_ROLES.includes(row.role))) {
       await notify(admin.id, "New telecaller registered", `${firstName} ${lastName} created a telecaller account. Assign a branch so they can start.`, "info", "/admin/telecallers");
@@ -2863,9 +2881,9 @@ router.put("/api/users/:id/password", auth, async (req, res) => {
   res.json({ ok: true });
 });
 
-router.post("/api/users", auth, async (req, res) => {
+router.post("/api/users", auth, safely(async (req, res) => {
   const email = String(req.body.email || "").trim().toLowerCase();
-  const password = String(req.body.password || "changeme123");
+  const password = String(req.body.password || "");
   const firstName = String(req.body.firstName || "").trim();
   const lastName = String(req.body.lastName || "").trim();
   const role = String(req.body.role || "student");
@@ -2934,48 +2952,57 @@ router.post("/api/users", auth, async (req, res) => {
     if (error instanceof AccountWriteError) return res.status(error.status).json({ error: error.message });
     throw error;
   }
-  await audit(req, "user.create", "auth_users", id, { email, role, branches: requestedBranches });
-  await jsonUpsert("profiles", {
-    id: `profile-${id}`,
-    user_id: id,
-    first_name: firstName,
-    last_name: lastName,
-    phone,
-    country: req.body.country || "India",
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  });
-  if (role === "counselor") {
-    const hash = await bcrypt.hash(password, 10);
-    const bio = String(req.body.bio || "").trim();
-    const specializations = Array.isArray(req.body.specializations)
-      ? req.body.specializations.map((item) => String(item).trim()).filter(Boolean)
-      : String(req.body.specializations || "Study Abroad").split(",").map((item) => item.trim()).filter(Boolean);
-    const created = await pool.query(
-      `INSERT INTO counselor_users (id, email, password_hash, first_name, last_name, phone, bio, specializations)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (email) DO UPDATE SET
-         password_hash = EXCLUDED.password_hash,
-         first_name = EXCLUDED.first_name,
-         last_name = EXCLUDED.last_name,
-         phone = EXCLUDED.phone,
-         bio = EXCLUDED.bio,
-         specializations = EXCLUDED.specializations
-       RETURNING *`,
-      [isUuid(id) ? id : crypto.randomUUID(), email, hash, firstName, lastName, phone, bio, specializations],
-    );
-    await jsonUpsert("counselors", {
-      id: `counselor-${id}`,
+  // The login, role and branches are saved. The profile (and a counselor's own records) must save
+  // too, or the whole account is removed again: a failure never leaves a person who can sign in
+  // with no profile, and the email stays free for a retry.
+  let counselorId;
+  try {
+    await jsonUpsert("profiles", {
+      id: `profile-${id}`,
       user_id: id,
-      is_active: true,
-      specializations,
+      first_name: firstName,
+      last_name: lastName,
+      phone,
+      country: req.body.country || "India",
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     });
-    res.json({ ok: true, id, counselorId: created.rows[0]?.id });
-    return;
+    if (role === "counselor") {
+      const hash = await bcrypt.hash(password, 10);
+      const bio = String(req.body.bio || "").trim();
+      const specializations = Array.isArray(req.body.specializations)
+        ? req.body.specializations.map((item) => String(item).trim()).filter(Boolean)
+        : String(req.body.specializations || "Study Abroad").split(",").map((item) => item.trim()).filter(Boolean);
+      const created = await pool.query(
+        `INSERT INTO counselor_users (id, email, password_hash, first_name, last_name, phone, bio, specializations)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (email) DO UPDATE SET
+           password_hash = EXCLUDED.password_hash,
+           first_name = EXCLUDED.first_name,
+           last_name = EXCLUDED.last_name,
+           phone = EXCLUDED.phone,
+           bio = EXCLUDED.bio,
+           specializations = EXCLUDED.specializations
+         RETURNING *`,
+        [isUuid(id) ? id : crypto.randomUUID(), email, hash, firstName, lastName, phone, bio, specializations],
+      );
+      counselorId = created.rows[0]?.id;
+      await jsonUpsert("counselors", {
+        id: `counselor-${id}`,
+        user_id: id,
+        is_active: true,
+        specializations,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    }
+  } catch (error) {
+    console.error("Account creation failed after the login was saved; removing it:", id, error);
+    await discardAccount(pool, { id }).catch((cleanup) => console.error("Could not remove the half-created account:", id, cleanup));
+    return res.status(500).json({ error: "Could not finish creating this account. Nothing was saved. Try again." });
   }
-  res.json({ ok: true, id });
-});
+  await audit(req, "user.create", "auth_users", id, { email, role, branches: requestedBranches });
+  res.json(counselorId ? { ok: true, id, counselorId } : { ok: true, id });
+}));
 
 router.post("/api/counselors/:id/transfer", auth, async (req, res) => {
   try {

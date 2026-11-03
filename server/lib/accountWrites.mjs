@@ -127,6 +127,23 @@ export async function assignRole(pool, { userId, role, branchId = null, assigned
   });
 }
 
+/**
+ * Removes an account that was created a moment ago in this same request, after something that
+ * had to be saved with it failed. It removes the login, role, branches and profile rows, so a
+ * failure never leaves someone who can sign in but has no profile, and the email is free to
+ * try again. Never use it on an account that existed before the request.
+ */
+export async function discardAccount(pool, { id }) {
+  const key = String(id || "");
+  if (!key) throw new AccountWriteError(400, "discardAccount requires an id");
+  return inTransaction(pool, async (client) => {
+    await client.query("DELETE FROM user_branches WHERE user_id = $1", [key]);
+    await client.query("DELETE FROM user_roles WHERE user_id = $1", [key]);
+    await client.query("DELETE FROM app_records WHERE table_name IN ('profiles', 'counselors') AND data->>'user_id' = $1", [key]);
+    await client.query("DELETE FROM auth_users WHERE id = $1", [key]);
+  });
+}
+
 /** Replaces memberships and the home branch (the first one) in one step. */
 export async function setAccountBranches(pool, { userId, branchIds, assignedBy = null }) {
   const ids = unique(branchIds);

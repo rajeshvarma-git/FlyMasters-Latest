@@ -121,8 +121,19 @@ test("rule 5: only a Super Admin can attach a partner login", () => {
   assert.deepEqual(route("PUT /api/partners/:id/login").who, ["super_admin"]);
 });
 
-test("rule 5 (target): no default password when POST /api/users gets none", { todo: "stream 1 step 4" }, () => {
+test("rule 5: no default password when POST /api/users gets none", () => {
   assert.doesNotMatch(read("server/routes/core.mjs"), /changeme123/);
+});
+
+test("account creation is all-or-nothing and cannot hang the request", () => {
+  const src = read("server/routes/core.mjs");
+  const users = block(src, 'router.post("/api/users"');
+  assert.match(users, /safely\(async/, "POST /api/users must answer a thrown error with a 500, not hang");
+  assert.match(users, /discardAccount\(pool, \{ id \}\)/, "a failed profile or counselor write must remove the new account");
+  assert.ok(users.indexOf("discardAccount") < users.indexOf('audit(req, "user.create"'), "audit only after every write succeeded");
+  for (const marker of ['router.post("/api/auth/signup"', 'router.post("/api/auth/telecaller-signup"']) {
+    assert.match(block(src, marker), /discardAccount\(pool, \{ id \}\)/, `${marker} must remove the account if the profile write fails`);
+  }
 });
 
 test("rule 5 (target): public counselor sign-up cannot create a new counselor account", { todo: "stream 1 step 4" }, () => {
