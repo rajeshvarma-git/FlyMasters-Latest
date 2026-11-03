@@ -150,7 +150,7 @@ test("rule 6: Branch Head cannot remove or transfer staff", () => {
   ]) assert.deepEqual(route(key).who, ["admin", "super_admin"], key);
 });
 
-test("rule 6 (target): university delete, catalog clear, edit and CSV import are Super Admin only", { todo: "stream 1 step 4" }, () => {
+test("rule 6: university delete, catalog clear, edit and CSV import are Super Admin only", () => {
   for (const key of [
     "DELETE /api/universities/:id", "DELETE /api/universities/catalog",
     "PATCH /api/universities/:id", "POST /api/universities/import-csv",

@@ -3184,7 +3184,7 @@ router.get("/api/university-programs", auth, async (req, res) => {
   }
 });
 
-router.post("/api/universities/import-csv", auth, async (req, res) => {
+router.post("/api/universities/import-csv", superAdminAuth, async (req, res) => {
   try {
     const csv = String(req.body.csv || "");
     const fileName = String(req.body.fileName || "upload.csv").trim();
@@ -3218,7 +3218,7 @@ router.post("/api/universities/import-csv", auth, async (req, res) => {
   }
 });
 
-router.delete("/api/universities/catalog", auth, async (req, res) => {
+router.delete("/api/universities/catalog", superAdminAuth, async (req, res) => {
   try {
     await jsonClearTable("university_programs");
     await jsonClearTable("universities");
@@ -3228,7 +3228,7 @@ router.delete("/api/universities/catalog", auth, async (req, res) => {
   }
 });
 
-router.patch("/api/universities/:id", auth, async (req, res) => {
+router.patch("/api/universities/:id", superAdminAuth, async (req, res) => {
   const rows = await jsonTable("universities");
   const found = rows.find((row) => String(row.id) === String(req.params.id));
   if (!found) return res.status(404).json({ error: "University not found" });
@@ -3237,7 +3237,7 @@ router.patch("/api/universities/:id", auth, async (req, res) => {
   res.json(next);
 });
 
-router.delete("/api/universities/:id", auth, async (req, res) => {
+router.delete("/api/universities/:id", superAdminAuth, async (req, res) => {
   await jsonDelete(req.params.id);
   res.json({ ok: true });
 });
