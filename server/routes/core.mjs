@@ -3004,7 +3004,11 @@ router.post("/api/users", auth, safely(async (req, res) => {
   res.json(counselorId ? { ok: true, id, counselorId } : { ok: true, id });
 }));
 
-router.post("/api/counselors/:id/transfer", auth, async (req, res) => {
+// Moving or removing staff changes who serves which students and leads. At launch that is for
+// Admin and Super Admin only; a Branch Head cannot (permission-matrix.md, rule 6).
+const staffMoveAuth = [session, requireRole(ADMIN_ROLES, "Admin"), branchScope];
+
+router.post("/api/counselors/:id/transfer", staffMoveAuth, async (req, res) => {
   try {
     const targetCounselorId = String(req.body.targetCounselorId || "");
     if (!targetCounselorId) {
@@ -3028,7 +3032,7 @@ router.post("/api/counselors/:id/transfer", auth, async (req, res) => {
   }
 });
 
-router.post("/api/telecallers/:id/transfer", auth, async (req, res) => {
+router.post("/api/telecallers/:id/transfer", staffMoveAuth, async (req, res) => {
   try {
     const targetTelecallerId = String(req.body.targetTelecallerId || "");
     if (!targetTelecallerId) {
@@ -3052,7 +3056,7 @@ router.post("/api/telecallers/:id/transfer", auth, async (req, res) => {
   }
 });
 
-router.post("/api/telecallers/:id/remove", auth, async (req, res) => {
+router.post("/api/telecallers/:id/remove", staffMoveAuth, async (req, res) => {
   try {
     const targetTelecallerId = req.body.targetTelecallerId ? String(req.body.targetTelecallerId) : "";
     if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;
@@ -3091,7 +3095,7 @@ router.post("/api/telecallers/:id/remove", auth, async (req, res) => {
   }
 });
 
-router.post("/api/counselors/:id/remove", auth, async (req, res) => {
+router.post("/api/counselors/:id/remove", staffMoveAuth, async (req, res) => {
   try {
     const targetCounselorId = req.body.targetCounselorId ? String(req.body.targetCounselorId) : "";
     if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;

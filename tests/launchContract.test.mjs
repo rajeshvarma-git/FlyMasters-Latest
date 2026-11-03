@@ -143,11 +143,11 @@ test("rule 5: public counselor sign-up cannot create a new counselor account", (
 
 // ---- Rule 6: delete and remove are not for Branch Head, destructive company data is Super Admin only -----
 
-test("rule 6 (target): Branch Head cannot remove or transfer staff", { todo: "stream 1 step 4" }, () => {
+test("rule 6: Branch Head cannot remove or transfer staff", () => {
   for (const key of [
     "POST /api/telecallers/:id/remove", "POST /api/counselors/:id/remove",
     "POST /api/telecallers/:id/transfer", "POST /api/counselors/:id/transfer",
-  ]) assert.ok(!route(key).who.includes("branch_head"), `${key} is still open to Branch Head`);
+  ]) assert.deepEqual(route(key).who, ["admin", "super_admin"], key);
 });
 
 test("rule 6 (target): university delete, catalog clear, edit and CSV import are Super Admin only", { todo: "stream 1 step 4" }, () => {
