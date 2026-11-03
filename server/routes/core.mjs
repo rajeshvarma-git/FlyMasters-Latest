@@ -3242,7 +3242,11 @@ router.delete("/api/universities/:id", superAdminAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-router.post("/api/checklists", auth, async (req, res) => {
+// The list of documents students must upload is company-wide, so a Branch Head cannot change it
+// (permission-matrix.md, rule 7).
+const adminOnlyAuth = [session, requireRole(ADMIN_ROLES, "Admin"), branchScope];
+
+router.post("/api/checklists", adminOnlyAuth, async (req, res) => {
   const payload = {
     id: req.body.id || `dc-${crypto.randomUUID()}`,
     document_type: String(req.body.document_type || "").trim(),
@@ -3264,7 +3268,7 @@ router.post("/api/checklists", auth, async (req, res) => {
   res.json(payload);
 });
 
-router.patch("/api/checklists/:id", auth, async (req, res) => {
+router.patch("/api/checklists/:id", adminOnlyAuth, async (req, res) => {
   const rows = await jsonTable("document_checklists");
   const found = rows.find((row) => String(row.id) === String(req.params.id));
   if (!found) return res.status(404).json({ error: "Checklist item not found" });

@@ -173,7 +173,7 @@ test("rule 7: comms rules, reminders, approve and retire are Super Admin only", 
   ]) assert.deepEqual(route(key).who, ["super_admin"], key);
 });
 
-test("rule 7 (target): checklist writes are not open to Branch Head", { todo: "stream 1 step 4" }, () => {
+test("rule 7: checklist writes are not open to Branch Head", () => {
   for (const key of ["POST /api/checklists", "PATCH /api/checklists/:id"]) assert.ok(!route(key).who.includes("branch_head"), key);
 });
 
