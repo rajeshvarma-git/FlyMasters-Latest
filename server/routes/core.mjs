@@ -47,9 +47,11 @@ import {
   raiseCommissionForLead,
 } from "../lib/partners.mjs";
 import { runDelete, DeleteRefused, DELETE_KINDS } from "../lib/deletion.mjs";
+import { buildEmployees, employeeVisible, teamRow, workingStatus, buildTeamList } from "../lib/teamStatus.mjs";
 import {
   ROLES,
   ADMIN_ROLES,
+  BRANCH_ADMIN_ROLES,
   BRANCH_SCOPED_ROLES,
   STAFF_ROLES,
   signUser,
@@ -3947,6 +3949,77 @@ export function startUnassignedWatcher() {
 // authorize selected Admins or Branch Heads to create branches within approved
 // limits." Creation is therefore admin-and-above; branch heads read only.
 // ---------------------------------------------------------------------------
+
+/**
+ * Team Status: Counselors, Telecallers, Branch Heads and Admins in one list.
+ * Who may see whom is decided here, on the server, by the caller's branch scope: Super Admin sees
+ * every branch; a scoped caller sees only people whose every branch is inside their own. The list
+ * and the single-person request use the same rule, so nobody is listed that cannot be opened and
+ * nobody can be opened by guessing an id.
+ */
+async function loadTeamContext() {
+  const today = indiaNow().date;
+  const [users, counselors, branches, attendance, leave, ever] = await Promise.all([
+    loadUsers(),
+    loadCounselors().catch(() => []),
+    pool.query("SELECT id::text AS id, name FROM branches").then((r) => r.rows).catch(() => []),
+    pool.query(
+      `SELECT counselor_id::text AS counselor_id, date::text AS date, clock_in::text AS clock_in, clock_out::text AS clock_out, total_hours
+         FROM counselor_attendance WHERE date >= ($1::date - 7) ORDER BY date DESC`,
+      [today],
+    ).then((r) => r.rows.map((row) => ({
+      ...row,
+      clock_in: row.clock_in ? String(row.clock_in).slice(0, 8) : null,
+      clock_out: row.clock_out ? String(row.clock_out).slice(0, 8) : null,
+      total_hours: row.total_hours == null ? null : Number(row.total_hours),
+    }))).catch(() => []),
+    pool.query(
+      `SELECT counselor_id::text AS counselor_id, status, start_date::text AS start_date, end_date::text AS end_date, leave_type
+         FROM counselor_leave_requests WHERE status = 'approved' AND start_date <= $1::date AND end_date >= $1::date`,
+      [today],
+    ).then((r) => r.rows).catch(() => []),
+    pool.query("SELECT DISTINCT counselor_id::text AS counselor_id FROM counselor_attendance").then((r) => new Set(r.rows.map((row) => row.counselor_id))).catch(() => new Set()),
+  ]);
+  return { today, users, counselors, branches, attendance, leave, everClocked: ever };
+}
+
+router.get("/api/team-status", [session, requireRole(BRANCH_ADMIN_ROLES, "Admin"), branchScope], async (req, res) => {
+  try {
+    const ctx = await loadTeamContext();
+    const employees = buildTeamList({ ...ctx, scope: req.scope });
+    res.json({ today: ctx.today, employees, branches: [...new Map(employees.flatMap((e) => e.branches).map((b) => [b.id, b])).values()] });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not load team status" });
+  }
+});
+
+router.get("/api/team-status/:id", [session, requireRole(BRANCH_ADMIN_ROLES, "Admin"), branchScope], async (req, res) => {
+  try {
+    const ctx = await loadTeamContext();
+    const wanted = String(req.params.id);
+    const employee = buildEmployees(ctx).find((e) => e.id === wanted || e.aliases.includes(wanted));
+    if (!employee) return res.status(404).json({ error: "That employee could not be found.", code: "NOT_FOUND" });
+    if (!employeeVisible(req.scope, employee)) {
+      return res.status(403).json({ error: "That employee is outside the branches you manage.", code: "OUT_OF_SCOPE" });
+    }
+    const mine = new Set(employee.aliases);
+    const history = ctx.attendance.filter((row) => mine.has(String(row.counselor_id))).slice(0, 7);
+    const working = workingStatus(employee, ctx);
+    // Workload counts only leads the caller may see (loadState applies the same branch scope).
+    let workload = null;
+    if (employee.role === "counselor" || employee.role === "telecaller") {
+      const state = await loadState(req.scope.allBranches ? null : req.scope);
+      const own = state.leads.filter((lead) => (employee.role === "counselor"
+        ? mine.has(String(lead.assigned_counselor_id || ""))
+        : mine.has(String(lead.assigned_telecaller_id || ""))));
+      const converted = (lead) => lead.entity_type === "student" || lead.lead_status === "converted";
+      workload = { openLeads: own.filter((lead) => !converted(lead)).length, students: own.filter(converted).length };
+    }
+    res.json({ employee: teamRow(employee, ctx), profile: { phone: employee.phone }, working, history, workload });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not load employee" });
+  }
+});
 
 router.get("/api/branches", [session, requireRole(STAFF_ROLES, "Staff"), branchScope], async (req, res) => {
   try {

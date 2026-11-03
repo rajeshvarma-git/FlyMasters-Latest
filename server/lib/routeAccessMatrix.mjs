@@ -64,7 +64,7 @@ const AREAS = [
   ["/api/student-checklist-items", "student"], ["/api/leads", "lead"], ["/api/telecaller", "telecaller"], ["/api/counselor", "counselor"],
   ["/api/document-setup", "document"], ["/api/documents", "document"], ["/api/applications", "application"], ["/api/leave", "hr"],
   ["/api/salary", "hr"], ["/api/hr", "hr"], ["/api/finance", "finance"], ["/api/partners", "partner"], ["/api/partner", "partner"],
-  ["/api/branches", "branch"], ["/api/notifications", "notification"], ["/api/system", "system"], ["/api/whatsapp", "whatsapp"],
+  ["/api/branches", "branch"], ["/api/team-status", "team"], ["/api/notifications", "notification"], ["/api/system", "system"], ["/api/whatsapp", "whatsapp"],
   ["/api/university", "university"], ["/api/admin", "university"], ["/api/checklists", "checklist"], ["/api/alerts", "alert"],
   ["/api/knowledge", "knowledge"], ["/api/state", "state"], ["/api/auth", "auth"], ["/api/me", "me"], ["/api/referral", "referral"],
   ["/api/health", "health"], ["/api/users", "staff"], ["/api/counselors", "staff"], ["/api/telecallers", "staff"],
