@@ -892,62 +892,18 @@ async function loadSharedChat(counselorId) {
 const router = express.Router();
 
 
+const COUNSELOR_SIGNUP_CLOSED = "Counselor accounts are created by an admin. Ask your admin to add you, then sign in.";
+
+// Closed at launch: nobody creates a counselor account here, so no code is sent either.
 router.post("/api/counselor/auth/send-verification-code", async (req, res) => {
-  try {
-    const email = String(req.body.email || "").trim().toLowerCase();
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      return res.status(400).json({ error: "Enter a valid email address." });
-    }
-
-    const authFound = await pool.query("SELECT id FROM auth_users WHERE lower(email) = $1", [email]).catch(() => ({ rows: [] }));
-    const authRow = authFound.rows[0];
-    const role = await roleForAuthUser(authRow?.id);
-    if (role === "admin" || role === "super_admin") {
-      return res.status(403).json({ error: "This email is an admin account. Use the admin portal." });
-    }
-
-    const portalFound = await pool.query("SELECT id FROM counselor_users WHERE lower(email) = $1", [email]);
-    if (portalFound.rows[0] || (authRow && role === "counselor")) {
-      return res.status(400).json({ error: "This email already has a counselor account. Sign in instead." });
-    }
-
-    const recent = await pool.query(
-      `SELECT created_at FROM email_verifications
-       WHERE lower(email) = $1 AND created_at > now() - interval '1 minute'
-       ORDER BY created_at DESC LIMIT 1`,
-      [email],
-    );
-    if (recent.rows[0]) {
-      return res.status(429).json({ error: "Please wait a minute before requesting another code." });
-    }
-
-    const code = generateVerificationCode();
-    const codeHash = await hashVerificationCode(code);
-    const expiresAt = new Date(Date.now() + EMAIL_VERIFICATION_EXPIRY_MINUTES * 60 * 1000);
-
-    await pool.query(
-      `INSERT INTO email_verifications (email, code_hash, expires_at) VALUES ($1, $2, $3)`,
-      [email, codeHash, expiresAt],
-    );
-
-    const sent = await sendVerificationEmail(email, code);
-    res.json({
-      ok: true,
-      message: "Verification code sent. Check your inbox.",
-      devHint: sent.dev ? "Email not configured — check the API server console for the code." : undefined,
-    });
-  } catch (error) {
-    res.status(500).json({ error: error.message || "Could not send verification code" });
-  }
+  res.status(403).json({ error: COUNSELOR_SIGNUP_CLOSED });
 });
+
 
 router.post("/api/counselor/auth/signup", async (req, res) => {
   try {
     const email = String(req.body.email || "").trim().toLowerCase();
     const password = String(req.body.password || "");
-    const firstName = String(req.body.firstName || "").trim();
-    const lastName = String(req.body.lastName || "").trim();
-    const verificationCode = String(req.body.verificationCode || "").trim();
     if (!email || password.length < 6) {
       return res.status(400).json({ error: "Email and a password of at least 6 characters are required." });
     }
@@ -972,34 +928,9 @@ router.post("/api/counselor/auth/signup", async (req, res) => {
       return res.json({ token: signUser(row), user: publicUser(row) });
     }
 
-    const verified = await consumeEmailVerificationCode(email, verificationCode);
-    if (!verified.ok) {
-      return res.status(400).json({ error: verified.error });
-    }
-
-    const hash = await bcrypt.hash(password, 10);
-    const existing = await pool.query("SELECT * FROM counselor_users WHERE lower(email) = $1", [email]);
-    let row;
-    if (existing.rows[0]) {
-      if (!(await verifyPasswordHash(password, existing.rows[0].password_hash))) {
-        return res.status(401).json({ error: "This counselor already exists. Sign in instead." });
-      }
-      const updated = await pool.query(
-        `UPDATE counselor_users SET first_name = $2, last_name = $3 WHERE email = $1 RETURNING *`,
-        [email, firstName || existing.rows[0].first_name, lastName || existing.rows[0].last_name],
-      );
-      row = updated.rows[0];
-    } else {
-      const created = await pool.query(
-        `INSERT INTO counselor_users (email, password_hash, first_name, last_name)
-         VALUES ($1, $2, $3, $4)
-         RETURNING *`,
-        [email, hash, firstName, lastName],
-      );
-      row = created.rows[0];
-    }
-    await publishCounselorAccount(row, password);
-    res.json({ token: signUser(row), user: publicUser(row) });
+    // Counselor accounts are created by an admin (Admin > Users). This page signs in a counselor
+    // who already has an account (above) and never creates one.
+    return res.status(403).json({ error: COUNSELOR_SIGNUP_CLOSED });
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not create account" });
   }

@@ -136,7 +136,7 @@ test("account creation is all-or-nothing and cannot hang the request", () => {
   }
 });
 
-test("rule 5 (target): public counselor sign-up cannot create a new counselor account", { todo: "stream 1 step 4" }, () => {
+test("rule 5: public counselor sign-up cannot create a new counselor account", () => {
   const handler = block(read("server/routes/counselor.mjs"), 'router.post("/api/counselor/auth/signup"');
   assert.doesNotMatch(handler, /INSERT INTO counselor_users/);
 });
