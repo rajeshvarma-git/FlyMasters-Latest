@@ -41,6 +41,7 @@ import Notifications from "@admin/admin/Notifications";
 import Telecallers from "@admin/admin/Telecallers";
 import TelecallerDetail from "@admin/admin/TelecallerDetail";
 import Help from "@admin/admin/Help";
+import { HR_ENABLED } from "@shared/lib/features";
 import KnowledgeBase from "@admin/admin/KnowledgeBase";
 
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: string }> {
@@ -108,7 +109,7 @@ export default function App() {
               <Route path="finance" element={<Finance />} />
               <Route path="counselors" element={<CounselorsHub />} />
               <Route path="counselors/:id" element={<CounselorDetail />} />
-              <Route path="hr" element={<HR />} />
+              <Route path="hr" element={HR_ENABLED ? <HR /> : <Navigate to="/" replace />} />
               <Route path="universities" element={<Universities />} />
               <Route path="checklists" element={<Navigate to="/documents-master" replace />} />
               {/* CRM 2.6 — document master, versioned checklists, status words */}

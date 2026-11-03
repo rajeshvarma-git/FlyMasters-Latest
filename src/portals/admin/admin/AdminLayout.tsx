@@ -38,6 +38,7 @@ import { useAdminStore } from "@admin/lib/store";
 import NotificationBell from "@admin/components/NotificationBell";
 import AlertCenter from "@shared/components/AlertCenter";
 import { useCaseUnread } from "@shared/lib/useCaseUnread";
+import { HR_ENABLED } from "@shared/lib/features";
 
 /**
  * Menu visibility by role.
@@ -84,7 +85,7 @@ const groups = [
     roles: ALL,
     items: [
       { to: "/finance", label: "Commissions", icon: Receipt, end: false },
-      { to: "/hr", label: "HR & Payroll", icon: Wallet, end: false },
+      ...(HR_ENABLED ? [{ to: "/hr", label: "HR & Payroll", icon: Wallet, end: false }] : []),
     ],
   },
   {

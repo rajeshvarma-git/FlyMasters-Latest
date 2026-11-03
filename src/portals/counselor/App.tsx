@@ -1,6 +1,7 @@
 import { Component, type ReactNode } from "react";
 import RedirectToStaffSignIn from "@shared/RedirectToStaffSignIn";
 import { Navigate, Route, Routes } from "react-router-dom";
+import { HR_ENABLED } from "@shared/lib/features";
 import { AuthProvider } from "@counselor/context/AuthContext";
 import { RequireAuth } from "@counselor/components/RequireAuth";
 import Auth from "@counselor/pages/Auth";
@@ -84,9 +85,9 @@ export default function App() {
             <Route path="applications" element={<Applications />} />
             <Route path="notifications" element={<NotificationsPage />} />
             <Route path="profile" element={<CounselorProfile />} />
-            <Route path="leave" element={<LeavePage />} />
-            <Route path="attendance" element={<AttendancePage />} />
-            <Route path="salary" element={<SalaryPage />} />
+            <Route path="leave" element={HR_ENABLED ? <LeavePage /> : <Navigate to="/" replace />} />
+            <Route path="attendance" element={HR_ENABLED ? <AttendancePage /> : <Navigate to="/" replace />} />
+            <Route path="salary" element={HR_ENABLED ? <SalaryPage /> : <Navigate to="/" replace />} />
           </Route>
 
           <Route path="*" element={<NotFound />} />

@@ -26,6 +26,7 @@ import { useLocalStore } from "@counselor/lib/store";
 import NotificationBell from "@counselor/counselor/NotificationBell";
 import AlertCenter from "@shared/components/AlertCenter";
 import { useCaseUnread } from "@shared/lib/useCaseUnread";
+import { HR_ENABLED } from "@shared/lib/features";
 import { api } from "@counselor/lib/api";
 
 const work = [
@@ -42,9 +43,13 @@ const work = [
 
 const account = [
   { to: "/profile", label: "My Profile", icon: User },
-  { to: "/leave", label: "Leave", icon: Calendar },
-  { to: "/attendance", label: "Attendance", icon: Clock },
-  { to: "/salary", label: "Salary", icon: DollarSign },
+  ...(HR_ENABLED
+    ? [
+        { to: "/leave", label: "Leave", icon: Calendar },
+        { to: "/attendance", label: "Attendance", icon: Clock },
+        { to: "/salary", label: "Salary", icon: DollarSign },
+      ]
+    : []),
 ];
 
 export default function CounselorLayout() {

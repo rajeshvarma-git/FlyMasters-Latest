@@ -9,6 +9,8 @@
  * One origin + one JWT secret means one key. The old keys are read once during
  * cutover so signed-in users are not kicked out on the deploy, then cleared.
  */
+import { HR_ENABLED } from "./features";
+
 const TOKEN_KEY = "fm_token";
 const USER_KEY = "fm_user";
 const LEGACY_TOKEN_KEYS = ["fm_admin_token", "fm_pg_token", "fm_telecaller_token"];
@@ -106,7 +108,7 @@ export const HOME_FOR_ROLE: Partial<Record<PortalRole, string>> = {
   branch_head: "/admin",
   counselor: "/counselor",
   telecaller: "/telecaller/queue",
-  accountant: "/admin/hr",
+  accountant: HR_ENABLED ? "/admin/hr" : "/admin/finance",
   partner: "/partner",
   student: "/",
 };

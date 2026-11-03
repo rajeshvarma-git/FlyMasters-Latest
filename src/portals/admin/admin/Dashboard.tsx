@@ -228,6 +228,7 @@ import { useAdminStore } from "@admin/lib/store";
 import { counselorLabel, counselorOwns, displayName, isConvertedStudent, openLeadNeedsOwner, telecallerLabel } from "@admin/lib/utils";
 import { Badge } from "@admin/components/ui/Badge";
 import { Card } from "@admin/components/ui/Card";
+import { HR_ENABLED } from "@shared/lib/features";
 
 export default function Dashboard() {
   const store = useAdminStore();
@@ -316,8 +317,8 @@ export default function Dashboard() {
         </Card>
 
         <Card className="p-5">
-          <h2 className="font-semibold">Counselors on shift today</h2>
-          <p className="mt-1 text-sm text-slate-500">{clockedIn.length} clocked in</p>
+          <h2 className="font-semibold">{HR_ENABLED ? "Counselors on shift today" : "Counselors"}</h2>
+          {HR_ENABLED && <p className="mt-1 text-sm text-slate-500">{clockedIn.length} clocked in</p>}
           <div className="mt-4 space-y-3">
             {store.counselors.slice(0, 8).map((counselor) => {
               const assigned = store.leads.filter(

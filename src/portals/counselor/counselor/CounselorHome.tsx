@@ -8,6 +8,7 @@ import { isConvertedStudent, isOpenLead } from "@counselor/lib/utils";
 import { Badge } from "@counselor/components/ui/Badge";
 import { Button } from "@counselor/components/ui/Button";
 import { Card } from "@counselor/components/ui/Card";
+import { HR_ENABLED } from "@shared/lib/features";
 
 export default function CounselorHome() {
   const { user } = useAuth();
@@ -89,6 +90,7 @@ export default function CounselorHome() {
           <h1 className="text-2xl font-bold">Good to see you, {user?.firstName || "Counselor"}</h1>
           <p className="text-slate-600">Your counselor workspace on this computer.</p>
         </div>
+        {HR_ENABLED && (
         <Card className="min-w-[240px] px-4 py-3">
           <p className="flex items-center gap-2 text-sm font-semibold"><Timer className="h-4 w-4 text-sky-500" /> Shift timer</p>
           {todayAttendance?.clock_in && !todayAttendance.clock_out && (
@@ -107,6 +109,7 @@ export default function CounselorHome() {
             )}
           </div>
         </Card>
+        )}
       </div>
 
       <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
