@@ -2087,10 +2087,17 @@ router.post("/api/telecaller/notifications/read", telecallerAuth, markNotificati
 // see telecallers without a second system. Time is taken from the SERVER in
 // India time so a phone clock cannot rewrite a shift.
 // ---------------------------------------------------------------------------
-// HR for telecallers is ON by default. Migration 009 widened counselor_attendance / leave /
-// salary counselor_id to TEXT, so telecaller ids no longer fail in PostgreSQL (22P02).
-// Set TELECALLER_HR_ENABLED=false to switch it off again.
-const telecallerHrEnabled = () => String(process.env.TELECALLER_HR_ENABLED || "").toLowerCase() !== "false";
+// HR for telecallers follows the one HR switch (permission-matrix.md rule 8: HR is out of this
+// release), so it is OFF unless the server runs with HR_ENABLED=true. Migration 009 widened
+// counselor_attendance / leave / salary counselor_id to TEXT, so telecaller ids no longer fail in
+// PostgreSQL (22P02) once HR is switched on. TELECALLER_HR_ENABLED=true turns it on for telecallers
+// alone; =false keeps it off even when HR_ENABLED is true.
+const telecallerHrEnabled = () => {
+  const own = String(process.env.TELECALLER_HR_ENABLED || "").trim().toLowerCase();
+  if (own === "true") return true;
+  if (own === "false") return false;
+  return hrEnabled();
+};
 const hrGate = (_req, res, next) => (telecallerHrEnabled()
   ? next()
   : res.status(403).json({ error: "Attendance, leave and salary are not available for telecallers yet.", enabled: false }));

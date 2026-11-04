@@ -120,6 +120,7 @@ Roles are defined in `server/lib/auth.mjs`. Branch-limited roles are `branch_hea
 | 5 | Config writes, comms rules, reminders, events, approve, retire: Super Admin only | `core.mjs`, `server/routes/comms.mjs`, `server/routes/config.mjs` | rule 7 |
 | 6 | Drop Branch Head from checklist writes | `/api/checklists` | rule 7 |
 | 7 | `HR_ENABLED` flag: block HR routes and hide HR screens | `core.mjs`, `counselor.mjs`, portals | rule 8 |
+| 7b | Telecaller HR (merged from `feat/telecaller-portal`, which had it on by default) follows the same switch: `telecallerHrEnabled()` falls back to `hrEnabled()`, and `TELECALLER_HR_ENABLED` overrides it either way | `core.mjs` (`hrGate`), telecaller portal reads `/api/telecaller/me/features` | rule 8 |
 | 8 | After each change: remove the `todo` option from its test, regenerate `route-matrix-2bccf09.md` as a new matrix file for the release commit, and update the verdicts in `server/lib/routeAccessMatrix.mjs` | `tests/`, `server/lib/routeAccessMatrix.mjs` | all |
 
 ## Not verified

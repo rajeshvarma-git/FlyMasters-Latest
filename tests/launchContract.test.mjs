@@ -191,6 +191,19 @@ test("rule 8: every HR route checks the HR_ENABLED switch first", () => {
   assert.match(read("server/lib/hrSwitch.mjs"), /process\.env\.HR_ENABLED/);
 });
 
+test("rule 8: telecaller HR is gated too, and its switch is off unless HR_ENABLED is on", () => {
+  const core = read("server/routes/core.mjs");
+  // Every telecaller HR route runs behind hrGate.
+  for (const marker of [
+    'router.get("/api/telecaller/me/hr"', 'router.post("/api/telecaller/me/clock-in"',
+    'router.post("/api/telecaller/me/clock-out"', 'router.post("/api/telecaller/me/leave"',
+  ]) assert.match(block(core, marker), /hrGate/, marker);
+  // hrGate must not be open by default: with TELECALLER_HR_ENABLED unset it follows hrEnabled().
+  const gate = block(core, "const telecallerHrEnabled =");
+  assert.match(gate, /return hrEnabled\(\);/, "telecaller HR must fall back to the HR_ENABLED switch");
+  assert.doesNotMatch(gate, /!==\s*"false"/, "telecaller HR must not default to on");
+});
+
 // ---- Nothing is left undecided ------------------------------------------------------------------------------
 
 test("every shared-setting route has a launch ruling: no open 'decision' or 'gap' remains", () => {
