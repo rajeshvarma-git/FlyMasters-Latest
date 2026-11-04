@@ -1942,12 +1942,12 @@ async function ownedStudentLead(telecallerId, studentId) {
 router.get("/api/telecaller/state", telecallerAuth, async (req, res) => {
   try {
     const state = await loadState(req.scope);
-    // A lead assigned to this telecaller is always theirs to work, whatever branch
-    // it was filed under. Branch scope used to hide it: the admin saw it on the
-    // telecaller's page while the telecaller's own queue stayed empty.
-    const leadSource = req.scope?.allBranches ? state : await loadState(null);
-    const myIds = sameLoginIds(leadSource.users, leadSource.counselors, req.user.id);
-    const mine = leadSource.leads.filter((lead) => myIds.has(String(lead.assigned_telecaller_id || "")));
+    // A lead is in this telecaller's queue only when BOTH hold: it is assigned to them AND it sits in a
+    // branch they currently belong to (`state` is already filtered by req.scope). An old or wrong
+    // assignment therefore cannot expose a lead from another branch, and a lead with no branch stays out of
+    // every branch-scoped queue until an admin assigns one (the startup preflight warns about those).
+    const myIds = sameLoginIds(state.users, state.counselors, req.user.id);
+    const mine = state.leads.filter((lead) => myIds.has(String(lead.assigned_telecaller_id || "")));
     const mineOpen = mine.filter(
       (lead) => lead.entity_type !== "student" && lead.lead_status !== "converted",
     );
@@ -3156,6 +3156,8 @@ router.post("/api/users", auth, safely(async (req, res) => {
   // too, or the whole account is removed again: a failure never leaves a person who can sign in
   // with no profile, and the email stays free for a retry.
   let counselorId;
+  let createdCounselorUserId = null; // a counselor_users row this request inserted: removed again on failure
+  let priorCounselorRow = null; // a counselor_users row that already existed for this email: restored on failure
   try {
     await jsonUpsert("profiles", {
       id: `profile-${id}`,
@@ -3173,6 +3175,7 @@ router.post("/api/users", auth, safely(async (req, res) => {
       const specializations = Array.isArray(req.body.specializations)
         ? req.body.specializations.map((item) => String(item).trim()).filter(Boolean)
         : String(req.body.specializations || "Study Abroad").split(",").map((item) => item.trim()).filter(Boolean);
+      const before = (await pool.query("SELECT * FROM counselor_users WHERE lower(email) = $1", [email])).rows[0] || null;
       const created = await pool.query(
         `INSERT INTO counselor_users (id, email, password_hash, first_name, last_name, phone, bio, specializations)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (email) DO UPDATE SET
@@ -3186,6 +3189,8 @@ router.post("/api/users", auth, safely(async (req, res) => {
         [isUuid(id) ? id : crypto.randomUUID(), email, hash, firstName, lastName, phone, bio, specializations],
       );
       counselorId = created.rows[0]?.id;
+      if (before) priorCounselorRow = before;
+      else createdCounselorUserId = counselorId || null;
       await jsonUpsert("counselors", {
         id: `counselor-${id}`,
         user_id: id,
@@ -3197,7 +3202,7 @@ router.post("/api/users", auth, safely(async (req, res) => {
     }
   } catch (error) {
     console.error("Account creation failed after the login was saved; removing it:", id, error);
-    await discardAccount(pool, { id }).catch((cleanup) => console.error("Could not remove the half-created account:", id, cleanup));
+    await discardAccount(pool, { id, counselorUserId: createdCounselorUserId, restoreCounselor: priorCounselorRow }).catch((cleanup) => console.error("Could not remove the half-created account:", id, cleanup));
     return res.status(500).json({ error: "Could not finish creating this account. Nothing was saved. Try again." });
   }
   await audit(req, "user.create", "auth_users", id, { email, role, branches: requestedBranches });
