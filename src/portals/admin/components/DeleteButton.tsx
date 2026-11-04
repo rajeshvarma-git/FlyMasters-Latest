@@ -8,16 +8,14 @@ import { Input, Label } from "@admin/components/ui/Field";
 
 export type DeleteKind = "lead" | "student" | "staff" | "partner";
 
-/** Mirrors the server: Super Admin deletes anything; Admin only students and telecaller / counselor / accountant accounts. */
+/** Mirrors the server: Super Admin only (a Super Admin account itself is never deletable). */
 export function canDelete(role: string | undefined, kind: DeleteKind, targetRole?: string) {
   if (role === "super_admin") return kind !== "staff" || targetRole !== "super_admin";
-  if (role === "admin") return kind === "student" || (kind === "staff" && ["telecaller", "counselor", "accountant"].includes(String(targetRole)));
   return false;
 }
 
 /**
- * Permanently deletes a lead, student, employee or partner. Super Admin: anything; Admin: students and
- * telecaller / counselor / accountant accounts. Renders nothing otherwise (the server enforces it too). The person must type DELETE, and the
+ * Permanently deletes a lead, student, employee or partner. Super Admin only. Renders nothing otherwise (the server enforces it too). The person must type DELETE, and the
  * server refuses to orphan commissions, owned leads or referral history, so a refusal is shown as is.
  */
 export default function DeleteButton({
