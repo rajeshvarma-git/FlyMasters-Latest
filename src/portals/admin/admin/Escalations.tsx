@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useAutoRefresh } from "@shared/hooks/useAutoRefresh";
 import { Flag } from "lucide-react";
 import { api } from "@admin/lib/api";
 import { Button } from "@admin/components/ui/Button";
@@ -45,6 +46,7 @@ export default function Escalations() {
       .catch((err) => setError(err instanceof Error ? err.message : "Could not load escalations"));
 
   useEffect(() => { void load(); }, [status]);
+  useAutoRefresh(load);
 
   const update = async (row: Escalation, nextStatus: string) => {
     await api(`/comms/escalations/${row.id}`, {

@@ -152,7 +152,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { ChevronRight, GraduationCap } from "lucide-react";
 import { useAdminStore } from "@admin/lib/store";
-import { counselorLabel, displayName, initials, isConvertedStudent, studentOwns } from "@admin/lib/utils";
+import { counselorLabel, displayName, initials, isConvertedStudent, ownsShortlist, studentOwns } from "@admin/lib/utils";
 import { Badge } from "@admin/components/ui/Badge";
 import { Card } from "@admin/components/ui/Card";
 import { Input } from "@admin/components/ui/Field";
@@ -183,7 +183,7 @@ export default function Students() {
   const summarise = (student: Lead) => {
     const docs = store.documents.filter((doc) => !doc.archived && studentOwns(student, doc.user_id));
     const apps = store.applications.filter((app) => studentOwns(student, app.user_id));
-    const lists = store.shortlists.filter((row) => studentOwns(student, row.student_id));
+    const lists = store.shortlists.filter((row) => ownsShortlist(student, row as any));
     const threadIds = new Set(
       store.conversations.filter((row) => studentOwns(student, row.student_id)).map((row) => row.id),
     );
@@ -238,6 +238,11 @@ export default function Students() {
                   {(student.preferred_countries || []).join(", ") || "No country"} ·{" "}
                   {student.field_of_interest || "No field"}
                 </span>
+                {student.referred_by_name && (
+                  <span className="mt-1 inline-block rounded-full bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800">
+                    Referred by {student.referred_by_name} ({student.referred_by_type || "partner"})
+                  </span>
+                )}
                 <span className="mt-1 block text-xs text-slate-400">
                   {student.assigned_counselor_id
                     ? `${counselorLabel(store.counselors, student.assigned_counselor_id)} · `

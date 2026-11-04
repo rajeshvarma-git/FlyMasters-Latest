@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useAutoRefresh } from "@shared/hooks/useAutoRefresh";
 import { ScrollText } from "lucide-react";
 import { api } from "@admin/lib/api";
 import { Card } from "@admin/components/ui/Card";
@@ -57,14 +58,16 @@ export default function CommsLog() {
   const [channel, setChannel] = useState("");
   const [error, setError] = useState("");
 
-  useEffect(() => {
+  const load = () => {
     const params = new URLSearchParams();
     if (status) params.set("status", status);
     if (channel) params.set("channel", channel);
-    api<{ log: Entry[]; last_7_days: { status: string; count: string }[] }>(`/comms/log?${params}`)
+    return api<{ log: Entry[]; last_7_days: { status: string; count: string }[] }>(`/comms/log?${params}`)
       .then((data) => { setLog(data.log); setSummary(data.last_7_days); })
       .catch((err) => setError(err instanceof Error ? err.message : "Could not load the log"));
-  }, [status, channel]);
+  };
+  useEffect(() => { void load(); }, [status, channel]);
+  useAutoRefresh(load);
 
   return (
     <div className="space-y-6">

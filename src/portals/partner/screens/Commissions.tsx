@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useAutoRefresh } from "@shared/hooks/useAutoRefresh";
 import { Upload } from "lucide-react";
 import { api, type Commission } from "@partner/lib/api";
 
@@ -31,6 +32,7 @@ export default function Commissions() {
     api<{ commissions: Commission[] }>("/commissions").then((d) => setRows(d.commissions));
 
   useEffect(() => { void load().finally(() => setLoading(false)); }, []);
+  useAutoRefresh(load);
 
   /** Doc 6.1: upload an invoice against an eligible commission. */
   const upload = async (id: string, file: File) => {

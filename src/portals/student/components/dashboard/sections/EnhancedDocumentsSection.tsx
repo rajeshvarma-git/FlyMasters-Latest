@@ -10,7 +10,7 @@ import { useToast } from '@student/hooks/use-toast';
 import { Badge } from '@student/components/ui/badge';
 import { Progress } from '@student/components/ui/progress';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@student/components/ui/tabs';
-import { FileText, Upload, Check, X, Clock, Trash2, Download, RefreshCw, AlertCircle, History, Bell } from 'lucide-react';
+import { FileText, Upload, Check, X, Clock, Trash2, Download, AlertCircle, History, Bell } from 'lucide-react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@student/components/ui/dialog';
 import { DocumentVersionManager } from './DocumentVersionManager';
 import { DocumentAuditLog } from './DocumentAuditLog';
@@ -19,6 +19,7 @@ import { DocumentNotifications } from './DocumentNotifications';
 import { Tables } from '@student/integrations/supabase/types';
 import { fetchAssignedChecklists, type AssignedChecklist } from '@student/lib/crmApi';
 
+import { useAutoRefresh } from '@shared/hooks/useAutoRefresh';
 type Document = Tables<'documents'>;
 type DocumentChecklist = Tables<'document_checklists'>;
 type DocumentVersion = Tables<'document_versions'>;
@@ -61,6 +62,13 @@ export function EnhancedDocumentsSection() {
     fetchNotifications();
     fetchAssignedChecklist();
   }, [user]);
+
+  useAutoRefresh(() => {
+    if (!user) return;
+    void fetchDocuments();
+    void fetchNotifications();
+    if (selectedCountry && selectedDegree) { void fetchChecklist(); void fetchProgress(); }
+  });
 
   useEffect(() => {
     // Only fall back to the self-service list when nothing was activated.
@@ -453,21 +461,6 @@ export function EnhancedDocumentsSection() {
           </div>
         </div>
         <div className="flex gap-2">
-          <Button 
-            variant="outline" 
-            size="sm" 
-            onClick={() => {
-              fetchDocuments();
-              fetchNotifications();
-              if (selectedCountry && selectedDegree) {
-                fetchChecklist();
-                fetchProgress();
-              }
-            }}
-          >
-            <RefreshCw className="w-4 h-4 mr-2" />
-            Refresh
-          </Button>
           
           {notifications.length > 0 && (
             <Dialog>

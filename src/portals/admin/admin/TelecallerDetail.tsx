@@ -2,8 +2,10 @@ import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { ArrowLeft, ArrowRightLeft, CheckCircle2, MessageCircle, MessageSquare, PhoneCall, Trash2 } from "lucide-react";
 import { api } from "@admin/lib/api";
+import { useAuth } from "@admin/context/AuthContext";
 import { refreshStore, useAdminStore } from "@admin/lib/store";
 import { counselorLabel, displayName, initials, isConvertedStudent, studentOwns } from "@admin/lib/utils";
+import DeleteButton from "@admin/components/DeleteButton";
 import { Badge } from "@admin/components/ui/Badge";
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
@@ -87,6 +89,7 @@ function waitLabel(lead: Lead) {
 export default function TelecallerDetail() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
+  const isSuperAdmin = useAuth().user?.role === "super_admin";
   const store = useAdminStore();
   const [tab, setTab] = useState<Tab>("open");
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
@@ -330,20 +333,35 @@ export default function TelecallerDetail() {
             <ArrowRightLeft className="h-4 w-4" />
             {busyAction === "transfer" ? "Transferring..." : "Transfer data"}
           </Button>
-          <Button
-            size="sm"
-            variant="danger"
-            disabled={busyAction !== null}
-            onClick={() => void removeTelecaller()}
-          >
-            <Trash2 className="h-4 w-4" />
-            {busyAction === "remove" ? "Removing..." : "Remove telecaller"}
-          </Button>
+          {isSuperAdmin && (
+            <Button
+              size="sm"
+              variant="danger"
+              disabled={busyAction !== null}
+              onClick={() => void removeTelecaller()}
+            >
+              <Trash2 className="h-4 w-4" />
+              {busyAction === "remove" ? "Removing..." : "Remove telecaller"}
+            </Button>
+          )}
+          <DeleteButton
+              kind="staff"
+              targetRole="telecaller"
+              id={telecaller.id}
+              name={displayName(telecaller.first_name, telecaller.last_name, telecaller.email)}
+              onDeleted={() => navigate("/telecallers")}
+            />
         </div>
         {open.length > 0 && (
           <p className="mt-3 text-xs text-slate-500">
             {open.length} open lead{open.length === 1 ? "" : "s"} will move with chat and WhatsApp history when you
             transfer or remove. Converted students stay linked for reporting only.
+          </p>
+        )}
+        {open.length === 0 && (
+          <p className="mt-3 text-xs text-amber-700">
+            Transfer data is off because this telecaller has no open leads to move. It turns on as soon as a lead is
+            assigned to them and you choose who to transfer to. Converted students stay linked for reporting only.
           </p>
         )}
       </Card>

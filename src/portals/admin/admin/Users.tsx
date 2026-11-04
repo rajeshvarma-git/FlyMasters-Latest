@@ -5,6 +5,7 @@ import { refreshStore, useAdminStore } from "@admin/lib/store";
 import { displayName } from "@admin/lib/utils";
 import { useAuth } from "@admin/context/AuthContext";
 import type { Branch, Role } from "@admin/lib/types";
+import DeleteButton from "@admin/components/DeleteButton";
 import { Badge } from "@admin/components/ui/Badge";
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
@@ -304,6 +305,15 @@ export default function UsersPage() {
                 </Select>
               )}
               <Button size="sm" variant="secondary" onClick={() => void resetPassword(user.id)}>Reset password</Button>
+              {String(user.role) !== "partner" && user.id !== currentUser?.id && (
+                <DeleteButton
+                  kind={user.role === "student" ? "student" : "staff"}
+                  targetRole={user.role}
+                  id={user.id}
+                  name={displayName(user.first_name, user.last_name, user.email)}
+                  onDeleted={() => void refreshStore()}
+                />
+              )}
             </div>
           </Card>
         ))}

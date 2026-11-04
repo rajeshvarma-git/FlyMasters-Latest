@@ -8,7 +8,7 @@ import type { LocalNotification } from "@counselor/lib/store";
 import { notificationIcon, notificationUrl } from "@counselor/counselor/notificationUtils";
 import { Button } from "@counselor/components/ui/Button";
 
-export default function NotificationBell() {
+export default function NotificationBell({ extraCount = 0 }: { extraCount?: number }) {
   const { user } = useAuth();
   const store = useLocalStore();
   const navigate = useNavigate();
@@ -45,9 +45,9 @@ export default function NotificationBell() {
         aria-label="Notifications"
       >
         <Bell className="h-5 w-5 text-slate-700" />
-        {unread.length > 0 && (
+        {unread.length + extraCount > 0 && (
           <span className="absolute -right-1 -top-1 flex h-5 min-w-5 items-center justify-center rounded-full bg-amber-400 px-1 text-[10px] font-bold text-navy-950">
-            {unread.length > 99 ? "99+" : unread.length}
+            {unread.length + extraCount > 99 ? "99+" : unread.length + extraCount}
           </span>
         )}
       </Button>
@@ -57,7 +57,7 @@ export default function NotificationBell() {
           <div className="flex items-center justify-between border-b px-4 py-3">
             <div>
               <p className="font-semibold text-slate-900">Notifications</p>
-              <p className="text-xs text-slate-500">{unread.length} unread</p>
+              <p className="text-xs text-slate-500">{unread.length + extraCount} unread</p>
             </div>
             <Link to="/notifications" className="text-xs font-medium text-sky-600 hover:underline" onClick={() => setOpen(false)}>
               View all

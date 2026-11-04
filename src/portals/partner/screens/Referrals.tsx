@@ -19,20 +19,43 @@ export default function Referrals() {
   // which columns to draw.
   const [visibility, setVisibility] = useState({ application: false, visa: false, nextStep: false, documents: false });
   const [loading, setLoading] = useState(true);
+  const [summary, setSummary] = useState({ referred: 0, converted: 0, pending: 0, approved: 0, paid: 0 });
 
+  // Kept in step with the Fly Masters team's work without a Refresh button: reloads every 30 s while visible.
   useEffect(() => {
-    void api<{ referrals: Referral[]; statusVisible: boolean; visibility?: typeof visibility }>("/referrals")
+    const load = () => api<{ referrals: Referral[]; summary?: typeof summary; statusVisible: boolean; visibility?: typeof visibility }>("/referrals")
       .then((d) => {
         setRows(d.referrals);
+        if (d.summary) setSummary(d.summary);
         setStatusVisible(d.statusVisible);
         if (d.visibility) setVisibility(d.visibility);
       })
       .finally(() => setLoading(false));
+    void load();
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") void load().catch(() => undefined); }, 30000);
+    return () => window.clearInterval(timer);
   }, []);
+
+  const money = (n: number) => `₹${Number(n).toLocaleString("en-IN")}`;
 
   if (loading) return <p className="text-sm text-slate-500">Loading…</p>;
 
   return (
+    <div>
+    <div className="mb-4 grid grid-cols-2 gap-3 md:grid-cols-5">
+      {[
+        ["Referred", String(summary.referred)],
+        ["Converted", String(summary.converted)],
+        ["Commission pending", money(summary.pending)],
+        ["Approved", money(summary.approved)],
+        ["Paid", money(summary.paid)],
+      ].map(([label, value]) => (
+        <div key={label} className="rounded-xl border border-slate-200 bg-white px-4 py-3">
+          <p className="text-xs text-slate-500">{label}</p>
+          <p className="mt-0.5 text-lg font-semibold text-navy-900">{value}</p>
+        </div>
+      ))}
+    </div>
     <div className="rounded-2xl border border-slate-200 bg-white">
       <div className="flex flex-wrap items-baseline gap-2 border-b border-slate-100 px-5 py-4">
         <h1 className="font-semibold text-navy-900">Students you referred</h1>
@@ -55,6 +78,8 @@ export default function Referrals() {
               <th className="px-5 py-2">Student</th>
               <th className="px-5 py-2">Interest</th>
               <th className="px-5 py-2">Referred</th>
+              <th className="px-5 py-2">Converted</th>
+              <th className="px-5 py-2">Commission</th>
               {statusVisible ? <th className="px-5 py-2">Progress</th> : null}
               {statusVisible && visibility.application ? <th className="px-5 py-2">Application</th> : null}
               {statusVisible && visibility.visa ? <th className="px-5 py-2">Visa</th> : null}
@@ -68,6 +93,16 @@ export default function Referrals() {
                 <td className="px-5 py-3 text-slate-600">{row.country || "—"}</td>
                 <td className="px-5 py-3 text-slate-600">
                   {new Date(row.referredOn).toLocaleDateString("en-IN")}
+                </td>
+                <td className="px-5 py-3">
+                  {row.converted
+                    ? <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-800">Converted</span>
+                    : <span className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-600">Enquiry</span>}
+                </td>
+                <td className="px-5 py-3 text-slate-700">
+                  {row.commission
+                    ? <>{money(row.commission.amount)} <span className="ml-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] capitalize text-amber-800">{row.commission.status}</span></>
+                    : <span className="text-xs text-slate-400">{row.converted ? "—" : "after conversion"}</span>}
                 </td>
                 {statusVisible ? (
                   <td className="px-5 py-3">
@@ -102,6 +137,7 @@ export default function Referrals() {
           </tbody>
         </table>
       )}
+    </div>
     </div>
   );
 }

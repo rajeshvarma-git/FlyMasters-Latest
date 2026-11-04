@@ -11,6 +11,7 @@ import { GraduationCap, Mail, Lock, User, ArrowLeft } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 import { getDefaultRoute, resolvePostLoginRedirect, CHAT_PATH } from '@student/lib/auth-utils';
 import { supabase } from '@student/integrations/supabase/client';
+import { readReferral, clearReferral } from '@shared/ReferralLanding';
 
 const Auth = () => {
   const navigate = useNavigate();
@@ -24,6 +25,10 @@ const Auth = () => {
   const [success, setSuccess] = useState<string | null>(null);
   const [isRecoveryMode, setIsRecoveryMode] = useState(false);
   const [registrationSettings, setRegistrationSettings] = useState<{enabled: boolean, message?: string, admin_contact?: any} | null>(null);
+  // Pre-filled from a /r/<CODE> link; the student can correct it or type one.
+  const [referralCode, setReferralCode] = useState(() => readReferral());
+  const [referrerName, setReferrerName] = useState<string | null>(null);
+  const [referralBad, setReferralBad] = useState(false);
   const { signIn, signUp, resetPassword, updatePassword, user, userRole, roleLoading } = useAuth();
 
   // Check if this is a password recovery or email confirmation callback
@@ -90,6 +95,21 @@ const Auth = () => {
     // Note: If successful, signIn will redirect automatically
   };
 
+  // Confirm the partner's name as the code is entered: a typo is cheap to fix here
+  // and expensive to argue about at commission time.
+  useEffect(() => {
+    const code = referralCode.trim();
+    setReferralBad(false);
+    if (!code) { setReferrerName(null); return; }
+    const timer = setTimeout(() => {
+      fetch(`/api/referral/${encodeURIComponent(code)}`)
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('unknown'))))
+        .then((d) => setReferrerName(d.partner?.name || null))
+        .catch(() => { setReferrerName(null); setReferralBad(true); });
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [referralCode]);
+
   const handleSignUp = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsLoading(true);
@@ -114,11 +134,12 @@ const Auth = () => {
       return;
     }
 
-    const { error } = await signUp(email, password, firstName, lastName);
+    const { error } = await signUp(email, password, firstName, lastName, referralCode);
 
     if (error) {
       setError(error.message);
     } else {
+      clearReferral();
       setSuccess('Account created successfully!');
     }
     setIsLoading(false);
@@ -321,7 +342,7 @@ const Auth = () => {
           </CardHeader>
           
           <CardContent>
-            <Tabs defaultValue="signin" className="w-full">
+            <Tabs defaultValue={readReferral() ? "signup" : "signin"} className="w-full">
               <TabsList className="grid w-full grid-cols-3">
                 <TabsTrigger value="signin">Sign In</TabsTrigger>
                 <TabsTrigger value="signup">Sign Up</TabsTrigger>
@@ -455,6 +476,25 @@ const Auth = () => {
                         required
                       />
                     </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="signup-referral">Agent / partner referral code (optional)</Label>
+                    <Input
+                      id="signup-referral"
+                      name="referralCode"
+                      type="text"
+                      placeholder="e.g. RAJE-7K2M"
+                      value={referralCode}
+                      onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
+                      autoComplete="off"
+                    />
+                    {referrerName && (
+                      <p className="text-xs text-green-700">Referred by <strong>{referrerName}</strong></p>
+                    )}
+                    {referralBad && (
+                      <p className="text-xs text-amber-700">We don't recognise that code. Check it, or clear it to continue without one.</p>
+                    )}
                   </div>
 
                   {error && (

@@ -14,7 +14,18 @@ function formatWhen(value: string) {
   });
 }
 
-export default function NotificationBell() {
+export default function NotificationBell({
+  placement = "top",
+  extraCount = 0,
+  light = false,
+}: {
+  /** "side" opens the list beside a left-hand sidebar instead of under a top bar */
+  placement?: "top" | "side";
+  /** alerts waiting elsewhere, folded into this one bell so there is a single icon */
+  extraCount?: number;
+  /** light icon for the dark sidebar */
+  light?: boolean;
+}) {
   const store = useAdminStore();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);
@@ -37,7 +48,8 @@ export default function NotificationBell() {
     [store.notifications],
   );
 
-  const unread = items.filter((row) => !row.is_read).length;
+  const unreadNotices = items.filter((row) => !row.is_read).length;
+  const unread = unreadNotices + Math.max(0, extraCount);
 
   useEffect(() => {
     if (!open) return;
@@ -55,7 +67,7 @@ export default function NotificationBell() {
       <Button
         variant="ghost"
         size="sm"
-        className="relative h-10 w-10 rounded-full p-0 text-slate-600 hover:bg-slate-200"
+        className={`relative h-10 w-10 rounded-full p-0 ${light ? "text-slate-300 hover:bg-white/10" : "text-slate-600 hover:bg-slate-200"}`}
         aria-label="Notifications"
         onClick={() => setOpen((value) => !value)}
       >
@@ -68,7 +80,11 @@ export default function NotificationBell() {
       </Button>
 
       {open && (
-        <div className="absolute right-0 top-full z-50 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
+        <div className={`z-50 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg ${
+          placement === "side"
+            ? "fixed left-3 right-3 top-16 md:absolute md:left-full md:right-auto md:top-0 md:ml-2 md:w-[22rem]"
+            : "absolute right-0 top-full mt-2 w-[min(22rem,calc(100vw-2rem))]"
+        }`}>
           <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
             <p className="text-sm font-bold text-slate-900">Notifications</p>
             {unread > 0 && (

@@ -79,6 +79,14 @@ router.get("/api/partner/referrals", partnerAuth, async (req, res) => {
       documents: req.partner.show_document_status === true,
     };
 
+    // Conversion and commission are what the agent is paid on, so they are always shown for the agent's own
+    // students, independent of the optional progress switches above (application / visa / next step).
+    const commissionRows = (await pool.query(
+      "SELECT lead_id, amount, status FROM partner_commissions WHERE partner_id = $1",
+      [req.partner.id],
+    ).catch(() => ({ rows: [] }))).rows;
+    const commissionFor = new Map(commissionRows.map((c) => [String(c.lead_id), c]));
+
     const vocabulary = (await pool.query(
       "SELECT kind, code, label, color FROM status_vocabulary WHERE is_active AND 'partner' = ANY(visible_to)",
     ).catch(() => ({ rows: [] }))).rows;
@@ -92,6 +100,10 @@ router.get("/api/partner/referrals", partnerAuth, async (req, res) => {
         name: [lead.first_name, lead.last_name].filter(Boolean).join(" ") || "Unnamed",
         country: lead.field_of_interest || (lead.preferred_countries || [])[0] || "",
         referredOn: row.created_at,
+        converted: lead.entity_type === "student" || lead.lead_status === "converted",
+        commission: commissionFor.has(String(row.id))
+          ? { amount: Number(commissionFor.get(String(row.id)).amount), status: commissionFor.get(String(row.id)).status }
+          : null,
       };
       // Doc 6.0: status is shown "only when Super Admin has enabled this
       // visibility for that Agent or Freelancer account".
@@ -111,7 +123,15 @@ router.get("/api/partner/referrals", partnerAuth, async (req, res) => {
       return detail;
     });
 
-    res.json({ referrals, statusVisible: req.partner.can_view_student_status, visibility: show });
+    const sum = (status) => commissionRows.filter((c) => c.status === status).reduce((t, c) => t + Number(c.amount), 0);
+    const summary = {
+      referred: referrals.length,
+      converted: referrals.filter((r) => r.converted).length,
+      pending: sum("pending"),
+      approved: sum("approved"),
+      paid: sum("paid"),
+    };
+    res.json({ referrals, summary, statusVisible: req.partner.can_view_student_status, visibility: show });
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not load referrals" });
   }

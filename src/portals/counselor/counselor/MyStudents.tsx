@@ -33,6 +33,13 @@ function canRequestDocument(status: string) {
   return status === "requested" || status === "rejected";
 }
 
+function ownsList(student: { id: string; user_id?: string | null; email?: string | null }, item: { student_id?: string | null; student_email?: string | null }) {
+  if (item.student_id && (item.student_id === student.user_id || item.student_id === student.id)) return true;
+  const a = String(student.email || "").trim().toLowerCase();
+  const b = String(item.student_email || "").trim().toLowerCase();
+  return Boolean(a && b && a === b);
+}
+
 export default function MyStudents() {
   const { user } = useAuth();
   const store = useLocalStore();
@@ -76,7 +83,7 @@ export default function MyStudents() {
     ? store.documents.filter((doc) => doc.user_id === selected.user_id && !doc.archived)
     : [];
   const selectedShortlists = selected
-    ? store.shortlists.filter((item) => item.student_id === selected.user_id)
+    ? store.shortlists.filter((item) => ownsList(selected, item))
     : [];
   const selectedMessages = selected
     ? store.messages.filter((message) => {
@@ -201,7 +208,7 @@ export default function MyStudents() {
       <div className="grid gap-4">
         {filtered.map((student) => {
           const docs = store.documents.filter((doc) => doc.user_id === student.user_id && !doc.archived).length;
-          const lists = store.shortlists.filter((item) => item.student_id === student.user_id).length;
+          const lists = store.shortlists.filter((item) => ownsList(student, item)).length;
           const badge = student.lead_status === "converted" || student.entity_type === "student" ? "enrolled" : student.lead_status;
           return (
             <Card key={student.id} className="p-5">

@@ -1942,12 +1942,13 @@
 // }
 
 import { useEffect, useMemo, useState } from "react";
-import { Link, Navigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import DeleteButton from "@admin/components/DeleteButton";
 import { format } from "date-fns";
 import { ArrowLeft, BookOpen, ClipboardCheck, FileText, MessageCircle, MessagesSquare, PhoneCall, University, User } from "lucide-react";
 import { api } from "@admin/lib/api";
 import { refreshStore, useAdminStore } from "@admin/lib/store";
-import { counselorLabel, counselorOwns, displayName, initials, isConvertedStudent, studentOwns, telecallerLabel } from "@admin/lib/utils";
+import { counselorLabel, counselorOwns, displayName, initials, isConvertedStudent, ownsShortlist, studentOwns, telecallerLabel } from "@admin/lib/utils";
 import { Badge } from "@admin/components/ui/Badge";
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
@@ -2021,6 +2022,7 @@ function docBadge(status: string) {
 
 export default function StudentDetail() {
   const { id = "" } = useParams();
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const store = useAdminStore();
   const [tab, setTab] = useState<Tab>(() => parseTab(searchParams.get("tab")));
@@ -2063,7 +2065,7 @@ export default function StudentDetail() {
     [student, store.applications],
   );
   const shortlists = useMemo(
-    () => (student ? store.shortlists.filter((row) => studentOwns(student, row.student_id)) : []),
+    () => (student ? store.shortlists.filter((row) => ownsShortlist(student, row as any)) : []),
     [student, store.shortlists],
   );
   const messages = useMemo(() => {
@@ -2242,6 +2244,7 @@ export default function StudentDetail() {
               <h1 className="text-2xl font-bold">
                 {displayName(student.first_name, student.last_name, student.email)}
               </h1>
+              <DeleteButton kind="student" id={student.id} name={displayName(student.first_name, student.last_name, student.email)} onDeleted={() => navigate("/students")} />
               {isConvertedStudent(student) ? (
                 <Badge value="converted" />
               ) : (
@@ -2368,6 +2371,12 @@ export default function StudentDetail() {
                 <dd className="font-medium">{student.email}</dd>
                 <dt className="text-slate-500">Phone</dt>
                 <dd className="font-medium">{student.phone || "—"}</dd>
+                <dt className="text-slate-500">Referred by</dt>
+                <dd className="font-medium">
+                  {student.referred_by_name
+                    ? `${student.referred_by_name} (${student.referred_by_type || "partner"}) · ${student.referral_code_entered || ""}`
+                    : "Direct (no agent / partner)"}
+                </dd>
                 <dt className="text-slate-500">Countries</dt>
                 <dd className="font-medium">{(student.preferred_countries || []).join(", ") || "—"}</dd>
                 <dt className="text-slate-500">Field</dt>
@@ -2407,6 +2416,32 @@ export default function StudentDetail() {
               </div>
               {student.notes && (
                 <p className="mt-5 whitespace-pre-wrap text-xs text-slate-500">{student.notes}</p>
+              )}
+            </Card>
+
+            <Card className="p-5 lg:col-span-2">
+              <div className="mb-3 flex items-center justify-between">
+                <p className="font-bold">Shortlisted universities ({shortlists.length})</p>
+                {shortlists.length > 0 && (
+                  <button type="button" className="text-xs font-semibold text-sky-700" onClick={() => setTab("shortlists")}>
+                    View all
+                  </button>
+                )}
+              </div>
+              {shortlists.length === 0 ? (
+                <p className="text-sm text-slate-500">No universities shortlisted yet.</p>
+              ) : (
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {shortlists.slice(0, 6).map((row) => (
+                    <div key={row.id} className="flex items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2">
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold">{row.university_name}</p>
+                        <p className="truncate text-xs text-slate-500">{row.course_name}{row.location ? ` · ${row.location}` : ""}</p>
+                      </div>
+                      <Badge value={row.status || "requested"} />
+                    </div>
+                  ))}
+                </div>
               )}
             </Card>
           </div>

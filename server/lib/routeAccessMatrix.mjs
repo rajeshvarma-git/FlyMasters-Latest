@@ -43,6 +43,7 @@ const ACTION_OVERRIDES = {
   "POST /api/leads/:id/branch": "lead.branch.move",
   "POST /api/leads/bulk-assign": "lead.assign",
   "POST /api/leads/bulk-assign-telecaller": "lead.assign",
+  "POST /api/admin/delete/:kind/:id": "record.delete",
 };
 
 // Branch-owned data or actions that no branch check protects today (found by reading each handler).
@@ -63,7 +64,7 @@ const AREAS = [
   ["/api/student-checklist-items", "student"], ["/api/leads", "lead"], ["/api/telecaller", "telecaller"], ["/api/counselor", "counselor"],
   ["/api/document-setup", "document"], ["/api/documents", "document"], ["/api/applications", "application"], ["/api/leave", "hr"],
   ["/api/salary", "hr"], ["/api/hr", "hr"], ["/api/finance", "finance"], ["/api/partners", "partner"], ["/api/partner", "partner"],
-  ["/api/branches", "branch"], ["/api/notifications", "notification"], ["/api/system", "system"], ["/api/whatsapp", "whatsapp"],
+  ["/api/branches", "branch"], ["/api/team-status", "team"], ["/api/notifications", "notification"], ["/api/system", "system"], ["/api/whatsapp", "whatsapp"],
   ["/api/university", "university"], ["/api/admin", "university"], ["/api/checklists", "checklist"], ["/api/alerts", "alert"],
   ["/api/knowledge", "knowledge"], ["/api/state", "state"], ["/api/auth", "auth"], ["/api/me", "me"], ["/api/referral", "referral"],
   ["/api/health", "health"], ["/api/users", "staff"], ["/api/counselors", "staff"], ["/api/telecallers", "staff"],

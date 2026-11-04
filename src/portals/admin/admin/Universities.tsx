@@ -246,18 +246,22 @@ export default function Universities() {
             <Label>CSV file</Label>
             <Input id="catalog-file" type="file" accept=".csv,.tsv,.txt" disabled={busy} onChange={(e) => void upload(e)} />
           </div>
-          <label className="flex items-center gap-2 pb-2 text-sm">
-            <input
-              type="checkbox"
-              checked={replaceExisting}
-              onChange={(e) => setReplaceExisting(e.target.checked)}
-              disabled={busy}
-            />
-            Replace entire catalog
-          </label>
-          <Button type="button" variant="secondary" disabled={busy} onClick={() => void clearCatalog()}>
-            Clear catalog
-          </Button>
+          {user?.role === "super_admin" && (
+            <>
+              <label className="flex items-center gap-2 pb-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={replaceExisting}
+                  onChange={(e) => setReplaceExisting(e.target.checked)}
+                  disabled={busy}
+                />
+                Replace entire catalog
+              </label>
+              <Button type="button" variant="secondary" disabled={busy} onClick={() => void clearCatalog()}>
+                Clear catalog
+              </Button>
+            </>
+          )}
         </div>
         {busy && <p className="mt-3 text-sm text-sky-600">Uploading and saving all rows…</p>}
         {message && <p className="mt-3 text-sm text-emerald-700">{message}</p>}

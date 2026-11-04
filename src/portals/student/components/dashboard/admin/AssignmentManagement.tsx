@@ -33,6 +33,7 @@ import {
 } from 'lucide-react';
 import { format } from 'date-fns';
 
+import { useAutoRefresh } from '@shared/hooks/useAutoRefresh';
 interface Lead {
   id: string;
   first_name: string;
@@ -385,6 +386,8 @@ export function AssignmentManagement() {
     fetchData();
   }, []);
 
+  useAutoRefresh(() => fetchData());
+
   const filteredLeads = leads.filter(lead => {
     const matchesSearch = !searchQuery || 
       `${lead.first_name} ${lead.last_name} ${lead.email}`.toLowerCase().includes(searchQuery.toLowerCase());
@@ -425,10 +428,6 @@ export function AssignmentManagement() {
           <Button onClick={handleAutoAssignment} variant="outline">
             <RefreshCw className="h-4 w-4 mr-2" />
             Auto-Assign
-          </Button>
-          <Button onClick={() => fetchData()} variant="outline">
-            <RefreshCw className="h-4 w-4 mr-2" />
-            Refresh
           </Button>
         </div>
       </div>

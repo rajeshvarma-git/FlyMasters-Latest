@@ -5,6 +5,7 @@ import { useAuth } from "@telecaller/context/AuthContext";
 import { api } from "@telecaller/lib/api";
 import { markNotificationsReadLocal, refreshStore, useStore } from "@telecaller/lib/store";
 import { displayName, isSystemWhatsAppMessage } from "@telecaller/lib/utils";
+import { telecallerHref } from "@telecaller/lib/notificationLink";
 import type { Lead, NotificationRow, WhatsAppConversation } from "@telecaller/lib/types";
 
 type FeedItem = {
@@ -28,25 +29,6 @@ function formatWhen(value?: string) {
     minute: "2-digit",
     hour12: false,
   });
-}
-
-function telecallerHref(url?: string) {
-  const value = String(url || "");
-  if (!value) return "/queue";
-  if (
-    value.startsWith("/whatsapp") ||
-    value.startsWith("/chat") ||
-    value.startsWith("/queue") ||
-    value.startsWith("/leads") ||
-    value.startsWith("/converted")
-  ) {
-    return value;
-  }
-  const lead = value.match(/[?&]lead=([^&]+)/);
-  if (lead) return `/whatsapp?lead=${lead[1]}`;
-  if (/whatsapp/i.test(value)) return "/whatsapp";
-  if (/chat/i.test(value)) return "/chat";
-  return "/queue";
 }
 
 function leadName(lead?: Lead | null) {

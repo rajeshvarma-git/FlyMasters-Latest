@@ -88,6 +88,10 @@ export interface Lead {
   assigned_telecaller_id: string | null;
   assigned_counselor_at?: string | null;
   assigned_telecaller_at?: string | null;
+  referred_by_partner_id?: string | null;
+  referred_by_name?: string | null;
+  referred_by_type?: string | null;
+  referral_code_entered?: string | null;
   entity_type: string;
   lead_status: string;
   lead_stage: string;
@@ -128,6 +132,8 @@ export interface ApplicationRow {
   created_at: string | null;
   submitted_at?: string | null;
   started_by?: string | null;
+  counselor_id?: string | null;
+  student_email?: string | null;
 }
 
 export interface ShortlistRow {

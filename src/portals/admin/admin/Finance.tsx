@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useAutoRefresh } from "@shared/hooks/useAutoRefresh";
 import { Receipt, FileText } from "lucide-react";
 import { api } from "@admin/lib/api";
 import { Button } from "@admin/components/ui/Button";
@@ -54,6 +55,7 @@ export default function Finance() {
   };
 
   useEffect(() => { void load().catch(() => undefined); }, []);
+  useAutoRefresh(load);
 
   const patch = async (id: string, body: Record<string, unknown>) => {
     setBusy(true);

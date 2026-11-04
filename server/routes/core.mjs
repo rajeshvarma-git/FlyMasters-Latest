@@ -47,9 +47,12 @@ import {
   partnerByCode,
   raiseCommissionForLead,
 } from "../lib/partners.mjs";
+import { runDelete, DeleteRefused, DELETE_KINDS } from "../lib/deletion.mjs";
+import { buildEmployees, employeeVisible, teamRow, workingStatus, buildTeamList } from "../lib/teamStatus.mjs";
 import {
   ROLES,
   ADMIN_ROLES,
+  BRANCH_ADMIN_ROLES,
   BRANCH_SCOPED_ROLES,
   STAFF_ROLES,
   signUser,
@@ -1336,6 +1339,35 @@ async function scopedRows(table, orderBy, scope) {
     .catch(() => ({ rows: [] }));
 }
 
+/**
+ * Who referred each lead. The referrer lives in columns on app_records (not in
+ * the JSON data), so the generic table reader never returned it and no admin
+ * screen could show it. One query, keyed by lead id.
+ */
+async function loadReferralMap() {
+  const { rows } = await pool.query(
+    `SELECT r.id, r.referred_by_partner_id, r.referral_code_entered, r.referral_source,
+            p.type, COALESCE(NULLIF(p.business_name, ''), p.full_name) AS name
+       FROM app_records r
+       JOIN partners p ON p.id = r.referred_by_partner_id
+      WHERE r.table_name = 'student_leads' AND r.referred_by_partner_id IS NOT NULL`,
+  ).catch(() => ({ rows: [] }));
+  return new Map(rows.map((row) => [String(row.id), row]));
+}
+
+function withReferral(lead, referralMap) {
+  const ref = referralMap.get(String(lead.id));
+  if (!ref) return lead;
+  return {
+    ...lead,
+    referred_by_partner_id: String(ref.referred_by_partner_id),
+    referred_by_name: ref.name,
+    referred_by_type: ref.type,
+    referral_code_entered: ref.referral_code_entered,
+    referral_source: ref.referral_source,
+  };
+}
+
 async function loadState(scope = null) {
   const [
     sqlLeads,
@@ -1406,10 +1438,11 @@ async function loadState(scope = null) {
     loadUsers(),
   ]);
 
+  const referralMap = await loadReferralMap();
   const allLeads = mergeLeadSources(
     sqlLeads.rows.map(asLead),
     jsonLeads.map(asLead),
-  ).map((lead) => {
+  ).map((lead) => withReferral(lead, referralMap)).map((lead) => {
     const person = directory.find((item) => item.user_id === String(lead.user_id) || emailsMatch(item.email, lead.email));
     if (!person) return lead;
     return {
@@ -1838,12 +1871,40 @@ const TELECALLER_LEAD_FIELDS = [
 
 const CALL_OUTCOMES = ["connected", "no_answer", "busy", "wrong_number", "not_interested", "callback"];
 
+/**
+ * Every id that belongs to the same person as `id`. One person can carry two:
+ * the id they sign in with (auth_users.id) and a separate one minted when they
+ * were promoted between roles (counselor_users.id). Admin screens may assign a
+ * lead to either, so ownership has to be judged by person, not by one id.
+ */
+function sameLoginIds(users, counselors, id) {
+  const people = [
+    ...(users || []).map((u) => ({ ids: [u.id], email: u.email })),
+    ...(counselors || []).map((c) => ({ ids: [c.id, c.auth_user_id, c.user_id], email: c.email })),
+  ];
+  const ids = new Set([String(id)]);
+  const emails = new Set(
+    people
+      .filter((p) => p.ids.some((x) => x != null && String(x) === String(id)))
+      .map((p) => String(p.email || "").trim().toLowerCase())
+      .filter(Boolean),
+  );
+  for (const p of people) {
+    if (!emails.has(String(p.email || "").trim().toLowerCase())) continue;
+    for (const x of p.ids) if (x != null && x !== "") ids.add(String(x));
+  }
+  return ids;
+}
+
 async function ownedLead(telecallerId, leadId) {
   const rows = await jsonTable("student_leads");
   const lead = rows.find((row) => String(row.id) === String(leadId));
   if (!lead) return { error: "Lead not found." };
   if (String(lead.assigned_telecaller_id || "") !== String(telecallerId)) {
-    return { error: "That lead is not assigned to you." };
+    const [users, counselors] = await Promise.all([loadUsers(), loadCounselors()]);
+    if (!sameLoginIds(users, counselors, telecallerId).has(String(lead.assigned_telecaller_id || ""))) {
+      return { error: "That lead is not assigned to you." };
+    }
   }
   return { lead };
 }
@@ -1881,9 +1942,12 @@ async function ownedStudentLead(telecallerId, studentId) {
 router.get("/api/telecaller/state", telecallerAuth, async (req, res) => {
   try {
     const state = await loadState(req.scope);
-    const mine = state.leads.filter(
-      (lead) => String(lead.assigned_telecaller_id || "") === String(req.user.id),
-    );
+    // A lead assigned to this telecaller is always theirs to work, whatever branch
+    // it was filed under. Branch scope used to hide it: the admin saw it on the
+    // telecaller's page while the telecaller's own queue stayed empty.
+    const leadSource = req.scope?.allBranches ? state : await loadState(null);
+    const myIds = sameLoginIds(leadSource.users, leadSource.counselors, req.user.id);
+    const mine = leadSource.leads.filter((lead) => myIds.has(String(lead.assigned_telecaller_id || "")));
     const mineOpen = mine.filter(
       (lead) => lead.entity_type !== "student" && lead.lead_status !== "converted",
     );
@@ -2015,6 +2079,127 @@ async function markNotificationsRead(req, res) {
 }
 
 router.post("/api/telecaller/notifications/read", telecallerAuth, markNotificationsRead);
+
+// ---------------------------------------------------------------------------
+// Telecaller self-service HR: attendance (clock in/out), leave and salary.
+// Same tables the counselor portal uses (the id column is called counselor_id
+// but holds any staff user id), so the admin HR page and the staff-status view
+// see telecallers without a second system. Time is taken from the SERVER in
+// India time so a phone clock cannot rewrite a shift.
+// ---------------------------------------------------------------------------
+// HR for telecallers is ON by default. Migration 009 widened counselor_attendance / leave /
+// salary counselor_id to TEXT, so telecaller ids no longer fail in PostgreSQL (22P02).
+// Set TELECALLER_HR_ENABLED=false to switch it off again.
+const telecallerHrEnabled = () => String(process.env.TELECALLER_HR_ENABLED || "").toLowerCase() !== "false";
+const hrGate = (_req, res, next) => (telecallerHrEnabled()
+  ? next()
+  : res.status(403).json({ error: "Attendance, leave and salary are not available for telecallers yet.", enabled: false }));
+
+router.get("/api/telecaller/me/features", telecallerAuth, (_req, res) => {
+  res.json({ hr: telecallerHrEnabled() });
+});
+
+function indiaNow() {
+  const now = new Date();
+  const date = now.toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });
+  const time = now.toLocaleTimeString("en-GB", { timeZone: "Asia/Kolkata", hour12: false });
+  return { date, time };
+}
+
+/** The branch to file a staff member's HR rows under, so their branch head can see them. */
+async function staffHomeBranch(userId) {
+  const home = await pool.query("SELECT branch_id FROM user_roles WHERE user_id = $1", [String(userId)]).catch(() => ({ rows: [] }));
+  if (home.rows[0]?.branch_id) return String(home.rows[0].branch_id);
+  const member = await pool
+    .query("SELECT branch_id FROM user_branches WHERE user_id = $1 ORDER BY created_at ASC LIMIT 1", [String(userId)])
+    .catch(() => ({ rows: [] }));
+  return member.rows[0]?.branch_id ? String(member.rows[0].branch_id) : null;
+}
+
+/** Where a person's leave / salary notification should open, by role. */
+async function hrLinkFor(userId, page) {
+  const role = (await pool.query("SELECT role FROM user_roles WHERE user_id = $1", [String(userId)]).catch(() => ({ rows: [] }))).rows[0]?.role;
+  return `/${role === "telecaller" ? "telecaller" : "counselor"}/${page}`;
+}
+
+router.get("/api/telecaller/me/hr", telecallerAuth, hrGate, async (req, res) => {
+  try {
+    const [attendance, leave, salary] = await Promise.all([
+      pool.query(
+        `SELECT id, date::text AS date, clock_in::text AS clock_in, clock_out::text AS clock_out, total_hours, status
+           FROM counselor_attendance WHERE counselor_id = $1 ORDER BY date DESC LIMIT 90`,
+        [req.user.id],
+      ),
+      pool.query(
+        `SELECT id, leave_type, start_date::text AS start_date, end_date::text AS end_date, reason, total_days, status, applied_on
+           FROM counselor_leave_requests WHERE counselor_id = $1 ORDER BY applied_on DESC LIMIT 50`,
+        [req.user.id],
+      ),
+      pool.query(
+        "SELECT id, month, year, net_salary, notes FROM counselor_salary_records WHERE counselor_id = $1 ORDER BY year DESC, id DESC",
+        [req.user.id],
+      ),
+    ]);
+    res.json({ today: indiaNow().date, attendance: attendance.rows, leave: leave.rows, salary: salary.rows });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not load your HR records" });
+  }
+});
+
+router.post("/api/telecaller/me/clock-in", telecallerAuth, hrGate, async (req, res) => {
+  try {
+    const { date, time } = indiaNow();
+    await pool.query(
+      `INSERT INTO counselor_attendance (counselor_id, date, clock_in, status, branch_id)
+       SELECT $1, $2::date, $3::time, 'present', $4::uuid
+        WHERE NOT EXISTS (SELECT 1 FROM counselor_attendance WHERE counselor_id = $1 AND date = $2::date)`,
+      [req.user.id, date, time, await staffHomeBranch(req.user.id)],
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not clock in" });
+  }
+});
+
+router.post("/api/telecaller/me/clock-out", telecallerAuth, hrGate, async (req, res) => {
+  try {
+    const { date, time } = indiaNow();
+    const { rows } = await pool.query(
+      "SELECT id, clock_in::text AS clock_in, clock_out FROM counselor_attendance WHERE counselor_id = $1 AND date = $2",
+      [req.user.id, date],
+    );
+    const row = rows[0];
+    if (!row?.clock_in) return res.status(400).json({ error: "Clock in first." });
+    if (row.clock_out) return res.json({ ok: true });
+    const hours = (new Date(`${date}T${time}`) - new Date(`${date}T${row.clock_in}`)) / 3600000;
+    await pool.query(
+      "UPDATE counselor_attendance SET clock_out = $2, total_hours = $3 WHERE id = $1",
+      [row.id, time, Math.max(0, Number(hours.toFixed(2)))],
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not clock out" });
+  }
+});
+
+router.post("/api/telecaller/me/leave", telecallerAuth, hrGate, async (req, res) => {
+  try {
+    const start = String(req.body.start_date || "").slice(0, 10);
+    const end = String(req.body.end_date || start).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(start) || !/^\d{4}-\d{2}-\d{2}$/.test(end) || end < start) {
+      return res.status(400).json({ error: "Choose a valid start and end date." });
+    }
+    const days = Math.round((new Date(end) - new Date(start)) / 86400000) + 1;
+    await pool.query(
+      `INSERT INTO counselor_leave_requests (counselor_id, leave_type, start_date, end_date, reason, total_days, status, branch_id)
+       VALUES ($1,$2,$3,$4,$5,$6,'pending',$7::uuid)`,
+      [req.user.id, String(req.body.leave_type || "casual").slice(0, 40), start, end, String(req.body.reason || "").slice(0, 500), days, await staffHomeBranch(req.user.id)],
+    );
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not submit leave" });
+  }
+});
 // Admin bell had no way to clear anything; same handler.
 router.post("/api/notifications/read", auth, markNotificationsRead);
 
@@ -2784,7 +2969,7 @@ router.patch("/api/leave/:id", auth, async (req, res) => {
   ).catch(() => ({ rows: [] }));
   const row = updated.rows[0];
   if (row?.counselor_id) {
-    await notify(row.counselor_id, `Leave ${status}`, comments || `Your leave request was ${status}.`, status === "approved" ? "success" : "warning", "/counselor/leave");
+    await notify(row.counselor_id, `Leave ${status}`, comments || `Your leave request was ${status}.`, status === "approved" ? "success" : "warning", await hrLinkFor(row.counselor_id, "leave"));
   }
   res.json({ ok: true, row });
 });
@@ -2797,16 +2982,21 @@ router.post("/api/salary", auth, async (req, res) => {
   const net = Number(req.body.netSalary || 0);
   const notes = String(req.body.notes || "");
   if (!counselorId || !month) return res.status(400).json({ error: "Counselor, month, and amount are required." });
-  if (!isUuid(counselorId)) return res.status(400).json({ error: "This counselor record is not linked to HR tables yet." });
   if (!(await allow(res, checkStaffInScope(pool, req.scope, counselorId)))) return;
-  const row = await pool.query(
-    `INSERT INTO counselor_salary_records (counselor_id, month, year, net_salary, notes)
-     VALUES ($1,$2,$3,$4,$5)
-     ON CONFLICT (counselor_id, month, year) DO UPDATE SET net_salary = EXCLUDED.net_salary, notes = EXCLUDED.notes
-     RETURNING *`,
+  // Update-then-insert rather than ON CONFLICT: the table has no unique index on every database.
+  let row = await pool.query(
+    `UPDATE counselor_salary_records SET net_salary = $4, notes = $5
+      WHERE counselor_id = $1 AND month = $2 AND year = $3 RETURNING *`,
     [counselorId, month, year, net, notes],
   );
-  await notify(counselorId, "Salary posted", `${month} ${year}: ₹${net}`, "info", "/counselor/salary");
+  if (!row.rows[0]) {
+    row = await pool.query(
+      `INSERT INTO counselor_salary_records (counselor_id, month, year, net_salary, notes, branch_id)
+       VALUES ($1,$2,$3,$4,$5,$6::uuid) RETURNING *`,
+      [counselorId, month, year, net, notes, await staffHomeBranch(counselorId)],
+    );
+  }
+  await notify(counselorId, "Salary posted", `${month} ${year}: ₹${net}`, "info", await hrLinkFor(counselorId, "salary"));
   res.json(row.rows[0]);
 });
 
@@ -3192,6 +3382,9 @@ router.post("/api/universities/import-csv", superAdminAuth, async (req, res) => 
     const csv = String(req.body.csv || "");
     const fileName = String(req.body.fileName || "upload.csv").trim();
     const replaceAll = req.body.replace === true;
+    if (replaceAll && req.user?.role !== "super_admin") {
+      return res.status(403).json({ error: "Only a Super Admin can replace the entire catalog." });
+    }
     if (!csv.trim()) return res.status(400).json({ error: "CSV content is required." });
 
     const parsedRows = parseCatalogCsv(csv);
@@ -3795,6 +3988,77 @@ export function startUnassignedWatcher() {
 // limits." Creation is therefore admin-and-above; branch heads read only.
 // ---------------------------------------------------------------------------
 
+/**
+ * Team Status: Counselors, Telecallers, Branch Heads and Admins in one list.
+ * Who may see whom is decided here, on the server, by the caller's branch scope: Super Admin sees
+ * every branch; a scoped caller sees only people whose every branch is inside their own. The list
+ * and the single-person request use the same rule, so nobody is listed that cannot be opened and
+ * nobody can be opened by guessing an id.
+ */
+async function loadTeamContext() {
+  const today = indiaNow().date;
+  const [users, counselors, branches, attendance, leave, ever] = await Promise.all([
+    loadUsers(),
+    loadCounselors().catch(() => []),
+    pool.query("SELECT id::text AS id, name FROM branches").then((r) => r.rows).catch(() => []),
+    pool.query(
+      `SELECT counselor_id::text AS counselor_id, date::text AS date, clock_in::text AS clock_in, clock_out::text AS clock_out, total_hours
+         FROM counselor_attendance WHERE date >= ($1::date - 7) ORDER BY date DESC`,
+      [today],
+    ).then((r) => r.rows.map((row) => ({
+      ...row,
+      clock_in: row.clock_in ? String(row.clock_in).slice(0, 8) : null,
+      clock_out: row.clock_out ? String(row.clock_out).slice(0, 8) : null,
+      total_hours: row.total_hours == null ? null : Number(row.total_hours),
+    }))).catch(() => []),
+    pool.query(
+      `SELECT counselor_id::text AS counselor_id, status, start_date::text AS start_date, end_date::text AS end_date, leave_type
+         FROM counselor_leave_requests WHERE status = 'approved' AND start_date <= $1::date AND end_date >= $1::date`,
+      [today],
+    ).then((r) => r.rows).catch(() => []),
+    pool.query("SELECT DISTINCT counselor_id::text AS counselor_id FROM counselor_attendance").then((r) => new Set(r.rows.map((row) => row.counselor_id))).catch(() => new Set()),
+  ]);
+  return { today, users, counselors, branches, attendance, leave, everClocked: ever };
+}
+
+router.get("/api/team-status", [session, requireRole(BRANCH_ADMIN_ROLES, "Admin"), branchScope], async (req, res) => {
+  try {
+    const ctx = await loadTeamContext();
+    const employees = buildTeamList({ ...ctx, scope: req.scope });
+    res.json({ today: ctx.today, employees, branches: [...new Map(employees.flatMap((e) => e.branches).map((b) => [b.id, b])).values()] });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not load team status" });
+  }
+});
+
+router.get("/api/team-status/:id", [session, requireRole(BRANCH_ADMIN_ROLES, "Admin"), branchScope], async (req, res) => {
+  try {
+    const ctx = await loadTeamContext();
+    const wanted = String(req.params.id);
+    const employee = buildEmployees(ctx).find((e) => e.id === wanted || e.aliases.includes(wanted));
+    if (!employee) return res.status(404).json({ error: "That employee could not be found.", code: "NOT_FOUND" });
+    if (!employeeVisible(req.scope, employee)) {
+      return res.status(403).json({ error: "That employee is outside the branches you manage.", code: "OUT_OF_SCOPE" });
+    }
+    const mine = new Set(employee.aliases);
+    const history = ctx.attendance.filter((row) => mine.has(String(row.counselor_id))).slice(0, 7);
+    const working = workingStatus(employee, ctx);
+    // Workload counts only leads the caller may see (loadState applies the same branch scope).
+    let workload = null;
+    if (employee.role === "counselor" || employee.role === "telecaller") {
+      const state = await loadState(req.scope.allBranches ? null : req.scope);
+      const own = state.leads.filter((lead) => (employee.role === "counselor"
+        ? mine.has(String(lead.assigned_counselor_id || ""))
+        : mine.has(String(lead.assigned_telecaller_id || ""))));
+      const converted = (lead) => lead.entity_type === "student" || lead.lead_status === "converted";
+      workload = { openLeads: own.filter((lead) => !converted(lead)).length, students: own.filter(converted).length };
+    }
+    res.json({ employee: teamRow(employee, ctx), profile: { phone: employee.phone }, working, history, workload });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not load employee" });
+  }
+});
+
 router.get("/api/branches", [session, requireRole(STAFF_ROLES, "Staff"), branchScope], async (req, res) => {
   try {
     res.json({ branches: await listBranches(req.scope) });
@@ -4039,6 +4303,41 @@ router.patch("/api/partners/:id", auth, async (req, res) => {
     res.json({ partner: rows[0] });
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not update partner" });
+  }
+});
+
+/** Who may delete what. A Super Admin may delete anything (except a Super Admin account); an Admin only students and
+ *  telecaller / counselor / accountant accounts. Leads, partners and other admins stay Super Admin only. */
+const ADMIN_DELETABLE_STAFF = ["telecaller", "counselor", "accountant"];
+const deleteAuth = [session, requireRole(ADMIN_ROLES, "Admin"), branchScope];
+
+/**
+ * Permanently delete a lead/student, an employee, or a partner (see the rule above).
+ * The caller must send confirm: "DELETE". Everything removed is snapshotted into audit_log first,
+ * and the delete refuses (409) rather than orphaning commissions, owned leads or referral history.
+ */
+router.post("/api/admin/delete/:kind/:id", deleteAuth, async (req, res) => {
+  const { kind, id } = req.params;
+  if (!DELETE_KINDS.includes(kind)) return res.status(400).json({ error: "Unknown kind of record." });
+  if (req.user.role !== "super_admin") {
+    let allowed = kind === "student";
+    if (kind === "staff") {
+      const target = await pool.query("SELECT role FROM user_roles WHERE user_id = $1", [String(id)]).catch(() => ({ rows: [] }));
+      allowed = ADMIN_DELETABLE_STAFF.includes(String(target.rows[0]?.role || ""));
+    }
+    if (!allowed) return res.status(403).json({ error: "Only a Super Admin can delete this." });
+  }
+  if (String(req.body?.confirm || "") !== "DELETE") {
+    return res.status(400).json({ error: 'Type DELETE to confirm. Nothing was deleted.' });
+  }
+  try {
+    const result = await runDelete(pool, kind, String(id), { actorId: req.user.id });
+    await audit(req, `${kind}.delete`, kind, id, { snapshot: result.snapshot, removed: result.removed, reason: String(req.body?.reason || "").slice(0, 300) });
+    res.json({ ok: true, removed: result.removed });
+  } catch (error) {
+    if (error instanceof DeleteRefused) return res.status(error.status).json({ error: error.message });
+    console.error("delete failed", kind, id, error);
+    res.status(500).json({ error: "Could not delete. Nothing was changed." });
   }
 });
 

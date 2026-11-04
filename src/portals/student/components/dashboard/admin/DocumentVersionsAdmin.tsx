@@ -10,6 +10,7 @@ import { useToast } from '@student/hooks/use-toast';
 import { FileText, Download, Search, Filter, History, RotateCcw } from 'lucide-react';
 import { Tables } from '@student/integrations/supabase/types';
 
+import { useAutoRefresh } from '@shared/hooks/useAutoRefresh';
 type DocumentVersion = Tables<'document_versions'>;
 type Document = Tables<'documents'>;
 
@@ -30,6 +31,8 @@ export function DocumentVersionsAdmin() {
       fetchVersions();
     }
   }, [isAdmin]);
+
+  useAutoRefresh(() => { if (isAdmin) void fetchVersions(); });
 
   const fetchVersions = async () => {
     try {
@@ -175,10 +178,6 @@ export function DocumentVersionsAdmin() {
             Manage and restore document versions across all users
           </p>
         </div>
-        <Button onClick={fetchVersions}>
-          <History className="w-4 h-4 mr-2" />
-          Refresh
-        </Button>
       </div>
 
       {/* Search and Filter */}

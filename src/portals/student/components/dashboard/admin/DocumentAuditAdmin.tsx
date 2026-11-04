@@ -10,6 +10,7 @@ import { useToast } from '@student/hooks/use-toast';
 import { Shield, Search, Filter, Upload, Check, X, Download, Trash2, Edit, RefreshCw, Calendar, User } from 'lucide-react';
 import { Tables } from '@student/integrations/supabase/types';
 
+import { useAutoRefresh } from '@shared/hooks/useAutoRefresh';
 type DocumentAuditLog = Tables<'document_audit_logs'>;
 
 interface DocumentAuditLogWithDoc extends DocumentAuditLog {
@@ -34,6 +35,8 @@ export function DocumentAuditAdmin() {
       fetchAuditLogs();
     }
   }, [isAdmin]);
+
+  useAutoRefresh(() => fetchAuditLogs());
 
   const fetchAuditLogs = async () => {
     try {
@@ -226,10 +229,6 @@ export function DocumentAuditAdmin() {
           <Button variant="outline" onClick={exportAuditLogs}>
             <Download className="w-4 h-4 mr-2" />
             Export CSV
-          </Button>
-          <Button onClick={fetchAuditLogs}>
-            <RefreshCw className="w-4 h-4 mr-2" />
-            Refresh
           </Button>
         </div>
       </div>

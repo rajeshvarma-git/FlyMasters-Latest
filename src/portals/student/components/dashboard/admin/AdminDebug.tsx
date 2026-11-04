@@ -6,6 +6,7 @@ import { useState, useEffect } from 'react';
 import { supabase } from '@student/integrations/supabase/client';
 import { User, Shield, AlertCircle, CheckCircle } from 'lucide-react';
 
+import { useAutoRefresh } from '@shared/hooks/useAutoRefresh';
 export function AdminDebug() {
   const { user, userRole, isAdmin, loading, roleLoading, hasRole } = useAuth();
   const [userRoles, setUserRoles] = useState<any[]>([]);
@@ -51,6 +52,8 @@ export function AdminDebug() {
       fetchDebugData();
     }
   }, [user, roleLoading]);
+
+  useAutoRefresh(() => { if (user && !roleLoading) void fetchDebugData(); });
 
   const assignAdminRole = async () => {
     if (!user) return;
@@ -124,9 +127,6 @@ export function AdminDebug() {
           </div>
 
           <div className="flex gap-2">
-            <Button onClick={fetchDebugData} disabled={debugLoading}>
-              Refresh Debug Data
-            </Button>
             {user && !isAdmin && (
               <Button onClick={assignAdminRole} variant="outline">
                 <Shield className="w-4 h-4 mr-2" />

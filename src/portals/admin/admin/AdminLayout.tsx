@@ -5,6 +5,7 @@ import {
   BellRing,
   Building2,
   FileText,
+  Activity,
   Flag,
   Eye,
   History,
@@ -65,10 +66,10 @@ const groups = [
     title: "CRM",
     roles: OPERATIONS,
     items: [
-      { to: "/leads", label: "Leads", icon: PhoneCall, end: false },
+      { to: "/leads", label: "Leads & Applications", icon: PhoneCall, end: false },
       { to: "/telecallers", label: "Telecallers", icon: Phone, end: false },
-      { to: "/students", label: "Students", icon: GraduationCap, end: false },
-      { to: "/counselors", label: "Counselors", icon: Shield, end: false },
+      { to: "/students", label: "Students & Counselors", icon: GraduationCap, end: false },
+      { to: "/team-status", label: "Team status", icon: Activity, end: false },
     ],
   },
   {
@@ -128,6 +129,7 @@ const groups = [
 export default function AdminLayout() {
   const { user, signOut } = useAuth();
   const [open, setOpen] = useState(false);
+  const [alertCount, setAlertCount] = useState(0);
   // The configuration history is the developer's, not the whole office's.
   // The server decides; this only hides the menu entry so nobody meets a 403.
   const [isDeveloper, setIsDeveloper] = useState(false);
@@ -143,16 +145,20 @@ export default function AdminLayout() {
   const noTelecaller = store.leads.filter((item) => openLeadNeedsOwner(item)).length;
   const unreadChats = useCaseUnread(60000);
 
-  const Nav = () => (
+  // Called as a function, not rendered as a nested component: a component defined inside render is a new type on
+  // every render, which would reset the bell (and close its list) each time the store refreshes.
+  const renderNav = () => (
     <>
       <div className="flex items-center gap-3 border-b border-white/10 p-4">
         <div className="flex h-9 w-9 items-center justify-center rounded-full bg-sky-500 text-white">
           <Shield className="h-5 w-5" />
         </div>
-        <div>
+        <div className="min-w-0 flex-1">
           <p className="text-sm font-semibold text-white">Admin Portal</p>
           <p className="text-xs text-slate-400">Fly Masters</p>
         </div>
+        {/* The one bell: at the top of the sidebar so it is always in view, never scrolled away. */}
+        <NotificationBell placement="side" light extraCount={alertCount} />
       </div>
       <nav className="flex-1 overflow-y-auto py-4">
         {groups
@@ -208,7 +214,7 @@ export default function AdminLayout() {
           <div className="flex h-8 w-8 items-center justify-center rounded-full bg-sky-500/20 text-xs font-bold text-sky-300">
             {initials(user?.firstName, user?.lastName, user?.email)}
           </div>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium text-white">{displayName(user?.firstName, user?.lastName)}</p>
             <p className="text-xs capitalize text-slate-400">{user?.role?.replace("_", " ")}</p>
           </div>
@@ -232,22 +238,20 @@ export default function AdminLayout() {
       <Button variant="ghost" size="sm" className="fixed left-3 top-3 z-50 md:hidden" onClick={() => setOpen(!open)}>
         {open ? <X /> : <Menu />}
       </Button>
-      <aside className="hidden w-64 flex-col bg-navy-950 md:flex">
-        <Nav />
+      <aside className="sticky top-0 hidden h-screen w-64 shrink-0 flex-col bg-navy-950 md:flex">
+        {renderNav()}
       </aside>
       {open && (
         <>
           <div className="fixed inset-0 z-40 bg-black/50 md:hidden" onClick={() => setOpen(false)} />
           <aside className="fixed left-0 top-0 z-50 flex h-full w-64 flex-col bg-navy-950 md:hidden">
-            <Nav />
+            {renderNav()}
           </aside>
         </>
       )}
       <main className="flex-1 overflow-y-auto">
-        <div className="sticky top-0 z-30 flex items-center justify-end border-b border-slate-200 bg-slate-50 px-4 py-2 md:px-8">
-          <NotificationBell />
-            <AlertCenter fetchJson={api} />
-        </div>
+        {/* No top header: the bell lives at the top of the sidebar. */}
+        <AlertCenter fetchJson={api} hideBadge onUnread={setAlertCount} />
         <div className="p-4 pt-14 md:p-8 md:pt-8">
         {store.error && (
           <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">

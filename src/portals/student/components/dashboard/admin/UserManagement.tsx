@@ -8,12 +8,13 @@ import { Badge } from '@student/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@student/components/ui/select';
 import { useToast } from '@student/hooks/use-toast';
 import { Textarea } from '@student/components/ui/textarea';
-import { Users, Shield, UserCheck, Search, Filter, RefreshCw, Key, Phone } from 'lucide-react';
+import { Users, Shield, UserCheck, Search, Filter, Key, Phone } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@student/components/ui/dialog';
 import { Label } from '@student/components/ui/label';
 import { ROLES, getRoleDisplayName } from '@student/lib/auth-utils';
 import type { Database } from '@student/integrations/supabase/types';
 
+import { useAutoRefresh } from '@shared/hooks/useAutoRefresh';
 type UserRole = Database['public']['Enums']['app_role'];
 
 interface UserProfile {
@@ -50,6 +51,8 @@ export function UserManagement() {
   useEffect(() => {
     fetchUsers();
   }, []);
+
+  useAutoRefresh(() => fetchUsers());
 
   const fetchUsers = async () => {
     try {
@@ -313,10 +316,6 @@ export function UserManagement() {
           <h2 className="text-2xl font-bold">User Management</h2>
           <p className="text-muted-foreground">Manage user accounts and assign roles</p>
         </div>
-        <Button onClick={fetchUsers} variant="outline">
-          <RefreshCw className="w-4 h-4 mr-2" />
-          Refresh
-        </Button>
       </div>
 
       {/* Statistics Cards */}

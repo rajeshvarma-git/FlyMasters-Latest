@@ -1205,10 +1205,12 @@ router.post("/api/counselor/attendance", counselorAuth, async (req, res) => {
     [req.user.id, date],
   );
   if (existing.rows[0]) return res.json({ ok: true, id: existing.rows[0].id });
+  // No ON CONFLICT: the table has no unique (counselor_id, date) index on every database,
+  // and an unmatched ON CONFLICT is a hard error that took the whole API down.
   await pool.query(
     `INSERT INTO counselor_attendance (counselor_id, date, clock_in, status)
-     VALUES ($1,$2,$3,'present')
-     ON CONFLICT (counselor_id, date) DO NOTHING`,
+     SELECT $1, $2, $3, 'present'
+      WHERE NOT EXISTS (SELECT 1 FROM counselor_attendance WHERE counselor_id = $1 AND date = $2)`,
     [req.user.id, date, clockIn],
   );
   res.json({ ok: true });

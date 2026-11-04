@@ -1,5 +1,5 @@
 // // // import { useEffect, useMemo, useState } from "react";
-// // // import { AlarmClock, RefreshCw } from "lucide-react";
+// // // import { AlarmClock, Play } from "lucide-react";
 // // // import { api } from "@admin/lib/api";
 // // // import { refreshStore, useAdminStore } from "@admin/lib/store";
 // // // import { displayName, initials, isConvertedStudent } from "@admin/lib/utils";
@@ -317,7 +317,7 @@
 // // // }
 
 // // import { useEffect, useMemo, useState } from "react";
-// // import { AlarmClock, RefreshCw } from "lucide-react";
+// // import { AlarmClock, Play } from "lucide-react";
 // // import { api } from "@admin/lib/api";
 // // import { refreshStore, useAdminStore } from "@admin/lib/store";
 // // import { displayName, initials, isConvertedStudent } from "@admin/lib/utils";
@@ -498,7 +498,7 @@
 // //             <p className="mt-1 text-xl font-bold tabular-nums">{status ? status.notifiedCount : "—"}</p>
 // //           </div>
 // //           <Button variant="secondary" size="sm" disabled={busy} onClick={() => void runNow()}>
-// //             <RefreshCw className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} /> Run check now
+// //             <Play className={`h-4 w-4 ${busy ? "animate-pulse" : ""}`} /> Run check now
 // //           </Button>
 // //         </div>
 // //       </div>
@@ -658,7 +658,7 @@
 // // }
 
 // import { useEffect, useMemo, useState } from "react";
-// import { AlarmClock, RefreshCw } from "lucide-react";
+// import { AlarmClock, Play } from "lucide-react";
 // import { api } from "@admin/lib/api";
 // import { refreshStore, useAdminStore } from "@admin/lib/store";
 // import { displayName, initials, isConvertedStudent } from "@admin/lib/utils";
@@ -845,7 +845,7 @@
 //             <p className="mt-1 text-xl font-bold tabular-nums">{status ? status.cooledCount : "—"}</p>
 //           </div>
 //           <Button variant="secondary" size="sm" disabled={busy} onClick={() => void runNow()}>
-//             <RefreshCw className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} /> Run check now
+//             <Play className={`h-4 w-4 ${busy ? "animate-pulse" : ""}`} /> Run check now
 //           </Button>
 //         </div>
 //       </div>
@@ -1006,7 +1006,7 @@
 // }
 
 import { useEffect, useMemo, useState } from "react";
-import { AlarmClock, RefreshCw } from "lucide-react";
+import { AlarmClock, Play } from "lucide-react";
 import { api } from "@admin/lib/api";
 import { refreshStore, useAdminStore } from "@admin/lib/store";
 import {
@@ -1202,11 +1202,10 @@ export default function LeadAlerts() {
           </p>
         </div>
         <div className="text-right text-sm text-slate-500">
-          <p>Auto-reminder every {interval}h · repeats at most every {repeatHours}h</p>
           <p>Last check: {status ? clockTime(status.lastRunAt) : "—"} · Next: {status ? countdown(status.nextRunAt) : "—"}</p>
         </div>
         <Button variant="secondary" size="sm" disabled={busy} onClick={() => void runNow()}>
-          <RefreshCw className={`h-4 w-4 ${busy ? "animate-spin" : ""}`} /> Run check now
+          <Play className={`h-4 w-4 ${busy ? "animate-pulse" : ""}`} /> Run check now
         </Button>
       </Card>
 

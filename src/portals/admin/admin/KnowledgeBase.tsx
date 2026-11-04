@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { BookOpen, Plus, Pencil, Trash2, Sparkles } from "lucide-react";
 import { api } from "@admin/lib/api";
+import { useAuth } from "@admin/context/AuthContext";
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
 import { Input, Label, Select, Textarea } from "@admin/components/ui/Field";
@@ -27,6 +28,7 @@ type Suggestion = { title: string; category: "faq" | "policy"; content: string }
 const EMPTY = { title: "", category: "faq" as "faq" | "policy", content: "", is_active: true };
 
 export default function KnowledgeBase() {
+  const isSuperAdmin = useAuth().user?.role === "super_admin";
   const [articles, setArticles] = useState<Article[]>([]);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [aiEnabled, setAiEnabled] = useState(true);
@@ -219,7 +221,7 @@ export default function KnowledgeBase() {
               <div className="flex shrink-0 items-center gap-1">
                 <Button size="sm" variant="ghost" onClick={() => toggle(a)}>{a.is_active ? "Turn off" : "Turn on"}</Button>
                 <Button size="sm" variant="ghost" onClick={() => edit(a)} aria-label="Edit"><Pencil className="h-4 w-4" /></Button>
-                <Button size="sm" variant="ghost" onClick={() => remove(a)} aria-label="Delete"><Trash2 className="h-4 w-4 text-rose-600" /></Button>
+                {isSuperAdmin && <Button size="sm" variant="ghost" onClick={() => remove(a)} aria-label="Delete"><Trash2 className="h-4 w-4 text-rose-600" /></Button>}
               </div>
             </div>
           ))}

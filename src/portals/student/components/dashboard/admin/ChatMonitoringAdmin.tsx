@@ -7,6 +7,7 @@ import { Input } from '@student/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@student/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@student/components/ui/tabs';
 import { supabase } from '@student/integrations/supabase/client';
+import { useAutoRefresh } from '@shared/hooks/useAutoRefresh';
 import {
   MessageCircle,
   Users,
@@ -19,7 +20,6 @@ import {
   AlertCircle,
   TrendingUp,
   Calendar,
-  RefreshCw,
   BarChart3,
 } from 'lucide-react';
 
@@ -127,6 +127,8 @@ function ChatOverview() {
   useEffect(() => {
     fetchOverviewStats();
   }, []);
+
+  useAutoRefresh(() => fetchOverviewStats());
 
   const fetchOverviewStats = async () => {
     try {
@@ -252,10 +254,6 @@ function ChatOverview() {
                 View Analytics
               </NavLink>
             </Button>
-            <Button variant="outline" className="w-full justify-start" onClick={fetchOverviewStats}>
-              <RefreshCw className="w-4 h-4 mr-2" />
-              Refresh Stats
-            </Button>
           </CardContent>
         </Card>
 
@@ -360,10 +358,6 @@ function ActiveSessions() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold">Active Sessions ({sessions.length})</h2>
-        <Button onClick={fetchActiveSessions} variant="outline" size="sm">
-          <RefreshCw className="w-4 h-4 mr-2" />
-          Refresh
-        </Button>
       </div>
 
       {sessions.length === 0 ? (
@@ -442,6 +436,8 @@ function ChatHistory() {
   useEffect(() => {
     fetchChatHistory();
   }, [filterStatus, filterStage]);
+
+  useAutoRefresh(() => fetchChatHistory());
 
   const fetchChatHistory = async () => {
     try {
@@ -534,10 +530,6 @@ function ChatHistory() {
                 ))}
               </SelectContent>
             </Select>
-            <Button variant="outline" onClick={fetchChatHistory}>
-              <RefreshCw className="w-4 h-4 mr-2" />
-              Refresh
-            </Button>
           </div>
         </CardContent>
       </Card>
@@ -624,6 +616,8 @@ function ChatAnalytics() {
   useEffect(() => {
     fetchChatAnalytics();
   }, [dateRange]);
+
+  useAutoRefresh(() => fetchChatAnalytics());
 
   const fetchChatAnalytics = async () => {
     try {
@@ -714,10 +708,6 @@ function ChatAnalytics() {
               <SelectItem value="all">All time</SelectItem>
             </SelectContent>
           </Select>
-          <Button variant="outline" size="sm" onClick={fetchChatAnalytics}>
-            <RefreshCw className="w-4 h-4 mr-2" />
-            Refresh
-          </Button>
         </div>
       </div>
 

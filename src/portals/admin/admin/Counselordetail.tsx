@@ -3,8 +3,10 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { format } from "date-fns";
 import { ArrowLeft, ArrowRightLeft, FileText, MessageCircle, MessageSquare, PhoneCall, Trash2, Users } from "lucide-react";
 import { api } from "@admin/lib/api";
+import { useAuth } from "@admin/context/AuthContext";
 import { refreshStore, useAdminStore } from "@admin/lib/store";
 import { counselorOwns, displayName, initials, isConvertedStudent, studentOwns, telecallerLabel } from "@admin/lib/utils";
+import DeleteButton from "@admin/components/DeleteButton";
 import { Badge } from "@admin/components/ui/Badge";
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
@@ -90,6 +92,7 @@ function profileUrl(lead: Lead, counselorId: string) {
 export default function CounselorDetail() {
   const { id = "" } = useParams();
   const navigate = useNavigate();
+  const isSuperAdmin = useAuth().user?.role === "super_admin";
   const store = useAdminStore();
   const [tab, setTab] = useState<Tab>("students");
   const [openStudentId, setOpenStudentId] = useState<string | null>(null);
@@ -202,7 +205,7 @@ export default function CounselorDetail() {
   if (!counselor) {
     return (
       <div>
-        <Link to="/counselors" className="mb-4 inline-flex items-center gap-2 text-sm text-slate-600 hover:text-sky-600">
+        <Link to="/students?view=counselors" className="mb-4 inline-flex items-center gap-2 text-sm text-slate-600 hover:text-sky-600">
           <ArrowLeft className="h-4 w-4" /> Back to counselors
         </Link>
         <Card className="p-8 text-center text-sm text-slate-500">
@@ -358,7 +361,7 @@ export default function CounselorDetail() {
         body: transferTargetId ? { targetCounselorId: transferTargetId } : {},
       });
       await refreshStore();
-      navigate("/counselors", { replace: true });
+      navigate("/students?view=counselors", { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not remove counselor.");
     } finally {
@@ -390,7 +393,7 @@ export default function CounselorDetail() {
 
   return (
     <div>
-      <Link to="/counselors" className="mb-4 inline-flex items-center gap-2 text-sm text-slate-600 hover:text-sky-600">
+      <Link to="/students?view=counselors" className="mb-4 inline-flex items-center gap-2 text-sm text-slate-600 hover:text-sky-600">
         <ArrowLeft className="h-4 w-4" /> Back to counselors
       </Link>
 
@@ -431,7 +434,7 @@ export default function CounselorDetail() {
             </p>
             {counselor.bio && <p className="mt-3 text-sm text-slate-600">{counselor.bio}</p>}
           </div>
-          <Link to="/counselors?tab=assign">
+          <Link to="/students?view=assign">
             <Button size="sm">Assign students</Button>
           </Link>
         </div>
@@ -475,20 +478,35 @@ export default function CounselorDetail() {
             <ArrowRightLeft className="h-4 w-4" />
             {busyAction === "transfer" ? "Transferring..." : "Transfer data"}
           </Button>
-          <Button
-            size="sm"
-            variant="danger"
-            disabled={busyAction !== null}
-            onClick={() => void removeCounselor()}
-          >
-            <Trash2 className="h-4 w-4" />
-            {busyAction === "remove" ? "Removing..." : "Remove counselor"}
-          </Button>
+          {isSuperAdmin && (
+            <Button
+              size="sm"
+              variant="danger"
+              disabled={busyAction !== null}
+              onClick={() => void removeCounselor()}
+            >
+              <Trash2 className="h-4 w-4" />
+              {busyAction === "remove" ? "Removing..." : "Remove counselor"}
+            </Button>
+          )}
+          <DeleteButton
+              kind="staff"
+              targetRole="counselor"
+              id={String(counselor.auth_user_id || counselor.id)}
+              name={displayName(counselor.first_name, counselor.last_name, counselor.email)}
+              onDeleted={() => navigate("/students")}
+            />
         </div>
         {(students.length > 0 || leads.length > 0) && (
           <p className="mt-3 text-xs text-slate-500">
             {students.length} student{students.length === 1 ? "" : "s"} and {leads.length} lead
             {leads.length === 1 ? "" : "s"} will move with their chat history when you transfer or remove.
+          </p>
+        )}
+        {students.length === 0 && (
+          <p className="mt-3 text-xs text-amber-700">
+            Transfer data is off because this counselor has no students to move. It turns on as soon as a student is
+            assigned to them and you choose who to transfer to.
           </p>
         )}
       </Card>
