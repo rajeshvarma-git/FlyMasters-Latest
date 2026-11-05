@@ -117,10 +117,48 @@ actually served by the deployed environment, and its values for `ADMIN_SCOPE_ENF
 | This branch, no database (default `npm test`) | 666 tests, 568 passed, 0 failed, 98 skipped |
 | The 6 new tests **without** the fix | 4 failed (a blocked audit write left the lead deleted and reported success; the retry case; and both `runDelete` contract cases), so they detect the defect |
 
+### Referral attribution and recovery (on top of `main` at `a8716cd`)
+
+Stream 1, Milestone 1.2. Closes the recorded defect "referral attachment errors are logged after signup
+commits, so attribution can be lost". A referral decides whether a partner is paid.
+
+Sign-up attributes the code after the account commits, and that ordering is deliberate: a bad or expired
+code must never block a sign-up. The gap was what happened when attribution failed for an infrastructure
+reason instead of a bad code — the code existed only in the request, so the referral was gone for good
+with nothing but a log line.
+
+- The sign-up transaction now stores the submitted code on the lead as `referral_code_submitted`, so the
+  code is durable before anything can fail. Sign-up behaviour is unchanged: a bad code still does not block it.
+- `attachReferral` writes the attribution and its `referral_events` row in ONE transaction, and clears the
+  marker as it captures. An attribution with no event row would be a claim with no trail; an event row with
+  no attribution would be a trail to nothing. A failed event write now rolls the attribution back and throws.
+- The attribution UPDATE requires `referred_by_partner_id IS NULL` and checks `rowCount`, so two attempts at
+  once cannot both believe they won; the loser is reported as `rejected_duplicate` instead of silently
+  overwriting. (Concurrency is argued from the SQL, not covered by a test.)
+- New `recoverPendingReferrals({ limit })` walks leads that still carry a marker and have no referral, and
+  tries again with `source: "recovery"`. It skips any lead that already has a referral, so it never
+  overwrites an attribution a person made by hand, and it is safe to re-run. A lead whose retry throws keeps
+  its marker for the next run.
+- New `POST /api/referrals/recover` (Super Admin only, audited as `referral.recover`) runs it. Super Admin
+  because recovery moves leads between branches and decides who is paid.
+
+### Verification actually run (2026-11-06, Linux, Node 22) — automated checks only
+
+Automated verification, not release acceptance.
+
+| Check | Result |
+|---|---|
+| `npm run typecheck` | passed |
+| `npm run build` | passed |
+| Full suite against a real PostgreSQL **16.15** | 693 tests, 693 passed, 0 failed, 0 skipped |
+| No database (default `npm test`) | 693 tests, 568 passed, 0 failed, 125 skipped |
+| The 8 new tests **without** the fix | 5 failed (the code was not kept; recovery did not exist; and a captured attribution stood with no event row), so they detect the defect |
+
 ### Known open defects (not fixed on this branch)
 - Student-portal side of the same threads (`server/routes/student.mjs`, `/__auth` and the student chat routes) was not read or changed here.
 - Not exercised against a real WhatsApp provider: the "no outbound message on refusal" check stubs the network and asserts nothing is sent; the allowed send path stops at its own phone validation in tests.
-- Reported by review, not re-verified here: referral attachment errors are logged after signup commits, so attribution can be lost; Team Status omits the Accountant role. (The deletion/audit ordering defect is fixed on this branch, above.)
+- Reported by review, not re-verified here: Team Status omits the Accountant role. (The deletion/audit ordering and referral attribution defects are fixed, above.)
+- Referral recovery is manual: `POST /api/referrals/recover` has no schedule and no admin screen, so someone has to run it after an outage. A count of pending markers is not surfaced anywhere.
 
 ---
 

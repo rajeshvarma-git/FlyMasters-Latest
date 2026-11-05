@@ -235,6 +235,11 @@ export async function signUpUser(input: {
       lead_status: "hot",
       lead_stage: "hot",
       status: "new",
+      // The code this person signed up with, stored INSIDE the sign-up transaction. Attribution runs
+      // after the commit (a bad code must never block a sign-up), so if that step fails this marker is
+      // the only thing left to attribute from. attachReferral clears it when it captures, and
+      // recoverPendingReferrals() retries whatever is still marked.
+      ...(referralCode ? { referral_code_submitted: referralCode.toUpperCase() } : {}),
     }),
   ];
   const client = await getPool().connect();
@@ -262,11 +267,16 @@ export async function signUpUser(input: {
   // Attribute the referral only after the account is safely committed. This is
   // best-effort on purpose: a bad or expired code must never block a sign-up.
   // attachReferral writes every attempt (accepted or refused) to referral_events.
+  //
+  // A failure here no longer loses the referral: the code is already on the lead as
+  // referral_code_submitted (above), and recoverPendingReferrals() in server/lib/partners.mjs
+  // attributes whatever is still marked. Run it after an outage, or from
+  // POST /api/referrals/recover.
   if (referralCode) {
     try {
       await attachReferral(leadId, referralCode, { source: "signup" });
     } catch (error) {
-      console.error("referral attach failed at sign-up", error);
+      console.error("referral attach failed at sign-up; kept for recovery", error);
     }
   }
 

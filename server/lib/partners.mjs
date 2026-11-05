@@ -115,17 +115,79 @@ export async function attachReferral(leadId, code, { source = "chat", lead = nul
   // pool." So attribution moves the lead into the partner's branch — otherwise
   // the referral lands wherever it was typed and the branch that owns the
   // relationship never sees it.
-  await pool.query(
-    `UPDATE app_records
-        SET referred_by_partner_id = $2,
-            referral_code_entered  = $3,
-            referral_source        = $4,
-            branch_id              = COALESCE($5::uuid, branch_id),
-            updated_at = now()
-      WHERE id = $1 AND table_name = 'student_leads'`,
-    [String(leadId), partner.id, String(code).toUpperCase(), source, partner.branch_id || null],
+  //
+  // The attribution and its referral_events row go in ONE transaction. This decides whether a partner
+  // is paid, so an attribution with no event row would be a claim with no trail, and an event row with
+  // no attribution would be a trail to nothing. The UPDATE also clears the pending marker a sign-up
+  // leaves behind (see referral_code_submitted in studentAuth.ts) and refuses to overwrite an
+  // attribution that landed first, so two attempts at once cannot both believe they won.
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const updated = await client.query(
+      `UPDATE app_records
+          SET referred_by_partner_id = $2,
+              referral_code_entered  = $3,
+              referral_source        = $4,
+              branch_id              = COALESCE($5::uuid, branch_id),
+              data                   = data - 'referral_code_submitted',
+              updated_at = now()
+        WHERE id = $1 AND table_name = 'student_leads' AND referred_by_partner_id IS NULL`,
+      [String(leadId), partner.id, String(code).toUpperCase(), source, partner.branch_id || null],
+    );
+    if (!updated.rowCount) {
+      await client.query("ROLLBACK");
+      return record("rejected_duplicate", "This lead already has a referral.", partner.id);
+    }
+    await client.query(
+      `INSERT INTO referral_events (lead_id, partner_id, code, source, outcome, reason)
+       VALUES ($1::uuid, $2, $3, $4, 'captured', NULL)`,
+      [isUuid(leadId) ? leadId : null, partner.id, String(code || ""), source],
+    );
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+  return { ok: true, outcome: "captured", reason: null, partner };
+}
+
+/**
+ * Attributes referrals whose sign-up attribution never landed.
+ *
+ * A sign-up stores the code it was given on the lead (`referral_code_submitted`) inside the sign-up
+ * transaction, then attributes it afterwards so a bad code cannot block the sign-up. When that second
+ * step fails for an infrastructure reason, the marker is what is left to work from. This walks those
+ * leads and tries again. It skips any lead that already has a referral, so it never overwrites an
+ * attribution a person made by hand, and it is safe to run as often as you like.
+ */
+export async function recoverPendingReferrals({ limit = 200 } = {}) {
+  const { rows } = await pool.query(
+    `SELECT id, data->>'referral_code_submitted' AS code
+       FROM app_records
+      WHERE table_name = 'student_leads'
+        AND referred_by_partner_id IS NULL
+        AND NULLIF(trim(data->>'referral_code_submitted'), '') IS NOT NULL
+      ORDER BY created_at ASC
+      LIMIT $1`,
+    [Math.max(1, Math.min(1000, Number(limit) || 200))],
   );
-  return record("captured", null, partner.id);
+  const report = { considered: rows.length, captured: 0, rejected: 0, failed: 0, outcomes: {} };
+  for (const row of rows) {
+    try {
+      const result = await attachReferral(row.id, row.code, { source: "recovery" });
+      report.outcomes[result.outcome] = (report.outcomes[result.outcome] || 0) + 1;
+      if (result.ok) report.captured += 1;
+      else report.rejected += 1;
+    } catch (error) {
+      // The marker stays, so the next run tries again rather than losing the referral.
+      report.failed += 1;
+      console.error("referral recovery failed for lead", row.id, error?.message || error);
+    }
+  }
+  return report;
 }
 
 function isUuid(value) {

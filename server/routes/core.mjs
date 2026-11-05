@@ -43,6 +43,7 @@ import { branchExists, listBranches, allocateBranchCode, suggestBranchCode } fro
 import {
   allocateReferralCode,
   attachReferral,
+  recoverPendingReferrals,
   listPartners,
   partnerByCode,
   raiseCommissionForLead,
@@ -4557,6 +4558,19 @@ router.get("/api/referral/:code", async (req, res) => {
   if (!partner) return res.status(404).json({ error: "That referral code was not recognised." });
   res.json({ valid: true, partner: { name: partner.business_name || partner.full_name, type: partner.type } });
 });
+
+/**
+ * Re-attribute referrals whose sign-up attribution never landed.
+ *
+ * A sign-up keeps the code it was given on the lead and attributes it after the commit, so an
+ * infrastructure failure at that moment leaves the code marked but unattributed. This walks those
+ * leads and tries again. Super Admin only: it moves leads between branches and decides who is paid.
+ */
+router.post("/api/referrals/recover", superAdminAuth, safely(async (req, res) => {
+  const report = await recoverPendingReferrals({ limit: Number(req.body?.limit) || 200 });
+  await audit(req, "referral.recover", "student_leads", null, report);
+  res.json(report);
+}));
 
 /** Attach a referral code to an existing lead. Admin-side correction path. */
 router.post("/api/leads/:id/referral", auth, async (req, res) => {
