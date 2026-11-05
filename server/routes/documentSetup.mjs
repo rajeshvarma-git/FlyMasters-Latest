@@ -88,7 +88,7 @@ function personName(row) {
 /** The students this person may aim a document at. */
 async function studentsFor(req) {
   if (isCounselor(req)) {
-    const { leads } = await myAssignedLeads(req.user.id);
+    const { leads } = await myAssignedLeads(req.user.id, req.scope);
     return leads.map((lead) => ({
       id: String(lead.user_id || lead.id),
       lead_id: String(lead.id),

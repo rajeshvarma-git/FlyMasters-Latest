@@ -274,16 +274,23 @@ async function markNotificationReadForUser(userId, notificationId) {
  * meaning "any counselor") no longer grants access — such students wait in
  * the admin's assignment list.
  */
-export async function myAssignedLeads(counselorId) {
+export async function myAssignedLeads(counselorId, scope = null) {
   const own = await resolveCounselorAliases(counselorId);
   const [sqlLeads, jsonLeads] = await Promise.all([
     pool.query("SELECT * FROM student_leads").catch(() => ({ rows: [] })),
-    jsonTable("student_leads").catch(() => []),
+    jsonTable("student_leads", { scope }).catch(() => []),
   ]);
+  // Assignment alone is not enough (Stream 1, M1.2): when the caller's scope is given, the lead must
+  // also sit in a branch they belong to NOW, so a stale assignment cannot reach another branch. A
+  // lead with no branch stays out of every branch-limited view.
+  const limited = Boolean(scope) && !scope.allBranches;
+  const allowedBranches = new Set((scope?.branchIds || []).map(String));
+  const inScope = (row) => !limited || allowedBranches.has(String(row.branch_id || ""));
   // A counsellor can also be given telecaller work on a lead (admin picks
   // them in the telecaller list), so a lead is theirs either way.
-  const mine = (row) => own.has(String(row.assigned_counselor_id || ""))
-    || own.has(String(row.assigned_telecaller_id || ""));
+  const mine = (row) => (own.has(String(row.assigned_counselor_id || ""))
+    || own.has(String(row.assigned_telecaller_id || "")))
+    && inScope(row);
   const leads = mergeStudents(
     sqlLeads.rows.filter(mine).map((row) => asLead(row, counselorId, own)),
     jsonLeads.filter(mine).map((row) => asLead(row, counselorId, own)),
@@ -1019,7 +1026,7 @@ router.get("/api/counselor/state", counselorAuth, async (req, res) => {
 
   const extra = extras.rows[0];
   // Only this counselor's assigned students — and their records — leave the server.
-  const mineSet = await myAssignedLeads(id);
+  const mineSet = await myAssignedLeads(id, req.scope);
   const ownsStudent = (studentId, email) =>
     mineSet.studentKeys.has(String(studentId || "")) ||
     (email ? mineSet.emails.has(String(email).trim().toLowerCase()) : false);
@@ -1236,7 +1243,7 @@ router.post("/api/counselor/shortlists", counselorAuth, async (req, res) => {
       return res.status(400).json({ error: "Student, university, and course are required." });
     }
     const resolvedId = await resolveStudentUserId(studentId, studentEmail);
-    if (!(await counselorOwnsStudent(req.user.id, resolvedId)) && !(await counselorOwnsStudent(req.user.id, studentId))) {
+    if (!(await counselorOwnsStudent(req.user.id, resolvedId, req.scope)) && !(await counselorOwnsStudent(req.user.id, studentId, req.scope))) {
       return res.status(403).json({ error: "This student is not assigned to you." });
     }
     const directory = await studentDirectory();
@@ -1279,7 +1286,7 @@ router.post("/api/counselor/shortlists", counselorAuth, async (req, res) => {
 });
 
 /** The document, if it belongs to one of this counselor's students; else null. */
-async function ownedDocument(counselorId, documentId) {
+async function ownedDocument(counselorId, documentId, scope) {
   const docs = await jsonTable("documents");
   let found = docs.find((row) => String(row.id) === String(documentId));
   if (!found) {
@@ -1287,7 +1294,7 @@ async function ownedDocument(counselorId, documentId) {
     found = sql.rows[0] || null;
   }
   if (!found) return { found: null, allowed: false };
-  return { found, allowed: await counselorOwnsStudent(counselorId, found.user_id) };
+  return { found, allowed: await counselorOwnsStudent(counselorId, found.user_id, scope) };
 }
 
 router.patch("/api/counselor/documents/:id", counselorAuth, async (req, res) => {
@@ -1296,9 +1303,9 @@ router.patch("/api/counselor/documents/:id", counselorAuth, async (req, res) => 
   if (!["uploaded", "approved", "rejected", "pending"].includes(status)) {
     return res.status(400).json({ error: "Status must be approved or rejected." });
   }
-  const owned = await ownedDocument(req.user.id, req.params.id);
+  const owned = await ownedDocument(req.user.id, req.params.id, req.scope);
   if (!owned.found) return res.status(404).json({ error: "Document not found." });
-  if (!owned.allowed) return res.status(403).json({ error: "This student is not assigned to you." });
+  if (!owned.allowed) return res.status(403).json({ error: "This student is not one of yours in your branches." });
   const now = new Date().toISOString();
   await pool.query("UPDATE documents SET status = $2 WHERE id::text = $1", [req.params.id, status]).catch(() => {});
   const docs = await jsonTable("documents");
@@ -1346,7 +1353,7 @@ router.patch("/api/counselor/documents/:id", counselorAuth, async (req, res) => 
 });
 
 router.get("/api/counselor/documents/:id/file", counselorAuth, async (req, res) => {
-  const { found, allowed } = await ownedDocument(req.user.id, req.params.id);
+  const { found, allowed } = await ownedDocument(req.user.id, req.params.id, req.scope);
   if (!found?.file_path) return res.status(404).json({ error: "File not found" });
   if (!allowed) return res.status(403).json({ error: "This student is not assigned to you." });
   const file = await pool.query("SELECT data_url FROM app_storage WHERE path = $1", [found.file_path]);
@@ -1405,7 +1412,7 @@ router.patch("/api/counselor/applications/:id", counselorAuth, async (req, res) 
   const apps = await jsonTable("applications");
   const found = apps.find((row) => String(row.id) === String(req.params.id));
   if (!found) return res.status(404).json({ error: "Application not found" });
-  if (!(await counselorOwnsStudent(req.user.id, found.user_id))) {
+  if (!(await counselorOwnsStudent(req.user.id, found.user_id, req.scope))) {
     return res.status(403).json({ error: "This student is not assigned to you." });
   }
   const actor = { id: req.user.id, role: "counselor", name: "" };
@@ -1446,7 +1453,7 @@ router.post("/api/counselor/shortlists/:id/start-application", counselorAuth, as
     if (!rows[0]) return res.status(404).json({ error: "Shortlist entry not found." });
     const shortlist = { ...rows[0].data, id: rows[0].id };
     const studentId = await resolveStudentUserId(shortlist.student_id, shortlist.student_email || "");
-    if (!(await counselorOwnsStudent(req.user.id, studentId)) && !(await counselorOwnsStudent(req.user.id, shortlist.student_id))) {
+    if (!(await counselorOwnsStudent(req.user.id, studentId, req.scope)) && !(await counselorOwnsStudent(req.user.id, shortlist.student_id, req.scope))) {
       return res.status(403).json({ error: "This student is not assigned to you." });
     }
     if (!shortlist.student_consent) {
@@ -1527,8 +1534,8 @@ router.post("/api/counselor/notifications/:id/read", counselorAuth, async (req, 
 
 router.post("/api/counselor/conversations", counselorAuth, async (req, res) => {
   const studentId = String(req.body.studentId || "");
-  if (!(await counselorOwnsStudent(req.user.id, studentId))) {
-    return res.status(403).json({ error: "This student is not assigned to you." });
+  if (!(await counselorOwnsStudent(req.user.id, studentId, req.scope))) {
+    return res.status(403).json({ error: "This student is not one of yours in your branches." });
   }
   const jsonConversations = await jsonTable("private_conversations");
   const shared = jsonConversations.find((row) => String(row.student_id) === studentId);
@@ -1554,8 +1561,8 @@ router.post("/api/counselor/messages", counselorAuth, async (req, res) => {
   if (!conversationId || !receiverId || !text) {
     return res.status(400).json({ error: "Message, conversation, and student are required." });
   }
-  if (!(await counselorOwnsStudent(req.user.id, receiverId))) {
-    return res.status(403).json({ error: "This student is not assigned to you." });
+  if (!(await counselorOwnsStudent(req.user.id, receiverId, req.scope))) {
+    return res.status(403).json({ error: "This student is not one of yours in your branches." });
   }
 
   const now = new Date().toISOString();
@@ -1639,6 +1646,11 @@ router.patch("/api/counselor/messages/:id", counselorAuth, async (req, res) => {
   if (remapSharedCounselorId(senderId, req.user.id) !== req.user.id) {
     return res.status(403).json({ error: "You can only edit your own messages." });
   }
+  // Own message is not enough: the thread's student must still be theirs, in a branch they hold now.
+  const threadId = existing?.conversation_id ?? sqlRow?.conversation_id;
+  if (!(await counselorOwnsConversation(req.user.id, threadId, req.scope))) {
+    return res.status(403).json({ error: "That conversation is not one of your students in your branches." });
+  }
 
   const now = new Date().toISOString();
   let updated = null;
@@ -1660,6 +1672,9 @@ router.patch("/api/counselor/messages/:id", counselorAuth, async (req, res) => {
 });
 
 router.post("/api/counselor/conversations/:id/read", counselorAuth, async (req, res) => {
+  if (!(await counselorOwnsConversation(req.user.id, req.params.id, req.scope))) {
+    return res.status(403).json({ error: "That conversation is not one of your students in your branches." });
+  }
   await pool.query(
     "UPDATE private_messages SET is_read = true WHERE conversation_id = $1 AND receiver_id = $2",
     [req.params.id, req.user.id],
@@ -1820,11 +1835,33 @@ function checklistApplies(item, student) {
   return documentAppliesToStudent(item, studentForTargeting(student));
 }
 
-async function counselorOwnsStudent(counselorId, studentRef) {
+/**
+ * A student is this counselor's only when their lead is assigned to the counselor NOW and sits in a
+ * branch the counselor belongs to NOW. `scope` is required (as it is for the telecaller checks), so a
+ * new route cannot omit it and quietly fall back to assignment alone.
+ */
+async function counselorOwnsStudent(counselorId, studentRef, scope) {
+  if (scope === undefined) throw new Error("A counselor student access check needs the caller's branch scope.");
   const ref = String(studentRef || "");
   if (!ref) return false;
-  const { leadIds, userIds } = await myAssignedLeads(counselorId);
+  const { leadIds, userIds } = await myAssignedLeads(counselorId, scope);
   return leadIds.has(ref) || userIds.has(ref);
+}
+
+/** The same rule for a chat thread: its student must be one the counselor holds now, in scope now. */
+async function counselorOwnsConversation(counselorId, conversationId, scope) {
+  const id = String(conversationId || "");
+  if (!id) return false;
+  const shared = (await jsonTable("private_conversations")).find((row) => String(row.id) === id);
+  let studentId = shared?.student_id;
+  if (!studentId) {
+    const sql = await pool
+      .query("SELECT student_id FROM private_conversations WHERE id::text = $1", [id])
+      .catch(() => ({ rows: [] }));
+    studentId = sql.rows[0]?.student_id;
+  }
+  if (!studentId) return false;
+  return counselorOwnsStudent(counselorId, studentId, scope);
 }
 
 router.get("/api/counselor/university-catalog/countries", counselorAuth, async (_req, res) => {
@@ -1877,7 +1914,7 @@ router.get("/api/counselor/university-programs", counselorAuth, async (req, res)
 
 router.get("/api/counselor/students/:id/checklist", counselorAuth, async (req, res) => {
   try {
-    const owns = await counselorOwnsStudent(req.user.id, req.params.id);
+    const owns = await counselorOwnsStudent(req.user.id, req.params.id, req.scope);
     if (!owns) return res.status(403).json({ error: "This student is not assigned to you." });
 
     const [sqlLeads, jsonLeads] = await Promise.all([
@@ -1964,8 +2001,8 @@ router.get("/api/counselor/students/:id/checklist", counselorAuth, async (req, r
   }
 });
 
-async function resolveAssignedStudent(counselorId, studentRef) {
-  const { leads } = await myAssignedLeads(counselorId);
+async function resolveAssignedStudent(counselorId, studentRef, scope) {
+  const { leads } = await myAssignedLeads(counselorId, scope);
   return leads.find((row) => String(row.id) === String(studentRef) || String(row.user_id) === String(studentRef));
 }
 
@@ -1975,7 +2012,7 @@ function needsDocumentRequest(status) {
 
 router.post("/api/counselor/students/:id/document-requests", counselorAuth, async (req, res) => {
   try {
-    const student = await resolveAssignedStudent(req.user.id, req.params.id);
+    const student = await resolveAssignedStudent(req.user.id, req.params.id, req.scope);
     if (!student) return res.status(403).json({ error: "This student is not assigned to you." });
 
     const requestedTypes = Array.isArray(req.body.document_types)

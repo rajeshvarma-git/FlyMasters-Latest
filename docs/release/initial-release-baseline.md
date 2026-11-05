@@ -46,8 +46,56 @@ The database was a throwaway PostgreSQL 17.5 on one machine. CI is configured fo
 - **Configuration:** `ADMIN_SCOPE_ENFORCED=true`, `IDENTITY_STRICT`, public staff sign-up closed, `HR_ENABLED` off: values on the deployed environment are not recorded here and are **UNVERIFIED**.
 - **Test data warnings** logged at startup of the deployed environment: some accounts with no role row (treated as students) and some leads with no branch (invisible to branch-scoped staff). Assign roles and branches from the admin screens.
 
+### Changes on branch `fix/s1-m1-2-counselor-conversation-scope` (on top of `main` at `1b22c70`)
+
+Stream 1, Milestone 1.2. Closes the first known open defect below: counselor conversation, message, WhatsApp
+and attachment access used assignment alone, with no branch check. One rule now, the same one the telecaller
+routes already follow: the student's lead must be assigned to the counselor **now** and sit in a branch they
+belong to **now**.
+
+- `myAssignedLeads(counselorId, scope)` takes the caller's scope and passes it to `jsonTable("student_leads", { scope })`,
+  filtering the legacy SQL `student_leads` rows by `branch_id` as well. A lead with no branch stays out of every
+  branch-limited view. Called without a scope it behaves exactly as before, so no other call site changed meaning.
+- `counselorOwnsStudent(counselorId, studentRef, scope)` **requires** the scope (it throws when it is omitted,
+  as `leadInCallerScope` does for telecallers), so a new counselor route cannot quietly fall back to assignment alone.
+- New `counselorOwnsConversation()` applies the same rule to a chat thread by its id.
+- Routes covered: `POST /api/counselor/conversations`, `POST /api/counselor/messages`,
+  `PATCH /api/counselor/messages/:id` (own message is no longer enough), `POST /api/counselor/conversations/:id/read`
+  (checked before any write), `GET /api/counselor/state` (thread and message lists), `GET /api/counselor/documents/:id/file`
+  and `PATCH /api/counselor/documents/:id` (attachments), plus document targeting in `documentSetup.mjs`.
+- WhatsApp: new `counselorOwnsThread()` in `core.mjs`, mirroring `telecallerOwnsThread`, on the list, messages,
+  send and read routes. `staffCanViewConversation` still checks assignment; this adds the branch half. A thread
+  whose lead cannot be found is refused rather than guessed.
+- Admin and Super Admin access is unchanged: an all-branches scope short-circuits every check, and a test asserts
+  a Super Admin still reads a thread in any branch.
+- Consequence worth knowing: because the counselor's lead list comes from the same helper, it is now branch-scoped
+  too. That is the counselor counterpart of the telecaller queue fix in `ffbe1c5`.
+
+### Verification actually run (2026-11-05, Linux, Node 22) — automated checks only
+
+This section records **automated verification**. It is not release acceptance; see "Release acceptance" below.
+
+| Check | Result |
+|---|---|
+| `npm run typecheck` | passed |
+| `npm run build` | passed |
+| This branch, full suite against a real PostgreSQL **16.15** | 679 tests, 679 passed, 0 failed, 0 skipped |
+| This branch, no database (default `npm test`) | 679 tests, 568 passed, 0 failed, 111 skipped |
+| `main` at `1b22c70`, full suite against PostgreSQL 16.15 (independent re-run of the figures recorded above) | 660 tests, 660 passed, 0 failed, 0 skipped |
+| The 19 new tests **without** the fix | 10 failed (chat open and message send on a cross-branch or unbranched lead; the state thread and message list; an attachment after the lead moved branch; branch change; WhatsApp history, list, send and read by direct id), so they detect the defect |
+
+Both the `main` figures and this branch's were produced on PostgreSQL 16.15, the major version CI is configured for;
+the earlier `main` run was on 17.5, so the suite is now green on both. This is a second machine, not CI.
+
+### Release acceptance (separate from the automated checks above)
+
+**Still pending.** No commit is accepted for release until the deployed walkthrough passes. Outstanding:
+Super Admin creates Admin; Admin creates Telecaller and Counselor in their branch; each signs in to the correct
+portal; unauthorized creation and cross-branch access fail; disabled employees lose access. Also pending: the SHA
+actually served by the deployed environment, and its values for `ADMIN_SCOPE_ENFORCED`, `IDENTITY_STRICT` and `HR_ENABLED`.
+
 ### Known open defects (not fixed on this branch)
-- Counselor-side chat and WhatsApp routes: `managerSeesConversation` still treats Counselors as assignment-governed with no branch check. Not covered by this branch; the same rule should be applied there.
+- Student-portal side of the same threads (`server/routes/student.mjs`, `/__auth` and the student chat routes) was not read or changed here.
 - Not exercised against a real WhatsApp provider: the "no outbound message on refusal" check stubs the network and asserts nothing is sent; the allowed send path stops at its own phone validation in tests.
 - Reported by review, not re-verified here: permanent deletion commits before its audit entry is written; referral attachment errors are logged after signup commits, so attribution can be lost; Team Status omits the Accountant role.
 

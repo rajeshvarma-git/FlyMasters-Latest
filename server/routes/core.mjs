@@ -1981,6 +1981,33 @@ async function telecallerOwnsThread(req, conversation, leads) {
   return false;
 }
 
+/**
+ * A counselor's WhatsApp thread (Stream 1, M1.2). `staffCanViewConversation` already checks that the
+ * thread is assigned to them; this adds the branch half of the rule, so the lead behind the thread must
+ * be assigned to this counselor NOW and sit in a branch they belong to NOW. A thread whose lead cannot
+ * be found is refused rather than guessed, which is how the telecaller routes behave.
+ */
+async function counselorOwnsThread(req, conversation, leads) {
+  const counselors = await loadCounselors();
+  const counselor = counselors.find(
+    (row) => String(row.auth_user_id || "") === String(req.user.id) || String(row.id) === String(req.user.id),
+  );
+  const byId = (leads || []).filter((lead) => String(lead.id) === String(conversation?.lead_id || "\u0000"));
+  const candidates = byId.length
+    ? byId
+    : (leads || []).filter(
+        (lead) =>
+          conversation?.phone_number &&
+          (whatsapp.phonesMatch(lead.phone, conversation.phone_number) ||
+            whatsapp.phonesMatch(lead.whatsapp_number, conversation.phone_number)),
+      );
+  for (const lead of candidates) {
+    if (counselor && !leadOwnedByCounselor(lead, counselor)) continue;
+    if ((await checkLeadInScope(pool, req.scope, lead.id)).ok) return true;
+  }
+  return false;
+}
+
 /** The same test for a list, with the leads already narrowed to this telecaller's current, in-scope leads. */
 function threadBelongsToLeads(conversation, leads) {
   return (leads || []).some(
@@ -3647,6 +3674,11 @@ router.get("/api/whatsapp/conversations", staffChatAuth, async (req, res) => {
       const keep = await Promise.all(conversations.map((row) => telecallerOwnsThread(req, row, leads)));
       conversations = conversations.filter((_row, index) => keep[index]);
     }
+    if (req.user.role === "counselor") {
+      // The same rule for a counselor's list.
+      const keep = await Promise.all(conversations.map((row) => counselorOwnsThread(req, row, leads)));
+      conversations = conversations.filter((_row, index) => keep[index]);
+    }
     res.json(conversations.sort((a, b) => String(b.last_message_at || "").localeCompare(String(a.last_message_at || ""))));
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not load WhatsApp conversations" });
@@ -3666,6 +3698,10 @@ router.get("/api/whatsapp/conversations/:id/messages", staffChatAuth, async (req
     // managerSeesConversation leaves telecallers to assignment alone; their thread's lead must also be theirs now and in scope.
     if (req.user.role === "telecaller" && !(await telecallerOwnsThread(req, conversation, leads))) {
       return res.status(403).json({ error: "That conversation is not one of your leads in your branches.", code: "OUT_OF_SCOPE" });
+    }
+    // The same for a counselor: assignment alone is not enough, the lead must be in their branches now.
+    if (req.user.role === "counselor" && !(await counselorOwnsThread(req, conversation, leads))) {
+      return res.status(403).json({ error: "That conversation is not one of your students in your branches.", code: "OUT_OF_SCOPE" });
     }
     if (!whatsapp.staffCanViewConversation(conversation, req.user, counselors, leads)) {
       return res.status(403).json({ error: "You cannot view this conversation." });
@@ -3731,6 +3767,10 @@ router.post("/api/whatsapp/messages", staffChatAuth, async (req, res) => {
     if (req.user.role === "telecaller" && !(await telecallerOwnsThread(req, conversation, leads))) {
       return res.status(403).json({ error: "That conversation is not one of your leads in your branches.", code: "OUT_OF_SCOPE" });
     }
+    // The same for a counselor: assignment alone is not enough, the lead must be in their branches now.
+    if (req.user.role === "counselor" && !(await counselorOwnsThread(req, conversation, leads))) {
+      return res.status(403).json({ error: "That conversation is not one of your students in your branches.", code: "OUT_OF_SCOPE" });
+    }
     if (!whatsapp.staffCanReplyConversation(conversation, req.user, counselors, leads)) {
       const unassigned = !conversation.assigned_staff_id;
       return res.status(403).json({
@@ -3778,6 +3818,10 @@ router.post("/api/whatsapp/conversations/:id/read", staffChatAuth, async (req, r
     // managerSeesConversation leaves telecallers to assignment alone; their thread's lead must also be theirs now and in scope.
     if (req.user.role === "telecaller" && !(await telecallerOwnsThread(req, conversation, leads))) {
       return res.status(403).json({ error: "That conversation is not one of your leads in your branches.", code: "OUT_OF_SCOPE" });
+    }
+    // The same for a counselor: assignment alone is not enough, the lead must be in their branches now.
+    if (req.user.role === "counselor" && !(await counselorOwnsThread(req, conversation, leads))) {
+      return res.status(403).json({ error: "That conversation is not one of your students in your branches.", code: "OUT_OF_SCOPE" });
     }
     if (!whatsapp.staffCanViewConversation(conversation, req.user, counselors, leads)) {
       return res.status(403).json({ error: "You cannot update this conversation." });
