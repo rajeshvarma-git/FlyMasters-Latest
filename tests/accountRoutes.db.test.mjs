@@ -8,7 +8,7 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import pg from "pg";
 
 const URL = process.env.TEST_DATABASE_URL;
@@ -218,6 +218,34 @@ test("the last counselor write fails: still all-or-nothing", { skip }, async () 
   assert.equal(failed.code, 500);
   await nothingFor(email);
   assert.equal(await n("SELECT count(*) AS n FROM app_records WHERE table_name = 'counselors' AND data->>'user_id' IN (SELECT id FROM auth_users WHERE lower(email) = $1)", [email]), 0);
+  // The counselor's own login row was already inserted when this write failed: it must be removed too.
+  assert.equal(await n("SELECT count(*) AS n FROM counselor_users WHERE lower(email) = $1", [email]), 0, "counselor_users row left behind");
+  const retry = await createUser(adminOf(B1), person(email, { role: "counselor", branchId: B1 }));
+  assert.equal(retry.code, 200, JSON.stringify(retry.body));
+  assert.equal(await n("SELECT count(*) AS n FROM counselor_users WHERE lower(email) = $1", [email]), 1, "a retry creates exactly one");
+});
+
+test("a counselor_users row that already existed is restored exactly, not deleted or overwritten, when creation fails late", { skip }, async () => {
+  const email = "rb.prior@x.test";
+  const priorId = randomUUID();
+  await pool.query(
+    `INSERT INTO counselor_users (id, email, password_hash, first_name, last_name, phone, bio, specializations)
+     VALUES ($1, $2, 'old-hash', 'Old', 'Name', '111', 'old bio', ARRAY['Old'])`,
+    [priorId, email],
+  );
+  let appRecordWrites = 0;
+  const failed = await whileFailing((t) => /INSERT INTO app_records/.test(t) && ++appRecordWrites === 2, () => createUser(adminOf(B1), person(email, { role: "counselor", branchId: B1 })));
+  assert.equal(failed.code, 500);
+  await nothingFor(email);
+  const rows = (await pool.query("SELECT * FROM counselor_users WHERE lower(email) = $1", [email])).rows;
+  assert.equal(rows.length, 1, "the pre-existing row is still there");
+  assert.equal(String(rows[0].id), priorId);
+  assert.equal(rows[0].password_hash, "old-hash");
+  assert.equal(rows[0].first_name, "Old");
+  assert.equal(rows[0].last_name, "Name");
+  assert.equal(rows[0].phone, "111");
+  assert.equal(rows[0].bio, "old bio");
+  assert.deepEqual(rows[0].specializations, ["Old"]);
 });
 
 // The login, role and branches are written on one transaction connection, not through pool.query.

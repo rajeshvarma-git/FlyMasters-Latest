@@ -130,7 +130,11 @@ test("account creation is all-or-nothing and cannot hang the request", () => {
   const src = read("server/routes/core.mjs");
   const users = block(src, 'router.post("/api/users"');
   assert.match(users, /safely\(async/, "POST /api/users must answer a thrown error with a 500, not hang");
-  assert.match(users, /discardAccount\(pool, \{ id \}\)/, "a failed profile or counselor write must remove the new account");
+  assert.match(
+    users,
+    /discardAccount\(pool, \{ id, counselorUserId: createdCounselorUserId, restoreCounselor: priorCounselorRow \}\)/,
+    "a failed profile or counselor write must remove the new account, including the counselor_users row it created (or restore the one it overwrote)",
+  );
   assert.ok(users.indexOf("discardAccount") < users.indexOf('audit(req, "user.create"'), "audit only after every write succeeded");
   for (const marker of ['router.post("/api/auth/signup"', 'router.post("/api/auth/telecaller-signup"']) {
     assert.match(block(src, marker), /discardAccount\(pool, \{ id \}\)/, `${marker} must remove the account if the profile write fails`);

@@ -79,6 +79,10 @@ function world({ records = {}, escalations = {}, privateConv = {}, accounts = {}
     if (/^SELECT \* FROM chat_escalations WHERE id = \$1/.test(text)) {
       return { rows: params[0] in escalations ? [{ id: params[0], status: "open", ...escalations[params[0]] }] : [] };
     }
+    if (/^SELECT branch_id FROM app_records WHERE table_name = 'student_leads' AND id::text = \$1/.test(text)) {
+      const row = (records.student_leads || []).find((r) => String(r.id) === String(params[0]));
+      return { rows: row ? [{ branch_id: row.branch_id ?? null }] : [] };
+    }
     if (/^SELECT branch_id FROM app_records WHERE table_name = 'student_leads' AND \(data->>'user_id'/.test(text)) {
       return { rows: (records.student_leads || []).filter((r) => String(r.user_id) === String(params[0]) || String(r.id) === String(params[0])).map((r) => ({ branch_id: r.branch_id ?? null })) };
     }
@@ -149,12 +153,15 @@ test("checkConversationInScope: unknown kind 400, missing 404, wrong branch refu
 const waWorld = () => ({
   records: {
     whatsapp_conversations: [
-      { id: "convA", branch_id: A, phone_number: "111", assigned_staff_id: "tel1", staff_role: "telecaller" },
+      { id: "convA", branch_id: A, lead_id: "leadTel", phone_number: "111", assigned_staff_id: "tel1", staff_role: "telecaller" },
       { id: "convB", branch_id: B, phone_number: "222" },
       { id: "convViaLead", branch_id: null, lead_id: "leadA", phone_number: "333" },
       { id: "convNowhere", branch_id: null, phone_number: "444" },
     ],
-    student_leads: [{ id: "leadA", branch_id: A, entity_type: "lead" }],
+    student_leads: [
+      { id: "leadA", branch_id: A, entity_type: "lead" },
+      { id: "leadTel", branch_id: A, entity_type: "lead", assigned_telecaller_id: "tel1", phone: "111" },
+    ],
     whatsapp_messages: [
       { id: "m1", conversation_id: "convA", direction: "inbound", body: "hi", is_read: false, created_at: "2026-01-01T01:00:00Z" },
       { id: "m2", conversation_id: "convA", direction: "inbound", body: "again", is_read: false, created_at: "2026-01-01T02:00:00Z" },
@@ -209,7 +216,7 @@ test("WhatsApp send: an Admin cannot reply into another branch's conversation (s
   });
 });
 
-test("WhatsApp: an assigned telecaller's own conversation is unaffected, even with no branch recorded", async () => {
+test("WhatsApp: a telecaller's thread is available while its lead is assigned to them AND in their branch", async () => {
   await withWorld(waWorld(), async () => {
     const r = await call(W.list, { role: "telecaller", id: "tel1", scope: scoped(A) });
     assert.equal(r.code, 200, JSON.stringify(r.body));
@@ -218,6 +225,39 @@ test("WhatsApp: an assigned telecaller's own conversation is unaffected, even wi
     assert.equal(m.code, 200);
   });
 });
+
+// A thread assigned to the telecaller is not enough: the lead behind it must also be theirs now and in their branches.
+const telecallerLosesThread = {
+  "its lead is now in another branch": (world) => { world.records.student_leads.find((l) => l.id === "leadTel").branch_id = B; },
+  "its lead has no branch": (world) => { world.records.student_leads.find((l) => l.id === "leadTel").branch_id = null; },
+  "its lead was reassigned to someone else": (world) => { world.records.student_leads.find((l) => l.id === "leadTel").assigned_telecaller_id = "tel2"; },
+  "its lead cannot be found": (world) => { world.records.student_leads = world.records.student_leads.filter((l) => l.id !== "leadTel"); },
+};
+for (const [label, change] of Object.entries(telecallerLosesThread)) {
+  test(`WhatsApp: a telecaller cannot list, read, mark read or send on a thread when ${label}; nothing is written or sent`, async () => {
+    const world = waWorld();
+    change(world);
+    await withWorld(world, async (w) => {
+      const outbound = [];
+      const realFetch = globalThis.fetch;
+      globalThis.fetch = async (...args) => { outbound.push(args); throw new Error("no network in tests"); };
+      try {
+        const as = { role: "telecaller", id: "tel1", scope: scoped(A) };
+        const list = await call(W.list, as);
+        assert.equal(list.code, 200, JSON.stringify(list.body));
+        assert.ok(!list.body.some((c) => c.id === "convA"), "the thread is still listed");
+        assert.ok(refused(await call(W.messages, { ...as, params: { id: "convA" } })), "messages");
+        assert.ok(refused(await call(W.read, { ...as, params: { id: "convA" } })), "mark read");
+        assert.ok(refused(await call(W.send, { ...as, body: { conversationId: "convA", message: "hello" } })), "reply on the thread");
+        assert.equal((await call(W.send, { ...as, body: { leadId: "leadTel", message: "hello" } })).code, 403, "message by lead id");
+        assert.deepEqual(w.writes, [], "something was written");
+        assert.deepEqual(outbound, [], "something was sent");
+      } finally {
+        globalThis.fetch = realFetch;
+      }
+    });
+  });
+}
 
 test("WhatsApp sync-staff: a branch-limited caller is refused (it re-routes every branch); Super Admin runs it", async () => {
   await withWorld(waWorld(), async () => {

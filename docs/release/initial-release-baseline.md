@@ -4,6 +4,57 @@ Task S1-M1.1-01. Facts below were read from the public GitHub history of
 `rajeshvarma-git/FlyMasters-Latest` on 2026-11-04. Anything that needs the developer's machine, CI
 or staging is marked **UNVERIFIED** with the check that settles it.
 
+## Current state (updated 2026-11-05, after the merge)
+
+Base for this update: `main` at `e03afb9` (GitHub merge of PR #2, `release/initial-mvp` at `60cd9f9`).
+
+### What `main` contains now
+- All ACCESS work (01, 02, 03A, 03B) **and** ACCESS-03C-1 (delegation grants, migration `008`). Nothing issues delegation grants yet, so it is dormant.
+- Referral tracking (`feat/referral-tracking`) and the telecaller portal (`feat/telecaller-portal`), merged into the release.
+- Record deletion (`POST /api/admin/delete/:kind/:id`) is **Super Admin only**: the telecaller branch's Admin delete allowance was reverted (`cdc810c`).
+- Telecaller HR follows the single `HR_ENABLED` switch and is off unless it is on (`60cd9f9`). `TELECALLER_HR_ENABLED=true` or `false` overrides it for telecallers only.
+- Dependencies: non-breaking `npm audit fix`; `serve` is a devDependency.
+- Staff remove and transfer (`/api/{telecallers,counselors}/:id/{remove,transfer}`): Admin and Super Admin (S1-M1.1 step 4c), resolved in favour of the release rule when the telecaller branch was merged.
+
+### Migrations
+- Required: `001` to `009` (`server/migrations/`). `008` adds the delegation-grants table; `009` widens the HR id columns to TEXT.
+- `008` was edited after its first commit. The runner tracks by file name, so a database that applied the old `008` is not re-migrated; any change to grants later needs a new migration (`010` or later).
+- A deployed test environment booted from `main` on 2026-11-04 and logged `Database schema up to date`.
+
+### Changes on this branch (`fix/s1-m1-onboarding-acceptance`, on top of `main` at `e03afb9`)
+1. Counselor creation (`POST /api/users`): when a write fails after the login is saved, the cleanup now also removes the `counselor_users` row the request created, and restores a `counselor_users` row that already existed for that email (the request used to overwrite it). Pre-existing records are preserved.
+2. Telecaller queue (`GET /api/telecaller/state`): a lead is in the queue only when it is assigned to the telecaller **and** sits in a branch they currently belong to. The queue used to load all leads and filter by assignment alone, so a stale or wrong assignment could show a lead from another branch. A lead with no branch stays out of every branch-scoped queue until an admin assigns one.
+3. Telecaller access by direct id (S1-M1.2): one rule for every route that takes a lead, chat or WhatsApp thread id: the lead is assigned to the caller **now** and sits in a branch they belong to **now** (`ownedLead` and `ownedStudentLead` take the caller's `req.scope` and reuse `checkLeadInScope`; the scope argument is required so a new route cannot omit it). Covered: contact, patch, convert, WhatsApp send by lead id, open chat, send chat message, mark chat read, the counselor "convert as telecaller" route, and the shared `/api/whatsapp/*` list, messages, send and read routes for telecallers (`managerSeesConversation` leaves telecallers to assignment alone, so they now also go through `telecallerOwnsThread`). The chat and WhatsApp-thread lists in `GET /api/telecaller/state` and `GET /api/telecaller/whatsapp` follow the same rule. Every check runs before any write, notification or outbound message. Behaviour changes to know about: a WhatsApp thread whose lead cannot be found is refused, not guessed; a telecaller with no branch cannot add a lead (it would have no branch and be invisible to everyone, including them).
+
+### Verification actually run (2026-11-05, local, Linux, Node 22)
+| Check | Result |
+|---|---|
+| `npm run typecheck` | passed |
+| `npm run build` | passed |
+| `main` at `e03afb9`, full suite against a real PostgreSQL 17.5 | 622 tests, 622 passed, 0 failed, 0 skipped (first run of the 58 database tests) |
+| This branch, full suite against PostgreSQL 17.5 | 660 tests, 660 passed, 0 failed, 0 skipped |
+| This branch, no database (default `npm test`) | 568 passed, 0 failed, 92 skipped (the database tests) |
+| New tests without the telecaller access fix | 16 failed (contact, patch, convert and WhatsApp on a stale cross-branch or no-branch lead; chats after reassignment or a branch move; branch change by direct id; lead creation without a branch; four WhatsApp thread cases), so they detect the defect |
+| New tests without the earlier counselor and queue fixes (`ffbe1c5`) | 6 failed |
+
+The database was a throwaway PostgreSQL 17.5 on one machine. CI is configured for `postgres:16`, so a green CI run is still the independent check.
+
+### Not verified (blocked or out of scope here)
+- **CI:** runs `#74` (`cdc810c`) and `#75` (`60cd9f9`) failed in 2 to 3 seconds with "The job was not started because your account is locked due to a billing issue". No step executed, so this is not a pass. The workflow was then disabled by the repository owner. Nothing about the code is proven by CI until the account lock is cleared and the workflow is enabled again.
+- **Staging acceptance:** Super Admin creates Admin; Admin creates Telecaller and Counselor in their branch; each logs in to the correct portal; unauthorized creation and cross-branch access fail; disabled employees lose access. **Blocked**: it needs a signed-in session on the deployed environment.
+- **Deployed commit:** the hosting dashboard shows a deployment id, not the git SHA served. Confirm it matches `e03afb9`.
+- **Configuration:** `ADMIN_SCOPE_ENFORCED=true`, `IDENTITY_STRICT`, public staff sign-up closed, `HR_ENABLED` off: values on the deployed environment are not recorded here and are **UNVERIFIED**.
+- **Test data warnings** logged at startup of the deployed environment: some accounts with no role row (treated as students) and some leads with no branch (invisible to branch-scoped staff). Assign roles and branches from the admin screens.
+
+### Known open defects (not fixed on this branch)
+- Counselor-side chat and WhatsApp routes: `managerSeesConversation` still treats Counselors as assignment-governed with no branch check. Not covered by this branch; the same rule should be applied there.
+- Not exercised against a real WhatsApp provider: the "no outbound message on refusal" check stubs the network and asserts nothing is sent; the allowed send path stops at its own phone validation in tests.
+- Reported by review, not re-verified here: permanent deletion commits before its audit entry is written; referral attachment errors are logged after signup commits, so attribution can be lost; Team Status omits the Accountant role.
+
+---
+
+> Everything below is the historical baseline recorded on 2026-11-04, before the merge. It is kept for traceability. Where it conflicts with the section above, the section above is current.
+
 ## Selected baseline
 - Integration branch: `release/initial-mvp` (created in worktree `../FlyMasters-release`)
 - Starting commit: `2bccf0942a9fdf262c8b953f54c319a470152b55` (ACCESS-03B, tip of `feat/access-03-scoped-admin-delegation`)

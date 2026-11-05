@@ -1896,7 +1896,20 @@ function sameLoginIds(users, counselors, id) {
   return ids;
 }
 
-async function ownedLead(telecallerId, leadId) {
+/**
+ * The one rule for a telecaller (or a counselor doing telecalling) acting on a lead, from a list or by a
+ * direct id: the lead is assigned to this person NOW and it sits in a branch they belong to NOW.
+ * Either alone is not enough: an old or wrong assignment must not reach a lead in another branch.
+ * `scope` is the caller's req.scope and is required, so a new route cannot forget the branch half.
+ * The checks only read; nothing is written and nothing is sent until the caller gets { lead } back.
+ */
+async function leadInCallerScope(scope, lead) {
+  if (scope === undefined) throw new Error("A lead access check needs the caller's branch scope.");
+  const check = await checkLeadInScope(pool, scope, lead.id);
+  return check.ok ? null : "That lead is outside your branches.";
+}
+
+async function ownedLead(telecallerId, leadId, scope) {
   const rows = await jsonTable("student_leads");
   const lead = rows.find((row) => String(row.id) === String(leadId));
   if (!lead) return { error: "Lead not found." };
@@ -1906,6 +1919,8 @@ async function ownedLead(telecallerId, leadId) {
       return { error: "That lead is not assigned to you." };
     }
   }
+  const outside = await leadInCallerScope(scope, lead);
+  if (outside) return { error: outside };
   return { lead };
 }
 
@@ -1927,7 +1942,7 @@ async function ownedCounselorLead(counselorUserId, leadId) {
 // Telecaller ids are not always real UUIDs (self-signup mints "user-<uuid>"), so chat is
 // stored in the flexible app_records JSON tables rather than the UUID-typed
 // private_conversations/private_messages tables the counselor portal uses.
-async function ownedStudentLead(telecallerId, studentId) {
+async function ownedStudentLead(telecallerId, studentId, scope) {
   const rows = await jsonTable("student_leads");
   const lead = rows.find(
     (row) => String(row.user_id || "") === String(studentId) || String(row.id) === String(studentId),
@@ -1936,18 +1951,56 @@ async function ownedStudentLead(telecallerId, studentId) {
   if (String(lead.assigned_telecaller_id || "") !== String(telecallerId)) {
     return { error: "That lead is not assigned to you." };
   }
+  const outside = await leadInCallerScope(scope, lead);
+  if (outside) return { error: outside };
   return { lead };
+}
+
+/** A telecaller chat belongs to a lead (by student id). Using the chat needs the same rule as the lead. */
+async function ownedConversationLead(req, conversation) {
+  return ownedStudentLead(req.user.id, String(conversation?.student_id || ""), req.scope);
+}
+
+/**
+ * WhatsApp threads: a thread is the telecaller's only through a lead that passes ownedLead (assigned to them
+ * now, in their branches now). A thread whose lead cannot be found is refused, never guessed.
+ */
+async function telecallerOwnsThread(req, conversation, leads) {
+  const byId = (leads || []).filter((lead) => String(lead.id) === String(conversation?.lead_id || "\u0000"));
+  const candidates = byId.length
+    ? byId
+    : (leads || []).filter(
+        (lead) =>
+          conversation?.phone_number &&
+          (whatsapp.phonesMatch(lead.phone, conversation.phone_number) ||
+            whatsapp.phonesMatch(lead.whatsapp_number, conversation.phone_number)),
+      );
+  for (const lead of candidates) {
+    if (!(await ownedLead(req.user.id, lead.id, req.scope)).error) return true;
+  }
+  return false;
+}
+
+/** The same test for a list, with the leads already narrowed to this telecaller's current, in-scope leads. */
+function threadBelongsToLeads(conversation, leads) {
+  return (leads || []).some(
+    (lead) =>
+      String(lead.id) === String(conversation.lead_id || "\u0000") ||
+      (conversation.phone_number &&
+        (whatsapp.phonesMatch(lead.phone, conversation.phone_number) ||
+          whatsapp.phonesMatch(lead.whatsapp_number, conversation.phone_number))),
+  );
 }
 
 router.get("/api/telecaller/state", telecallerAuth, async (req, res) => {
   try {
     const state = await loadState(req.scope);
-    // A lead assigned to this telecaller is always theirs to work, whatever branch
-    // it was filed under. Branch scope used to hide it: the admin saw it on the
-    // telecaller's page while the telecaller's own queue stayed empty.
-    const leadSource = req.scope?.allBranches ? state : await loadState(null);
-    const myIds = sameLoginIds(leadSource.users, leadSource.counselors, req.user.id);
-    const mine = leadSource.leads.filter((lead) => myIds.has(String(lead.assigned_telecaller_id || "")));
+    // A lead is in this telecaller's queue only when BOTH hold: it is assigned to them AND it sits in a
+    // branch they currently belong to (`state` is already filtered by req.scope). An old or wrong
+    // assignment therefore cannot expose a lead from another branch, and a lead with no branch stays out of
+    // every branch-scoped queue until an admin assigns one (the startup preflight warns about those).
+    const myIds = sameLoginIds(state.users, state.counselors, req.user.id);
+    const mine = state.leads.filter((lead) => myIds.has(String(lead.assigned_telecaller_id || "")));
     const mineOpen = mine.filter(
       (lead) => lead.entity_type !== "student" && lead.lead_status !== "converted",
     );
@@ -1959,10 +2012,16 @@ router.get("/api/telecaller/state", telecallerAuth, async (req, res) => {
       jsonTable("whatsapp_conversations"),
       jsonTable("whatsapp_messages"),
     ]);
-    const myConversations = allConversations.filter((row) => String(row.telecaller_id) === String(req.user.id));
+    // Chats and WhatsApp threads follow the same rule as the leads: only through a lead that is mine now and in scope.
+    const myStudentKeys = new Set(mine.flatMap((lead) => [String(lead.user_id || ""), String(lead.id)]).filter(Boolean));
+    const myConversations = allConversations.filter(
+      (row) => String(row.telecaller_id) === String(req.user.id) && myStudentKeys.has(String(row.student_id)),
+    );
     const myConversationIds = new Set(myConversations.map((row) => String(row.id)));
-    const myWhatsAppConversations = waConv.filter((row) =>
-      whatsapp.staffCanViewConversation(row, req.user, state.counselors || [], mineOpen),
+    const myWhatsAppConversations = waConv.filter(
+      (row) =>
+        whatsapp.staffCanViewConversation(row, req.user, state.counselors || [], mineOpen) &&
+        threadBelongsToLeads(row, mineOpen),
     );
     const myWhatsAppIds = new Set(myWhatsAppConversations.map((row) => String(row.id)));
     res.json({
@@ -2001,6 +2060,8 @@ router.get("/api/telecaller/whatsapp", telecallerAuth, async (req, res) => {
     ]);
     const mineIds = new Set(mineOpen.map((lead) => String(lead.id)));
     const conversations = waConv.filter((row) => {
+      // `mineOpen` is already limited to leads assigned to me AND in my branches; a thread is listed only through one.
+      if (!threadBelongsToLeads(row, mineOpen)) return false;
       if (whatsapp.staffCanViewConversation(row, req.user, state.counselors || [], mineOpen)) return true;
       if (mineIds.has(String(row.lead_id || ""))) return true;
       return mineOpen.some(
@@ -2027,7 +2088,7 @@ router.post("/api/telecaller/whatsapp/messages", telecallerAuth, async (req, res
       return res.status(400).json({ error: "Choose a lead and type a message." });
     }
 
-    const owned = await ownedLead(req.user.id, leadId);
+    const owned = await ownedLead(req.user.id, leadId, req.scope);
     if (owned.error) return res.status(403).json({ error: owned.error });
     const lead = owned.lead;
     if (lead.entity_type === "student" || lead.lead_status === "converted") {
@@ -2213,7 +2274,7 @@ router.post("/api/notifications/read", auth, markNotificationsRead);
 router.post("/api/telecaller/conversations", telecallerAuth, async (req, res) => {
   try {
     const studentId = String(req.body.studentId || "");
-    const owned = await ownedStudentLead(req.user.id, studentId);
+    const owned = await ownedStudentLead(req.user.id, studentId, req.scope);
     if (owned.error) return res.status(403).json({ error: owned.error });
 
     const studentKey = String(owned.lead.user_id || owned.lead.id);
@@ -2256,6 +2317,10 @@ router.post("/api/telecaller/messages", telecallerAuth, async (req, res) => {
     if (!conversation || String(conversation.telecaller_id) !== String(req.user.id)) {
       return res.status(404).json({ error: "Conversation not found." });
     }
+    // The chat's lead must still be mine and in my branches, or nothing is saved and the student is not notified.
+    if ((await ownedConversationLead(req, conversation)).error) {
+      return res.status(404).json({ error: "Conversation not found." });
+    }
 
     const now = new Date().toISOString();
     const created = await jsonUpsert("telecaller_messages", {
@@ -2282,6 +2347,9 @@ router.post("/api/telecaller/conversations/:id/read", telecallerAuth, async (req
     if (!conversation || String(conversation.telecaller_id) !== String(req.user.id)) {
       return res.status(404).json({ error: "Conversation not found." });
     }
+    if ((await ownedConversationLead(req, conversation)).error) {
+      return res.status(404).json({ error: "Conversation not found." });
+    }
     const messages = await jsonTable("telecaller_messages");
     const unread = messages.filter(
       (row) =>
@@ -2302,6 +2370,10 @@ router.post("/api/telecaller/leads", telecallerAuth, async (req, res) => {
   try {
     const email = String(req.body.email || "").trim().toLowerCase();
     if (!email) return res.status(400).json({ error: "Email is required." });
+    // A lead with no branch is invisible to every branch-scoped queue, including its own telecaller's.
+    if (!req.scope?.allBranches && !req.scope?.branchId) {
+      return res.status(403).json({ error: "You are not assigned to a branch yet. Ask an admin to assign one before adding leads." });
+    }
 
     const rawCountries = req.body.preferred_countries ?? req.body.countries ?? "";
     const countries = Array.isArray(rawCountries)
@@ -2357,7 +2429,7 @@ router.post("/api/telecaller/leads", telecallerAuth, async (req, res) => {
 
 router.patch("/api/telecaller/leads/:id", telecallerAuth, async (req, res) => {
   try {
-    const owned = await ownedLead(req.user.id, req.params.id);
+    const owned = await ownedLead(req.user.id, req.params.id, req.scope);
     if (owned.error) return res.status(403).json({ error: owned.error });
 
     const entries = Object.entries(req.body).filter(([key]) => TELECALLER_LEAD_FIELDS.includes(key));
@@ -2383,7 +2455,7 @@ router.patch("/api/telecaller/leads/:id", telecallerAuth, async (req, res) => {
 
 router.post("/api/telecaller/leads/:id/contact", telecallerAuth, async (req, res) => {
   try {
-    const owned = await ownedLead(req.user.id, req.params.id);
+    const owned = await ownedLead(req.user.id, req.params.id, req.scope);
     if (owned.error) return res.status(403).json({ error: owned.error });
 
     const outcome = String(req.body.outcome || "");
@@ -2426,7 +2498,7 @@ router.post("/api/telecaller/leads/:id/convert", telecallerAuth, (req, res) => c
  */
 async function convertAsTelecaller(req, res) {
   try {
-    const owned = await ownedLead(req.user.id, req.params.id);
+    const owned = await ownedLead(req.user.id, req.params.id, req.scope);
     if (owned.error) return res.status(403).json({ error: owned.error });
     const lead = owned.lead;
 
@@ -2789,7 +2861,7 @@ async function commissionOnConvert(req, leadId) {
 router.post("/api/counselor/leads/:id/convert", counselorAuth, async (req, res) => {
   // Allowed only when this counsellor is the lead's telecaller (see
   // convertAsTelecaller); ownedLead refuses every other lead.
-  const owned = await ownedLead(req.user.id, req.params.id);
+  const owned = await ownedLead(req.user.id, req.params.id, req.scope);
   if (!owned.error) return convertAsTelecaller(req, res);
   res.status(403).json({
     error: "Only the lead's telecaller (or an admin) can convert it. Ask admin to give you this lead as telecaller.",
@@ -3156,6 +3228,8 @@ router.post("/api/users", auth, safely(async (req, res) => {
   // too, or the whole account is removed again: a failure never leaves a person who can sign in
   // with no profile, and the email stays free for a retry.
   let counselorId;
+  let createdCounselorUserId = null; // a counselor_users row this request inserted: removed again on failure
+  let priorCounselorRow = null; // a counselor_users row that already existed for this email: restored on failure
   try {
     await jsonUpsert("profiles", {
       id: `profile-${id}`,
@@ -3173,6 +3247,7 @@ router.post("/api/users", auth, safely(async (req, res) => {
       const specializations = Array.isArray(req.body.specializations)
         ? req.body.specializations.map((item) => String(item).trim()).filter(Boolean)
         : String(req.body.specializations || "Study Abroad").split(",").map((item) => item.trim()).filter(Boolean);
+      const before = (await pool.query("SELECT * FROM counselor_users WHERE lower(email) = $1", [email])).rows[0] || null;
       const created = await pool.query(
         `INSERT INTO counselor_users (id, email, password_hash, first_name, last_name, phone, bio, specializations)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (email) DO UPDATE SET
@@ -3186,6 +3261,8 @@ router.post("/api/users", auth, safely(async (req, res) => {
         [isUuid(id) ? id : crypto.randomUUID(), email, hash, firstName, lastName, phone, bio, specializations],
       );
       counselorId = created.rows[0]?.id;
+      if (before) priorCounselorRow = before;
+      else createdCounselorUserId = counselorId || null;
       await jsonUpsert("counselors", {
         id: `counselor-${id}`,
         user_id: id,
@@ -3197,7 +3274,7 @@ router.post("/api/users", auth, safely(async (req, res) => {
     }
   } catch (error) {
     console.error("Account creation failed after the login was saved; removing it:", id, error);
-    await discardAccount(pool, { id }).catch((cleanup) => console.error("Could not remove the half-created account:", id, cleanup));
+    await discardAccount(pool, { id, counselorUserId: createdCounselorUserId, restoreCounselor: priorCounselorRow }).catch((cleanup) => console.error("Could not remove the half-created account:", id, cleanup));
     return res.status(500).json({ error: "Could not finish creating this account. Nothing was saved. Try again." });
   }
   await audit(req, "user.create", "auth_users", id, { email, role, branches: requestedBranches });
@@ -3563,8 +3640,13 @@ router.get("/api/whatsapp/conversations", staffChatAuth, async (req, res) => {
   try {
     const counselors = await loadCounselors();
     const leads = await jsonTable("student_leads");
-    const conversations = (await whatsapp.filterConversationsForStaff(req.user, counselors, leads))
+    let conversations = (await whatsapp.filterConversationsForStaff(req.user, counselors, leads))
       .filter((row) => managerSeesConversation(req.user, req.scope, row, leads));
+    if (req.user.role === "telecaller") {
+      // Assignment alone is not enough for a telecaller: the thread's lead must also be in their branches.
+      const keep = await Promise.all(conversations.map((row) => telecallerOwnsThread(req, row, leads)));
+      conversations = conversations.filter((_row, index) => keep[index]);
+    }
     res.json(conversations.sort((a, b) => String(b.last_message_at || "").localeCompare(String(a.last_message_at || ""))));
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not load WhatsApp conversations" });
@@ -3580,6 +3662,10 @@ router.get("/api/whatsapp/conversations/:id/messages", staffChatAuth, async (req
     if (!conversation) return res.status(404).json({ error: "Conversation not found." });
     if (!managerSeesConversation(req.user, req.scope, conversation, leads)) {
       return res.status(403).json({ error: "That conversation is outside the branches you manage.", code: "OUT_OF_SCOPE" });
+    }
+    // managerSeesConversation leaves telecallers to assignment alone; their thread's lead must also be theirs now and in scope.
+    if (req.user.role === "telecaller" && !(await telecallerOwnsThread(req, conversation, leads))) {
+      return res.status(403).json({ error: "That conversation is not one of your leads in your branches.", code: "OUT_OF_SCOPE" });
     }
     if (!whatsapp.staffCanViewConversation(conversation, req.user, counselors, leads)) {
       return res.status(403).json({ error: "You cannot view this conversation." });
@@ -3607,7 +3693,7 @@ router.post("/api/whatsapp/messages", staffChatAuth, async (req, res) => {
 
     // First outbound often has a lead but no conversation yet. Create the thread and send.
     if (leadId && req.user.role === "telecaller") {
-      const owned = await ownedLead(req.user.id, leadId);
+      const owned = await ownedLead(req.user.id, leadId, req.scope);
       if (owned.error) return res.status(403).json({ error: owned.error });
       if (owned.lead.entity_type === "student" || owned.lead.lead_status === "converted") {
         return res.status(403).json({ error: "This chat has moved to the counselor." });
@@ -3640,6 +3726,10 @@ router.post("/api/whatsapp/messages", staffChatAuth, async (req, res) => {
     if (!conversation) return res.status(404).json({ error: "Conversation not found." });
     if (!managerSeesConversation(req.user, req.scope, conversation, leads)) {
       return res.status(403).json({ error: "That conversation is outside the branches you manage.", code: "OUT_OF_SCOPE" });
+    }
+    // managerSeesConversation leaves telecallers to assignment alone; their thread's lead must also be theirs now and in scope.
+    if (req.user.role === "telecaller" && !(await telecallerOwnsThread(req, conversation, leads))) {
+      return res.status(403).json({ error: "That conversation is not one of your leads in your branches.", code: "OUT_OF_SCOPE" });
     }
     if (!whatsapp.staffCanReplyConversation(conversation, req.user, counselors, leads)) {
       const unassigned = !conversation.assigned_staff_id;
@@ -3684,6 +3774,10 @@ router.post("/api/whatsapp/conversations/:id/read", staffChatAuth, async (req, r
     if (!conversation) return res.status(404).json({ error: "Conversation not found." });
     if (!managerSeesConversation(req.user, req.scope, conversation, leads)) {
       return res.status(403).json({ error: "That conversation is outside the branches you manage.", code: "OUT_OF_SCOPE" });
+    }
+    // managerSeesConversation leaves telecallers to assignment alone; their thread's lead must also be theirs now and in scope.
+    if (req.user.role === "telecaller" && !(await telecallerOwnsThread(req, conversation, leads))) {
+      return res.status(403).json({ error: "That conversation is not one of your leads in your branches.", code: "OUT_OF_SCOPE" });
     }
     if (!whatsapp.staffCanViewConversation(conversation, req.user, counselors, leads)) {
       return res.status(403).json({ error: "You cannot update this conversation." });

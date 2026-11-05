@@ -131,12 +131,25 @@ export async function assignRole(pool, { userId, role, branchId = null, assigned
  * Removes an account that was created a moment ago in this same request, after something that
  * had to be saved with it failed. It removes the login, role, branches and profile rows, so a
  * failure never leaves someone who can sign in but has no profile, and the email is free to
- * try again. Never use it on an account that existed before the request.
+ * try again. For a counselor it also removes the counselor_users row the request created
+ * (counselorUserId), or restores the one that already existed (restoreCounselor).
+ * Never use it on an account that existed before the request.
  */
-export async function discardAccount(pool, { id }) {
+export async function discardAccount(pool, { id, counselorUserId = null, restoreCounselor = null }) {
   const key = String(id || "");
   if (!key) throw new AccountWriteError(400, "discardAccount requires an id");
   return inTransaction(pool, async (client) => {
+    // counselor_users is the counselor's own login table. A row this request created is removed with
+    // the rest; a row that already existed (and was overwritten by the request) is put back as it was.
+    if (counselorUserId) await client.query("DELETE FROM counselor_users WHERE id::text = $1", [String(counselorUserId)]);
+    if (restoreCounselor) {
+      await client.query(
+        `UPDATE counselor_users SET password_hash = $2, first_name = $3, last_name = $4, phone = $5, bio = $6, specializations = $7
+         WHERE id::text = $1`,
+        [String(restoreCounselor.id), restoreCounselor.password_hash, restoreCounselor.first_name, restoreCounselor.last_name,
+          restoreCounselor.phone, restoreCounselor.bio, restoreCounselor.specializations],
+      );
+    }
     await client.query("DELETE FROM user_branches WHERE user_id = $1", [key]);
     await client.query("DELETE FROM user_roles WHERE user_id = $1", [key]);
     await client.query("DELETE FROM app_records WHERE table_name IN ('profiles', 'counselors') AND data->>'user_id' = $1", [key]);
