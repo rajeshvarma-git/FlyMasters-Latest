@@ -3,7 +3,9 @@
 // Design rules:
 //   * Everything runs in ONE transaction: it all goes or none of it does.
 //   * The caller (route) writes the audit row with the snapshot returned here, so a delete is
-//     recoverable by hand from audit_log even though nothing is "soft" deleted.
+//     recoverable by hand from audit_log even though nothing is "soft" deleted. That row is written
+//     THROUGH this transaction (the `writeAudit` option, called with the transaction client before
+//     COMMIT), so a delete can never stand without the snapshot that makes it recoverable.
 //   * It REFUSES (DeleteRefused, with an HTTP status) rather than orphaning money or work:
 //       - a lead/student with a non-rejected partner commission
 //       - a staff member who still owns leads or students
@@ -207,7 +209,16 @@ export async function deletePartner(db, id) {
 }
 
 /** Runs a delete in a single transaction on a pooled client. */
-export async function runDelete(pool, kind, id, { actorId }) {
+/**
+ * @param {object} options
+ * @param {string} options.actorId  the Super Admin performing the delete
+ * @param {(db: object, result: object) => Promise<void>} [options.writeAudit]
+ *   Called with the transaction client and the delete result (including the snapshot) after the rows
+ *   are gone and BEFORE the commit. Throwing from it rolls the whole delete back, which is the point:
+ *   audit_log is the only copy of what was removed, so a delete without its audit row is unrecoverable
+ *   and must not happen.
+ */
+export async function runDelete(pool, kind, id, { actorId, writeAudit } = {}) {
   if (!DELETE_KINDS.includes(kind)) throw new DeleteRefused("Unknown kind of record.", 400);
   const db = await pool.connect();
   try {
@@ -217,6 +228,7 @@ export async function runDelete(pool, kind, id, { actorId }) {
       : kind === "partner"
         ? await deletePartner(db, id)
         : await deleteLeadOrStudent(db, id);
+    if (writeAudit) await writeAudit(db, result);
     await db.query("COMMIT");
     return result;
   } catch (error) {

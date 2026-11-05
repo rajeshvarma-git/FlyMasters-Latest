@@ -60,6 +60,7 @@ import {
   requireRole,
   branchScope,
   audit,
+  auditOn,
   adminAuth as auth,
   telecallerAuth,
   counselorAuth,
@@ -4463,8 +4464,18 @@ router.post("/api/admin/delete/:kind/:id", superAdminAuth, async (req, res) => {
     return res.status(400).json({ error: 'Type DELETE to confirm. Nothing was deleted.' });
   }
   try {
-    const result = await runDelete(pool, kind, String(id), { actorId: req.user.id });
-    await audit(req, `${kind}.delete`, kind, id, { snapshot: result.snapshot, removed: result.removed, reason: String(req.body?.reason || "").slice(0, 300) });
+    // The audit row goes in through the delete's own transaction: audit_log holds the only copy of
+    // what was removed, so if the entry cannot be written the delete rolls back instead of standing
+    // unrecoverably. Nothing here is soft-deleted.
+    const result = await runDelete(pool, kind, String(id), {
+      actorId: req.user.id,
+      writeAudit: (db, outcome) =>
+        auditOn(db, req, `${kind}.delete`, kind, id, {
+          snapshot: outcome.snapshot,
+          removed: outcome.removed,
+          reason: String(req.body?.reason || "").slice(0, 300),
+        }),
+    });
     res.json({ ok: true, removed: result.removed });
   } catch (error) {
     if (error instanceof DeleteRefused) return res.status(error.status).json({ error: error.message });

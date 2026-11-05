@@ -74,6 +74,26 @@ belong to **now**.
 ### Verification actually run (2026-11-05, Linux, Node 22) — automated checks only
 
 This section records **automated verification**. It is not release acceptance; see "Release acceptance" below.
+### Changes on branch `fix/s1-m1-2-delete-audit-atomic` (on top of `main` at `1b22c70`)
+
+Stream 1, Milestone 1.2. Closes the recorded defect "permanent deletion commits before its audit entry is
+written". Nothing in a delete is soft-deleted, so `audit_log` holds the only copy of what was removed, and
+`deletion.mjs` says so in its own design note. The audit row was nevertheless written after `COMMIT` by
+`audit()`, which logs and swallows every failure, so a lost audit write left a permanent, unrecoverable
+delete and a 200 response.
+
+- New `auditOn(db, req, ...)` in `auth.mjs` writes the audit row on a caller-supplied client and lets a
+  failure through. `audit()` is now a thin best-effort wrapper around it (log and swallow), unchanged for
+  the ~90 other call sites where the action has already happened and a lost audit row must not fail the request.
+- `runDelete(pool, kind, id, { actorId, writeAudit })` calls `writeAudit(db, result)` with the transaction
+  client after the rows are gone and **before** `COMMIT`. Throwing rolls the whole delete back.
+- `POST /api/admin/delete/:kind/:id` passes `writeAudit`, so the snapshot, the removed counts and the reason
+  commit with the delete or not at all. A failed audit write now answers 500 ("Nothing was changed") and the
+  record is still there to delete again.
+
+### Verification actually run (2026-11-06, Linux, Node 22) — automated checks only
+
+Automated verification, not release acceptance.
 
 | Check | Result |
 |---|---|
@@ -93,11 +113,14 @@ the earlier `main` run was on 17.5, so the suite is now green on both. This is a
 Super Admin creates Admin; Admin creates Telecaller and Counselor in their branch; each signs in to the correct
 portal; unauthorized creation and cross-branch access fail; disabled employees lose access. Also pending: the SHA
 actually served by the deployed environment, and its values for `ADMIN_SCOPE_ENFORCED`, `IDENTITY_STRICT` and `HR_ENABLED`.
+| This branch, full suite against a real PostgreSQL **16.15** | 666 tests, 666 passed, 0 failed, 0 skipped |
+| This branch, no database (default `npm test`) | 666 tests, 568 passed, 0 failed, 98 skipped |
+| The 6 new tests **without** the fix | 4 failed (a blocked audit write left the lead deleted and reported success; the retry case; and both `runDelete` contract cases), so they detect the defect |
 
 ### Known open defects (not fixed on this branch)
 - Student-portal side of the same threads (`server/routes/student.mjs`, `/__auth` and the student chat routes) was not read or changed here.
 - Not exercised against a real WhatsApp provider: the "no outbound message on refusal" check stubs the network and asserts nothing is sent; the allowed send path stops at its own phone validation in tests.
-- Reported by review, not re-verified here: permanent deletion commits before its audit entry is written; referral attachment errors are logged after signup commits, so attribution can be lost; Team Status omits the Accountant role.
+- Reported by review, not re-verified here: referral attachment errors are logged after signup commits, so attribution can be lost; Team Status omits the Accountant role. (The deletion/audit ordering defect is fixed on this branch, above.)
 
 ---
 

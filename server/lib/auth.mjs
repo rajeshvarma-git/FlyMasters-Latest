@@ -249,22 +249,38 @@ export function filterToScope(scope, rows, column = "branch_id") {
 }
 
 /** Write-side audit trail. Never throws into the request path. */
+/**
+ * Writes the audit row on a caller-supplied client and lets a failure through.
+ *
+ * Use this when the audit entry is part of the operation rather than a note about it: pass the
+ * transaction's client and the row commits with the work, or the work rolls back with it. A permanent
+ * delete is the case that needs this, because audit_log holds the only copy of what was removed.
+ */
+export async function auditOn(db, req, action, entity, entityId, detail = {}) {
+  await db.query(
+    `INSERT INTO audit_log (actor_id, actor_role, branch_id, action, entity, entity_id, detail, ip)
+     VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`,
+    [
+      req.user?.id || null,
+      req.user?.role || null,
+      req.user?.branch_id || null,
+      action,
+      entity,
+      entityId ? String(entityId) : null,
+      JSON.stringify(detail || {}),
+      req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip || null,
+    ],
+  );
+}
+
+/**
+ * Best-effort audit for everything else: the action has already happened and a lost audit row must not
+ * fail the request, so a failure is logged and swallowed. For an operation whose audit row must not be
+ * lost, use auditOn inside that operation's transaction instead.
+ */
 export async function audit(req, action, entity, entityId, detail = {}) {
   try {
-    await pool.query(
-      `INSERT INTO audit_log (actor_id, actor_role, branch_id, action, entity, entity_id, detail, ip)
-       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)`,
-      [
-        req.user?.id || null,
-        req.user?.role || null,
-        req.user?.branch_id || null,
-        action,
-        entity,
-        entityId ? String(entityId) : null,
-        JSON.stringify(detail || {}),
-        req.headers["x-forwarded-for"]?.split(",")[0]?.trim() || req.ip || null,
-      ],
-    );
+    await auditOn(pool, req, action, entity, entityId, detail);
   } catch (error) {
     console.error("audit_log write failed:", error.message || error);
   }
