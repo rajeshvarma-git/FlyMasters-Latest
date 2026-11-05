@@ -21,9 +21,10 @@ Base for this update: `main` at `e03afb9` (GitHub merge of PR #2, `release/initi
 - `008` was edited after its first commit. The runner tracks by file name, so a database that applied the old `008` is not re-migrated; any change to grants later needs a new migration (`010` or later).
 - A deployed test environment booted from `main` on 2026-11-04 and logged `Database schema up to date`.
 
-### Changes on this branch (`fix/s1-m1-onboarding-acceptance`)
+### Changes on this branch (`fix/s1-m1-onboarding-acceptance`, on top of `main` at `e03afb9`)
 1. Counselor creation (`POST /api/users`): when a write fails after the login is saved, the cleanup now also removes the `counselor_users` row the request created, and restores a `counselor_users` row that already existed for that email (the request used to overwrite it). Pre-existing records are preserved.
 2. Telecaller queue (`GET /api/telecaller/state`): a lead is in the queue only when it is assigned to the telecaller **and** sits in a branch they currently belong to. The queue used to load all leads and filter by assignment alone, so a stale or wrong assignment could show a lead from another branch. A lead with no branch stays out of every branch-scoped queue until an admin assigns one.
+3. Telecaller access by direct id (S1-M1.2): one rule for every route that takes a lead, chat or WhatsApp thread id: the lead is assigned to the caller **now** and sits in a branch they belong to **now** (`ownedLead` and `ownedStudentLead` take the caller's `req.scope` and reuse `checkLeadInScope`; the scope argument is required so a new route cannot omit it). Covered: contact, patch, convert, WhatsApp send by lead id, open chat, send chat message, mark chat read, the counselor "convert as telecaller" route, and the shared `/api/whatsapp/*` list, messages, send and read routes for telecallers (`managerSeesConversation` leaves telecallers to assignment alone, so they now also go through `telecallerOwnsThread`). The chat and WhatsApp-thread lists in `GET /api/telecaller/state` and `GET /api/telecaller/whatsapp` follow the same rule. Every check runs before any write, notification or outbound message. Behaviour changes to know about: a WhatsApp thread whose lead cannot be found is refused, not guessed; a telecaller with no branch cannot add a lead (it would have no branch and be invisible to everyone, including them).
 
 ### Verification actually run (2026-11-05, local, Linux, Node 22)
 | Check | Result |
@@ -31,9 +32,10 @@ Base for this update: `main` at `e03afb9` (GitHub merge of PR #2, `release/initi
 | `npm run typecheck` | passed |
 | `npm run build` | passed |
 | `main` at `e03afb9`, full suite against a real PostgreSQL 17.5 | 622 tests, 622 passed, 0 failed, 0 skipped (first run of the 58 database tests) |
-| This branch, full suite against PostgreSQL 17.5 | 631 tests, 631 passed, 0 failed, 0 skipped |
-| This branch, no database (default `npm test`) | 564 passed, 0 failed, 67 skipped (the database tests) |
-| New tests without the two fixes | 6 failed (counselor_users cleanup, pre-existing row, 4 telecaller-queue cases), so they detect the defects |
+| This branch, full suite against PostgreSQL 17.5 | 660 tests, 660 passed, 0 failed, 0 skipped |
+| This branch, no database (default `npm test`) | 568 passed, 0 failed, 92 skipped (the database tests) |
+| New tests without the telecaller access fix | 16 failed (contact, patch, convert and WhatsApp on a stale cross-branch or no-branch lead; chats after reassignment or a branch move; branch change by direct id; lead creation without a branch; four WhatsApp thread cases), so they detect the defect |
+| New tests without the earlier counselor and queue fixes (`ffbe1c5`) | 6 failed |
 
 The database was a throwaway PostgreSQL 17.5 on one machine. CI is configured for `postgres:16`, so a green CI run is still the independent check.
 
@@ -45,7 +47,8 @@ The database was a throwaway PostgreSQL 17.5 on one machine. CI is configured fo
 - **Test data warnings** logged at startup of the deployed environment: some accounts with no role row (treated as students) and some leads with no branch (invisible to branch-scoped staff). Assign roles and branches from the admin screens.
 
 ### Known open defects (not fixed on this branch)
-- Telecaller **write** paths (`ownedLead`, `ownedStudentLead`: contact, convert, WhatsApp send, chat) check assignment only, not branch. The queue no longer lists out-of-branch leads, but someone who knows a lead id can still act on a stale assignment. Needs a scope check on those handlers.
+- Counselor-side chat and WhatsApp routes: `managerSeesConversation` still treats Counselors as assignment-governed with no branch check. Not covered by this branch; the same rule should be applied there.
+- Not exercised against a real WhatsApp provider: the "no outbound message on refusal" check stubs the network and asserts nothing is sent; the allowed send path stops at its own phone validation in tests.
 - Reported by review, not re-verified here: permanent deletion commits before its audit entry is written; referral attachment errors are logged after signup commits, so attribution can be lost; Team Status omits the Accountant role.
 
 ---
