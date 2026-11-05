@@ -39,8 +39,57 @@ Base for this update: `main` at `e03afb9` (GitHub merge of PR #2, `release/initi
 
 The database was a throwaway PostgreSQL 17.5 on one machine. CI is configured for `postgres:16`, so a green CI run is still the independent check.
 
+## Step 3 ruling: test executability closed on local evidence, CI gap recorded (2026-11-06)
+
+Step 3 of the plan asks for "isolated staging and executable CI/database tests". Those are two
+deliverables and they are in different states, so they are recorded separately rather than closed together.
+
+### Closed: the database tests are executable and have been executed
+
+The 125 opt-in database tests were the real risk in this deliverable, because for weeks nothing had ever
+run them. They now run, and they pass, on two machines and two PostgreSQL major versions:
+
+| Run | Database | Result |
+|---|---|---|
+| `main` at `e03afb9`, another machine | PostgreSQL 17.5 | 622 tests, 622 passed, 0 failed, 0 skipped |
+| `fix/s1-m1-onboarding-acceptance` at `caccd4f`, another machine | PostgreSQL 17.5 | 660 tests, 660 passed, 0 failed, 0 skipped |
+| `main` at `1b22c70`, this machine | PostgreSQL **16.15** | 660 tests, 660 passed, 0 failed, 0 skipped |
+| `main` at `b574b7c` content, this machine | PostgreSQL **16.15** | 693 tests, 693 passed, 0 failed, 0 skipped |
+
+16.15 is the major version the CI workflow is configured for (`postgres:16`), so the suite is green on
+both the version CI would use and the version the other machine had. `npm run typecheck` and
+`npm run build` pass on the same commits. **Decision (owner, 2026-11-06): Step 3's test-executability
+half is closed on this evidence** rather than waiting on GitHub.
+
+### The gap this leaves, stated plainly
+
+**No CI run has ever executed a single step of this workflow.** Runs `#73` and `#74` (`cdc810c`) failed
+in 2 to 3 seconds with "The job was not started because your account is locked due to a billing issue",
+and no run has been created at all for `14484eb`, `a8716cd`, `b574b7c` or `1273502`: the run count has
+been stuck at 74 since 2026-11-04, so Actions is switched off for the repository on top of the account
+lock. A billing lock produces failing runs; it does not suppress them.
+
+This repository is public, and GitHub Actions on standard GitHub-hosted runners is free for public
+repositories, so this is not a minutes overage on this repository: it is an account-level payment
+failure that suspends Actions across the account. Clearing it needs the account's billing page and the
+repository's Actions settings, in that order.
+
+So the evidence above is from two developer machines, not from an independent, reproducible environment.
+Nobody has verified that the workflow file itself works, including the `postgres:16` service block added
+for these tests. `workflow_dispatch` was added to the workflow (`1273502`) so a run can be started from
+the Actions tab the moment Actions is re-enabled; that run is still the check that closes this gap
+properly, and it should be recorded here when it happens.
+
+### Still open: isolated staging
+
+The other half of Step 3 — an isolated staging environment on the release code with its own database —
+does **not** exist. It is not closed by the evidence above, and it is a prerequisite for Step 5
+(demonstrate onboarding), so it is tracked there. A further blocker for a clean staging database is
+recorded below: nothing in the code or the migrations creates the first Super Admin.
+
 ### Not verified (blocked or out of scope here)
-- **CI:** runs `#74` (`cdc810c`) and `#75` (`60cd9f9`) failed in 2 to 3 seconds with "The job was not started because your account is locked due to a billing issue". No step executed, so this is not a pass. The workflow was then disabled by the repository owner. Nothing about the code is proven by CI until the account lock is cleared and the workflow is enabled again.
+- **CI:** see the Step 3 ruling above. No CI run has executed a step; the account is billing-locked and Actions is disabled for the repository. Nothing about the code is proven by CI.
+- **First Super Admin on a clean database:** no code path or migration creates one, so a brand-new staging database has nobody who can create an Admin and Step 5 cannot start on it. Settle with `SELECT user_id FROM user_roles WHERE role = 'super_admin';` on whatever database staging uses; if it returns no rows, a one-off bootstrap is needed before the walkthrough.
 - **Staging acceptance:** Super Admin creates Admin; Admin creates Telecaller and Counselor in their branch; each logs in to the correct portal; unauthorized creation and cross-branch access fail; disabled employees lose access. **Blocked**: it needs a signed-in session on the deployed environment.
 - **Deployed commit:** the hosting dashboard shows a deployment id, not the git SHA served. Confirm it matches `e03afb9`.
 - **Configuration:** `ADMIN_SCOPE_ENFORCED=true`, `IDENTITY_STRICT`, public staff sign-up closed, `HR_ENABLED` off: values on the deployed environment are not recorded here and are **UNVERIFIED**.
