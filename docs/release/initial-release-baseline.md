@@ -242,6 +242,57 @@ Automated verification, not release acceptance.
 | No database (default `npm test`) | 693 tests, 568 passed, 0 failed, 125 skipped |
 | The 8 new tests **without** the fix | 5 failed (the code was not kept; recovery did not exist; and a captured attribution stood with no event row), so they detect the defect |
 
+## Executable acceptance, and a defect it found (2026-11-06)
+
+`scripts/acceptance-onboarding.mjs` is the Step 5 acceptance criteria as a runnable script against a
+deployed environment. It creates two branches and four accounts, exercises the chain, and deletes the
+accounts it made.
+
+    $env:ACCEPTANCE_URL = "https://<staging-host>"
+    $env:SUPER_EMAIL = "boss@example.com"; $env:SUPER_PASSWORD = "..."
+    node scripts/acceptance-onboarding.mjs --allow-writes
+
+It writes data, so it refuses to start without `--allow-writes`. `--keep` leaves what it created in
+place. Everything it makes is named with the run timestamp. Exit code 0 means every check passed.
+
+### First run: 34 passed, 2 failed (local instance, 2026-11-06)
+
+Run against the application started locally on PostgreSQL 16.15 with a Super Admin created by
+`scripts/bootstrap-super-admin.mjs`. Not a deployed environment, and `NODE_ENV` was not `production`
+(the production boot guard refuses a localhost database), so the deployed run is still required.
+
+Passed: health; no token, forged token and wrong password refused; public counselor sign-up closed; HR
+off; Super Admin sign-in and role; branch creation; **Super Admin creates an Admin scoped to one
+branch; that Admin signs in with that branch only; that Admin creates a Telecaller and a Counselor in
+it; both sign in and resolve to their own role**; an Admin cannot create an Admin, Super Admin or
+Branch Head; an Admin cannot create staff in a branch they do not hold; duplicate email refused; a
+Telecaller and a Counselor cannot create accounts; a second Admin in another branch cannot remove or
+change the role of the first branch's staff; an Admin cannot delete an account.
+
+### DEFECT: removing a staff member does not revoke their access
+
+Both failures are the same defect, and it is not a script bug:
+
+- `POST /api/counselors/:id/remove` returns `{ ok: true }`, and the removed Counselor then signs in
+  successfully and is issued a token with role `counselor` and their branch intact.
+- `POST /api/telecallers/:id/remove` behaves the same way.
+
+Mechanism, read from the database after a removal: `auth_users` has **no** `is_active` column. The
+`is_active` that `resolveAccountIdentity` honours (`ACCOUNT_DISABLED`, 403) is `user_roles.is_active`,
+and a removal leaves that row untouched — role `counselor`, `is_active = true`, branch still set. The
+removal path unassigns leads and marks some JSON records inactive, and `deactivateCounselor` calls
+`jsonDelete` on what it believes is a role record, but roles are read from SQL (`readUserRoles()` is
+special-cased in `db.mjs`), so that delete removes nothing that governs sign-in.
+
+Effect: an employee removed from the company keeps a working login, their role and their branch scope
+until someone deletes the account outright. This breaks the frozen Step 5 criterion "disabled employees
+lose access", and no route anywhere in the codebase sets `user_roles.is_active = false`, so there is no
+way to suspend an account at all today.
+
+Not fixed here: the fix needs a decision on whether removal disables the login (reversible, record
+kept) or strips the role row, and whether a separate suspend/restore pair should exist. Recorded for
+the owner.
+
 ### Known open defects (not fixed on this branch)
 - Student-portal side of the same threads (`server/routes/student.mjs`, `/__auth` and the student chat routes) was not read or changed here.
 - Not exercised against a real WhatsApp provider: the "no outbound message on refusal" check stubs the network and asserts nothing is sent; the allowed send path stops at its own phone validation in tests.
