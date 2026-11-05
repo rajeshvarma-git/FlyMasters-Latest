@@ -89,7 +89,46 @@ recorded below: nothing in the code or the migrations creates the first Super Ad
 
 ### Not verified (blocked or out of scope here)
 - **CI:** see the Step 3 ruling above. No CI run has executed a step; the account is billing-locked and Actions is disabled for the repository. Nothing about the code is proven by CI.
-- **First Super Admin on a clean database:** no code path or migration creates one, so a brand-new staging database has nobody who can create an Admin and Step 5 cannot start on it. Settle with `SELECT user_id FROM user_roles WHERE role = 'super_admin';` on whatever database staging uses; if it returns no rows, a one-off bootstrap is needed before the walkthrough.
+- **First Super Admin on a clean database: solved.** `scripts/bootstrap-super-admin.mjs` creates one (see below). Check any database with `SELECT user_id FROM user_roles WHERE role = 'super_admin';` and run the script only if it returns no rows.
+
+## First Super Admin bootstrap (2026-11-06)
+
+No code path or migration created the first Super Admin: every account-creating route needs a signed-in
+Super Admin or Admin, so a brand-new database had nobody who could create an Admin and Step 5 could not
+start on it. `scripts/bootstrap-super-admin.mjs` plus `server/lib/bootstrapSuperAdmin.mjs` close that.
+
+    $env:BOOTSTRAP_PASSWORD = "<at least 12 characters>"
+    node scripts/bootstrap-super-admin.mjs --email boss@example.com --name "First Boss"
+
+It reads `DATABASE_URL` the way the server does, so it acts on whichever database that names.
+
+Deliberately narrow, so it cannot become a back door:
+- It refuses when the database already has a Super Admin (`--allow-additional` overrides).
+- It refuses to promote an account that already exists, so it can never escalate an ordinary account;
+  role changes belong in the admin screens, where they are audited.
+- The password comes from `BOOTSTRAP_PASSWORD`, never an argument, so it stays out of shell history and
+  the process list. Minimum 12 characters.
+- It writes through `createAccount`, the canonical account writer, so login, role and memberships are
+  one transaction exactly as the admin screens do it, and it adds the profile row the portal needs.
+- The Super Admin is created with no branch, because the role is global and pinning it to one branch
+  would quietly limit what the account can see.
+- It records `super_admin.bootstrap` in `audit_log`, without the password.
+
+`hashPassword` and `verifyPassword` moved from `server/routes/core.mjs` to `server/lib/password.mjs`
+unchanged, so the bootstrap writes passwords through the same implementation the sign-in route verifies
+them with rather than a second copy that could drift. The existing sign-in tests cover the move.
+
+Verification: 6 new real-PostgreSQL tests, including signing the new account in through the
+application's own `POST /api/auth/signin` and reading the role back from `GET /api/me`; refusal when a
+Super Admin exists; refusal to promote an existing email; refusal of a short password and a malformed
+address with nothing written; and the no-branch assertion. The script itself was also run end to end
+against a fresh database: it created the account, refused the second run, and refused a short password.
+Full suite 699 tests, 699 passed, 0 failed on PostgreSQL 16.15; typecheck and build clean.
+
+Note for staging configuration: `ensureAdminUser()` in `core.mjs` seeds `admin@local.test` with the
+password `admin123`, and is skipped when `IS_PRODUCTION` is true (`NODE_ENV=production` **or** any
+Railway environment). On Railway it therefore never runs. Anywhere else, set `NODE_ENV=production` or
+that account exists with a known password.
 - **Staging acceptance:** Super Admin creates Admin; Admin creates Telecaller and Counselor in their branch; each logs in to the correct portal; unauthorized creation and cross-branch access fail; disabled employees lose access. **Blocked**: it needs a signed-in session on the deployed environment.
 - **Deployed commit:** the hosting dashboard shows a deployment id, not the git SHA served. Confirm it matches `e03afb9`.
 - **Configuration:** `ADMIN_SCOPE_ENFORCED=true`, `IDENTITY_STRICT`, public staff sign-up closed, `HR_ENABLED` off: values on the deployed environment are not recorded here and are **UNVERIFIED**.

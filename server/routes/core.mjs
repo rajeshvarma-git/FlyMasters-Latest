@@ -11,6 +11,7 @@ import express from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import crypto, { randomBytes, scryptSync, timingSafeEqual } from "crypto";
+import { hashPassword, verifyPassword } from "../lib/password.mjs";
 import { readFileSync, existsSync } from "fs";
 import path from "path";
 import { buildCatalogRecords, parseCatalogCsv } from "../lib/csvImport.mjs";
@@ -111,25 +112,8 @@ function isUuid(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ""));
 }
 
-function hashPassword(password) {
-  const salt = randomBytes(16).toString("hex");
-  const hash = scryptSync(password, salt, 64).toString("hex");
-  return `scrypt:${salt}:${hash}`;
-}
-
-function verifyPassword(password, stored) {
-  if (!password || !stored) return false;
-  if (stored.startsWith("scrypt:")) {
-    const parts = stored.split(":");
-    const salt = parts[1];
-    const hash = parts[2];
-    if (!salt || !hash) return false;
-    const next = scryptSync(password, salt, 64);
-    const prev = Buffer.from(hash, "hex");
-    return next.length === prev.length && timingSafeEqual(next, prev);
-  }
-  return false;
-}
+// hashPassword / verifyPassword now live in server/lib/password.mjs, so the Super Admin bootstrap
+// writes passwords through the same implementation this route verifies them with.
 
 async function ensureCounselorLogin(authId, passwordPlain) {
   const found = await pool.query("SELECT * FROM auth_users WHERE id = $1", [authId]);
