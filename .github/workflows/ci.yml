@@ -2,6 +2,9 @@ name: Code checks
 on:
   push:
   pull_request:
+  # Lets you start a run from the Actions tab without pushing a commit, which is how you confirm
+  # Actions works again after an account or settings problem (Actions > Code checks > Run workflow).
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
