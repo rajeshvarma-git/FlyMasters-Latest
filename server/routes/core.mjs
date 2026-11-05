@@ -38,7 +38,7 @@ import { assignRole, setAccountBranches, createAccount, discardAccount, AccountW
 import { hrEnabled, hrOff } from "../lib/hrSwitch.mjs";
 import { decideAccountAction } from "../lib/accessPolicy.mjs";
 import { loadAccountTarget } from "../lib/accountTargets.mjs";
-import { allow, branchInScope, checkLeadInScope, checkRecipientInScope, checkStaffInScope, managerSeesConversation, requireGlobalScope, checkRowInScope, checkLeaveInScope } from "../lib/scopeGuards.mjs";
+import { allow, branchInScope, checkLeadInScope, checkRecipientInScope, checkStaffInScope, managerSeesConversation, requireGlobalScope, checkRowInScope, checkLeaveInScope, staffAuthId } from "../lib/scopeGuards.mjs";
 import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
 import { branchExists, listBranches, allocateBranchCode, suggestBranchCode } from "../lib/branches.mjs";
 import {
@@ -3379,11 +3379,69 @@ router.post("/api/telecallers/:id/remove", staffMoveAuth, async (req, res) => {
     }
 
     await deactivateTelecaller(req.params.id);
+    // Removal has to revoke access, not just tidy records: this is the flag sign-in reads.
+    await setStaffAccess(pool, req.params.id, false);
     res.json({ ok: true, transferred });
   } catch (error) {
     res.status(400).json({ error: error.message || "Could not remove telecaller." });
   }
 });
+
+/**
+ * Switches a staff account's access on or off.
+ *
+ * `user_roles.is_active` is the flag `resolveAccountIdentity` honours: with it false, sign-in answers
+ * 403 ACCOUNT_DISABLED and every later request is refused, while the account and its history stay.
+ * `auth_users` has no such column, which is why removal used to leave access intact
+ * (scripts/acceptance-onboarding.mjs caught that: a removed Counselor could still sign in).
+ *
+ * Returns the number of role rows changed so a caller can tell "done" from "no such staff account".
+ */
+async function setStaffAccess(db, userId, active) {
+  const authId = (await staffAuthId(db, userId)) || String(userId);
+  const result = await db.query(
+    "UPDATE user_roles SET is_active = $2 WHERE user_id = $1",
+    [String(authId), Boolean(active)],
+  );
+  return { authId, changed: Number(result.rowCount || 0) };
+}
+
+/** Shared by suspend and restore: who may act, on whom, and the audit trail. */
+async function changeStaffAccess(req, res, { active, action }) {
+  const targetId = String(req.params.id || "");
+  if (!targetId) return res.status(400).json({ error: "Which account?" });
+  const authId = (await staffAuthId(pool, targetId)) || targetId;
+  if (String(authId) === String(req.user.id)) {
+    return res.status(400).json({ error: "You cannot change your own access." });
+  }
+  if (!(await allow(res, checkStaffInScope(pool, req.scope, targetId)))) return;
+  const current = await pool.query("SELECT role FROM user_roles WHERE user_id = $1", [String(authId)]);
+  const role = String(current.rows[0]?.role || "");
+  if (!role) return res.status(404).json({ error: "That staff account could not be found." });
+  if (role === ROLES.SUPER_ADMIN) {
+    return res.status(403).json({ error: "A Super Admin account cannot be suspended here." });
+  }
+  const { changed } = await setStaffAccess(pool, authId, active);
+  if (!changed) return res.status(404).json({ error: "That staff account could not be found." });
+  await audit(req, action, "user_roles", authId, {
+    role,
+    active,
+    reason: String(req.body?.reason || "").slice(0, 300),
+  });
+  res.json({ ok: true, id: authId, role, active });
+}
+
+/**
+ * Suspend a staff account: they keep their record and their history, and cannot sign in.
+ * Admin and Super Admin, within their branches (permission-matrix.md rule 6, the same class of action
+ * as removing or transferring staff). You cannot suspend yourself or a Super Admin.
+ */
+router.post("/api/users/:id/suspend", staffMoveAuth, safely((req, res) =>
+  changeStaffAccess(req, res, { active: false, action: "staff.suspend" })));
+
+/** Undo a suspension, or a removal. The mirror of the route above. */
+router.post("/api/users/:id/restore", staffMoveAuth, safely((req, res) =>
+  changeStaffAccess(req, res, { active: true, action: "staff.restore" })));
 
 router.post("/api/counselors/:id/remove", staffMoveAuth, async (req, res) => {
   try {
@@ -3420,6 +3478,8 @@ router.post("/api/counselors/:id/remove", staffMoveAuth, async (req, res) => {
     }
 
     await deactivateCounselor(req.params.id);
+    // Removal has to revoke access, not just tidy records: this is the flag sign-in reads.
+    await setStaffAccess(pool, counselor.auth_user_id || counselor.id, false);
     res.json({ ok: true, transferred });
   } catch (error) {
     res.status(400).json({ error: error.message || "Could not remove counselor." });

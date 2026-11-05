@@ -269,7 +269,7 @@ Branch Head; an Admin cannot create staff in a branch they do not hold; duplicat
 Telecaller and a Counselor cannot create accounts; a second Admin in another branch cannot remove or
 change the role of the first branch's staff; an Admin cannot delete an account.
 
-### DEFECT: removing a staff member does not revoke their access
+### DEFECT (now fixed, see below): removing a staff member did not revoke their access
 
 Both failures are the same defect, and it is not a script bug:
 
@@ -289,9 +289,23 @@ until someone deletes the account outright. This breaks the frozen Step 5 criter
 lose access", and no route anywhere in the codebase sets `user_roles.is_active = false`, so there is no
 way to suspend an account at all today.
 
-Not fixed here: the fix needs a decision on whether removal disables the login (reversible, record
-kept) or strips the role row, and whether a separate suspend/restore pair should exist. Recorded for
-the owner.
+### FIXED, with suspend and restore (owner decision: disable the login, keep the record)
+
+- Removing a Counselor or a Telecaller now sets `user_roles.is_active = false` as part of the removal,
+  so sign-in answers 403 `ACCOUNT_DISABLED` and every later request is refused. The account, its
+  history and its audit trail stay.
+- New `POST /api/users/:id/suspend` and `POST /api/users/:id/restore`: Admin and Super Admin, inside
+  their own branches (rule 6, the same class of action as removing or transferring staff). Restore also
+  undoes a removal. Both are audited as `staff.suspend` / `staff.restore` with an optional reason.
+- Refusals: you cannot suspend yourself, a Super Admin account cannot be suspended through this path,
+  an unknown account answers 404, and an Admin cannot reach staff outside their branches.
+- `routeAccessMatrix.mjs` names the two new actions, so the launch-contract drift guard covers them.
+
+Verification: 9 new real-PostgreSQL tests, including removal-then-sign-in for both roles, the
+suspend/restore round trip with its audit rows, branch scope, the self and Super Admin refusals, and a
+guard-level check that only Admin and Super Admin reach the routes. The acceptance runner was then
+re-run against a local instance: **36 passed, 0 failed**, the two previously failing checks among them.
+Full suite 708 tests, 708 passed on PostgreSQL 16.15; typecheck and build clean.
 
 ### Known open defects (not fixed on this branch)
 - Student-portal side of the same threads (`server/routes/student.mjs`, `/__auth` and the student chat routes) was not read or changed here.

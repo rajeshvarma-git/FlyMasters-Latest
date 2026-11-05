@@ -39,6 +39,8 @@ const ACTION_OVERRIDES = {
   "POST /api/telecallers/:id/transfer": "staff.transfer",
   "POST /api/counselors/:id/remove": "staff.remove",
   "POST /api/telecallers/:id/remove": "staff.remove",
+  "POST /api/users/:id/suspend": "staff.suspend",
+  "POST /api/users/:id/restore": "staff.restore",
   "PUT /api/partners/:id/login": "partner.login.set",
   "POST /api/leads/:id/branch": "lead.branch.move",
   "POST /api/leads/bulk-assign": "lead.assign",
