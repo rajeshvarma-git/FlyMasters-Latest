@@ -69,7 +69,7 @@ const AREAS = [
   ["/api/branches", "branch"], ["/api/team-status", "team"], ["/api/notifications", "notification"], ["/api/system", "system"], ["/api/whatsapp", "whatsapp"],
   ["/api/university", "university"], ["/api/admin", "university"], ["/api/checklists", "checklist"], ["/api/alerts", "alert"],
   ["/api/knowledge", "knowledge"], ["/api/state", "state"], ["/api/auth", "auth"], ["/api/me", "me"], ["/api/referral", "referral"],
-  ["/api/health", "health"], ["/api/users", "staff"], ["/api/counselors", "staff"], ["/api/telecallers", "staff"],
+  ["/api/health", "health"], ["/api/version", "health"], ["/api/users", "staff"], ["/api/counselors", "staff"], ["/api/telecallers", "staff"],
 ];
 const area = (path) => (AREAS.find(([p]) => path.startsWith(p)) || [null, "other"])[1];
 

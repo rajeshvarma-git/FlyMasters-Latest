@@ -81,6 +81,20 @@ if (!check("the server and its database are reachable", health.status === 200 &&
   process.exit(1);
 }
 
+// What is this environment running? A green run against an unknown commit proves nothing, so the
+// commit and schema version are printed before any check (milestone 3.1).
+const version = await call("GET", "/api/version");
+if (version.status === 200) {
+  const v = version.json || {};
+  console.log(`== Deployed commit ${v.short || "UNKNOWN"}${v.branch ? ` on ${v.branch}` : ""}${v.environment ? ` (${v.environment})` : ""}`);
+  console.log(`== Migrations applied ${v.migrations?.applied ?? "?"}, latest ${v.migrations?.latest || "none"}`);
+  check("the environment reports which commit it is running",
+    Boolean(v.short),
+    "no commit is configured, so this run cannot say which code it tested: set RAILWAY_GIT_COMMIT_SHA or an equivalent");
+} else {
+  console.log(`== Deployed commit UNKNOWN (/api/version answered ${version.status}: an older build)`);
+}
+
 const noToken = await call("GET", "/api/me");
 check("no token is refused (401)", noToken.status === 401, show(noToken));
 const badToken = await call("GET", "/api/me", { token: "not.a.real.token" });

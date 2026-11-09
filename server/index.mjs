@@ -37,6 +37,7 @@ import { startReminderScheduler } from "./lib/reminders.mjs";
 import caseRoutes, { sweepVerifiedMerges } from "./routes/cases.mjs";
 import knowledgeRoutes from "./routes/knowledge.mjs";
 import documentSetupRoutes from "./routes/documentSetup.mjs";
+import { appliedMigrations, resolveBuildInfo } from "./lib/buildInfo.mjs";
 
 assertBootConfig();
 
@@ -58,10 +59,28 @@ app.use(express.json({ limit: "20mb", verify: (req, _res, buf) => { req.rawBody 
 app.get("/api/health", async (_req, res) => {
   try {
     await pool.query("SELECT 1");
-    res.json({ ok: true, service: "flymaster-platform", time: new Date().toISOString() });
+    // The commit rides along on health because that is the first call every acceptance run makes, so a
+    // run records which code it tested. /api/version has the rest.
+    res.json({
+      ok: true, service: "flymaster-platform", time: new Date().toISOString(),
+      commit: resolveBuildInfo(process.env).short,
+    });
   } catch (error) {
     res.status(503).json({ ok: false, error: error.message || "Database unreachable" });
   }
+});
+
+/**
+ * What this environment is running (milestone 3.1, "deployed commit visibility").
+ *
+ * Open deliberately: confirming which commit a host serves is something anyone on the team needs to do
+ * without an account, and for a public repository the commit is public anyway. It reports the commit,
+ * the branch, the environment name and the schema version — nothing about configuration, and no secrets.
+ * A null commit means the platform gave none, which is worth knowing rather than hiding.
+ */
+app.get("/api/version", async (_req, res) => {
+  const build = resolveBuildInfo(process.env);
+  res.json({ service: "flymaster-platform", ...build, migrations: await appliedMigrations(pool), time: new Date().toISOString() });
 });
 
 // The student handler claims only its own /__ paths, so it can run first.

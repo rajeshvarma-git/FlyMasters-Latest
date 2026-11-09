@@ -528,6 +528,46 @@ environment. Everything between the payload arriving and staff seeing the outcom
 - **The application record itself.** `applicationJourney.test.mjs` and `applicationWorkflow.test.mjs` cover
   submission, withdrawal and counselor isolation in 17 tests; the journey script stops at the document step.
 
+## Stream 3 begun: deployed commit and schema visibility (2026-11-09)
+
+Milestone 3.1 asks for "isolated staging, CI, migrations and deployed commit visibility". Staging and CI
+need infrastructure. The visibility half did not exist at all and is now built.
+
+Until now a deployed environment reported nothing about itself — `/api/health` answered ok, service and
+time — so the only way to know what a host was running was to trust whoever deployed it. That is the
+question every acceptance run has to answer first: **a green run against an unknown commit proves
+nothing**, and "confirm the SHA the deployed environment serves" has been an open item since the baseline.
+
+- `GET /api/version` reports the commit, the short commit, the branch, the environment name and the
+  schema version (`{applied, latest}` from `schema_migrations`). Open on purpose: confirming which commit
+  a host serves is something anyone on the team does without an account, and for a public repository the
+  commit is public anyway. No configuration values, no secrets. A null commit is reported as null rather
+  than guessed, because "nobody can say what this host runs" is the finding.
+- `GET /api/health` now carries the short commit too, since that is the first call every acceptance run
+  makes.
+- `server/lib/buildInfo.mjs` resolves the commit from whichever variable the platform sets — Railway's
+  `RAILWAY_GIT_COMMIT_SHA` and `RAILWAY_GIT_BRANCH` first, then the Vercel, Heroku and generic names — so
+  this keeps working if the host changes. Nothing is read from the repository at runtime: a deployed
+  container usually has no `.git`.
+- **Both acceptance scripts now print the commit, branch, environment and schema version before any
+  check**, and fail if the environment cannot say which commit it is. So an acceptance run is now
+  self-documenting evidence rather than a bare pass count.
+
+The launch-contract drift guard flagged `/api/version` as a new unauthenticated route, which is the guard
+working; it is now in the known-public list in `tests/routeMatrix.test.mjs` with the reason beside it.
+
+Verified: 6 new tests in `tests/buildInfo.test.mjs` over the pure resolver (Railway's names, the other
+platforms', precedence, blank values, and the null case), and the route exercised against a running
+instance with `RAILWAY_GIT_COMMIT_SHA` set — it reported `2ed40d9` on `main` with 9 migrations applied,
+latest `009_staff_hr_text_ids.sql`, and the journey run printed it. 732/732 on PostgreSQL 16.15;
+typecheck and build clean.
+
+### What 3.1 still needs
+
+Staging and CI, both infrastructure. When staging exists, `GET /api/version` answers the two questions
+that were previously unanswerable from outside: which commit it serves, and whether all nine migrations
+applied.
+
 ### Known open defects (not fixed on this branch)
 - Student-portal side of the same threads (`server/routes/student.mjs`, `/__auth` and the student chat routes) was not read or changed here.
 - Not exercised against a real WhatsApp provider: the "no outbound message on refusal" check stubs the network and asserts nothing is sent; the allowed send path stops at its own phone validation in tests.

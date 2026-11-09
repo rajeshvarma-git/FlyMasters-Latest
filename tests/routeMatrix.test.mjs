@@ -66,7 +66,11 @@ test("Super Admin-only routes are limited to Super Admin by their guard", () => 
 test("routes reachable without sign-in are exactly the known public ones", () => {
   const open = matrix.filter((m) => m.who.length === 1 && m.who[0] === "public").map((m) => m.key).sort();
   assert.deepEqual(open, [
+    // /api/version is open on purpose (milestone 3.1): confirming which commit a host serves is
+    // something anyone on the team does without an account, and for a public repository the commit is
+    // public anyway. It reports the commit, branch, environment name and schema version only.
     "GET /__auth", "GET /__public_media", "GET /api/health", "GET /api/health", "GET /api/referral/:code",
+    "GET /api/version",
     "POST /__auth", "POST /api/auth/signin", "POST /api/auth/signup", "POST /api/auth/telecaller-signup",
     "POST /api/counselor/auth/send-verification-code", "POST /api/counselor/auth/signup",
   ].sort());
