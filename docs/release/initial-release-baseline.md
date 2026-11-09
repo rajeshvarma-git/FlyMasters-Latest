@@ -484,11 +484,46 @@ counselor can neither open nor review the document.
 - **An employee holding leads cannot be deleted** (409, "Transfer or reassign them first"), so cleanup
   deletes the lead and the student before the staff.
 
-### What is still NOT covered
+## Milestone 2.3: delivery outcomes, and a defect in the webhook (2026-11-09)
 
-- **2.3 delivery outcomes.** `waDelivery.test.mjs` covers the receipt state machine (accepted → sent →
-  delivered → read, with stale and unknown receipts refused), but nothing has run against a real WhatsApp
-  provider. That gate still needs a live send.
+2.3's gate has two halves. "Assigned participants share the correct conversation" was closed by the
+counselor and telecaller scope work above. This is the other half: "enabled channels show delivery
+outcomes".
+
+### DEFECT: the staff webhook could move a message's status backwards
+
+There are two WhatsApp paths. The case path (`server/student/whatsapp.ts`) applies
+`deliveryStatusPatch`, the ordering rule `waDelivery.test.mjs` pins. The staff-portal webhook
+(`server/lib/whatsappRoutes.mjs`) did not: it wrote whatever status arrived straight onto the message.
+
+Meta does not guarantee the order of status webhooks, so a late `sent` arriving after `delivered` moved
+the message backwards and showed staff an outcome it had already passed. A `failed` receipt arriving
+after a real delivery did the same. The rule existed and was tested; it simply was not wired into this
+path — the same class of defect as the counselor scope and the Capacitor layer.
+
+Fixed by applying `deliveryStatusPatch` in the webhook. The row keeps `delivery_status` for the staff
+screens that read it, and now also carries `wa_status` and `wa_status_at`, which is what the ordering
+rule reads on the next receipt.
+
+### Verified with real webhook payloads
+
+`tests/waWebhookDelivery.db.test.mjs` posts Meta-shaped payloads at the actual route and reads the row
+back, so it covers the wiring rather than the rule in isolation. **6 of its 7 tests fail without the
+fix.** Covered: the normal advance through sent → delivered → read; a late `sent` after `delivered`
+refused; `read` holding against a later `delivered`; a `failed` after delivery ignored because the
+message did arrive; a `failed` before delivery recorded with the provider's reason, which is what staff
+need to act on; an unknown message id changing nothing while still answering 200, as a webhook must; and
+malformed receipts (zero, NaN, unknown status) ignored rather than written.
+
+726/726 on PostgreSQL 16.15; typecheck and build clean.
+
+### What 2.3 still needs, and only a provider can give
+
+Nothing here proves Meta actually sends these payloads to this endpoint, or that credentials, templates
+and the business phone id are right. That needs one live send and one real receipt against the deployed
+environment. Everything between the payload arriving and staff seeing the outcome is now covered.
+
+### What is still NOT covered
 - **Commission on conversion.** `commissionOnConvert` runs on the conversion path and is not asserted here.
 - **The application record itself.** `applicationJourney.test.mjs` and `applicationWorkflow.test.mjs` cover
   submission, withdrawal and counselor isolation in 17 tests; the journey script stops at the document step.

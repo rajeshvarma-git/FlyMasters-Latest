@@ -1,4 +1,5 @@
 import { getWhatsAppConfig, normalizePhone, parseIncomingWebhook, verifyWhatsAppCredentials } from "./whatsappUtil.mjs";
+import { deliveryStatusPatch } from "./waDelivery.mjs";
 import {
   appendWhatsAppMessage,
   canStaffReply,
@@ -110,10 +111,27 @@ export function mountWhatsAppRoutes(app, {
           const rows = await jsonTable(pool, "whatsapp_messages");
           const message = rows.find((row) => String(row.wa_message_id) === String(item.waMessageId));
           if (message) {
-            const failedDetail = item.status === "failed" && item.errorMessage
-              ? `failed: ${item.errorMessage}`
-              : item.status;
-            await jsonUpsert(pool, "whatsapp_messages", { ...message, delivery_status: failedDetail });
+            // Meta does not guarantee the order of status webhooks, so a late "sent" can arrive after
+            // "delivered". This used to overwrite whatever was there, showing staff a status the message
+            // had already moved past. deliveryStatusPatch is the rule the case path already applies:
+            // it refuses a receipt that would move the status backwards or that is older than the one
+            // recorded, and returns null for one to ignore.
+            const patch = deliveryStatusPatch(
+              { wa_status: message.wa_status || message.delivery_status, wa_status_at: message.wa_status_at },
+              { status: item.status, timestamp: item.timestamp, errors: item.errorMessage ? [{ message: item.errorMessage }] : undefined },
+            );
+            if (patch) {
+              const failedDetail = item.status === "failed" && item.errorMessage
+                ? `failed: ${item.errorMessage}`
+                : item.status;
+              await jsonUpsert(pool, "whatsapp_messages", {
+                ...message,
+                delivery_status: failedDetail, // what the staff screens read
+                wa_status: patch.wa_status,    // what the ordering rule reads next time
+                wa_status_at: patch.wa_status_at,
+                wa_error: patch.wa_error,
+              });
+            }
           }
           if (item.businessPhoneId && item.recipient) {
             const conversations = await jsonTable(pool, "whatsapp_conversations");
