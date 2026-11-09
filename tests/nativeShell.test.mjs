@@ -14,7 +14,11 @@
 
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync as readRaw } from "node:fs";
+
+// A Windows checkout stores these files with CRLF. Every match below is line-anchored, and `$` does not
+// match before a \r, so the endings are normalised once here rather than guarded at each regex.
+const readFileSync = (url, encoding) => readRaw(url, encoding).replace(/\r\n/g, "\n");
 
 // The source is TypeScript, so the rules are read out of it rather than imported. Each is a small
 // pure function; this evaluates exactly the function under test and nothing else.
