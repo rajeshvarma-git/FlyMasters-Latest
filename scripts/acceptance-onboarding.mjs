@@ -5,7 +5,7 @@
 // right portal, unauthorized creation and cross-branch work are refused, and a removed employee loses
 // access. Every check prints PASS or FAIL with what it actually saw, so the output is the evidence.
 //
-// IT WRITES DATA. It creates two branches and four accounts, then deletes the accounts it made. Run it
+// IT WRITES DATA. It creates two branches and several accounts, then deletes the accounts it made. Run it
 // on staging, never on an environment whose data matters. It refuses to start without --allow-writes.
 //
 //   $env:ACCEPTANCE_URL = "https://your-staging-host"
@@ -204,6 +204,78 @@ if (staff.telecaller) {
   if (check("the Super Admin can remove a Telecaller", removed.status === 200, show(removed))) {
     const after = await signIn(staff.telecaller.email, "acceptance-pass-123");
     check("a removed Telecaller can no longer sign in", !after.ok, show(after.res));
+  }
+}
+
+// ---------------------------------------------------------------- 7b. invalid submissions
+if (admin.ok) {
+  const badEmail = await createAccount(admin.token, { email: "not-an-email", role: "telecaller", branchId: B1.id });
+  check("a malformed email is refused (400)", badEmail.status === 400, show(badEmail));
+  if (badEmail.status === 200 && badEmail.json?.id) created.accounts.push(badEmail.json.id);
+
+  const noBranch = await call("POST", "/api/users", {
+    token: admin.token,
+    body: { email: `${tag}.nobranch@example.invalid`, password: "acceptance-pass-123", firstName: "No", lastName: "Branch", role: "counselor" },
+  });
+  check("a branch-scoped role with no branch is refused (400)", noBranch.status === 400, show(noBranch));
+  if (noBranch.status === 200 && noBranch.json?.id) created.accounts.push(noBranch.json.id);
+
+  const noPassword = await call("POST", "/api/users", {
+    token: admin.token,
+    body: { email: `${tag}.nopass@example.invalid`, firstName: "No", lastName: "Pass", role: "telecaller", branchId: B1.id },
+  });
+  check("an account cannot be created without a password (400)", noPassword.status === 400, show(noPassword));
+  if (noPassword.status === 200 && noPassword.json?.id) created.accounts.push(noPassword.json.id);
+}
+
+// ---------------------------------------------------------------- 7c. password reset
+if (admin.ok) {
+  const email = `${tag}.pwreset@example.invalid`;
+  const made = await createAccount(admin.token, { email, role: "telecaller", branchId: B1.id, last: "PwReset" });
+  if (check("a staff account to reset is created", made.status === 200 && made.json?.id, show(made))) {
+    created.accounts.push(made.json.id);
+    const reset = await call("PUT", `/api/users/${made.json.id}/password`, { token: admin.token, body: { password: "a-brand-new-password" } });
+    if (check("an Admin can reset a staff password in their branch", reset.status === 200, show(reset))) {
+      const oldOne = await signIn(email, "acceptance-pass-123");
+      check("the old password no longer works", !oldOne.ok, show(oldOne.res));
+      const newOne = await signIn(email, "a-brand-new-password");
+      check("the new password works", newOne.ok, show(newOne.res));
+    }
+  }
+}
+
+// ---------------------------------------------------------------- 7d. an existing session must not outlive the change
+// A token is valid for days, so what matters is whether a request made WITH an old token is still
+// honoured after the account is suspended or its role changed. The session middleware re-reads role
+// and branches from SQL on every request, so it should not be.
+{
+  const email = `${tag}.session@example.invalid`;
+  const made = await createAccount(boss.token, { email, role: "telecaller", branchId: B1.id, last: "Session" });
+  if (check("a staff account for the session checks is created", made.status === 200 && made.json?.id, show(made))) {
+    created.accounts.push(made.json.id);
+    const session = await signIn(email, "acceptance-pass-123");
+    if (check("that account signs in and holds a token", session.ok, show(session.res))) {
+      const before = await call("GET", "/api/me", { token: session.token });
+      check("the token works before any change", before.status === 200, show(before));
+
+      const suspended = await call("POST", `/api/users/${made.json.id}/suspend`, { token: boss.token, body: { reason: `acceptance ${tag}` } });
+      check("the Super Admin can suspend the account", suspended.status === 200, show(suspended));
+      const during = await call("GET", "/api/me", { token: session.token });
+      check("the SAME token is refused once the account is suspended", during.status === 401 || during.status === 403,
+        `an existing session outlived the suspension: ${show(during)}`);
+
+      const restored = await call("POST", `/api/users/${made.json.id}/restore`, { token: boss.token, body: {} });
+      check("the Super Admin can restore the account", restored.status === 200, show(restored));
+      const after = await call("GET", "/api/me", { token: session.token });
+      check("the same token works again after restore", after.status === 200, show(after));
+
+      const changed = await call("PUT", `/api/users/${made.json.id}/role`, { token: boss.token, body: { role: "counselor" } });
+      if (check("the Super Admin can change the role", changed.status === 200, show(changed))) {
+        const reread = await call("GET", "/api/me", { token: session.token });
+        check("the same token reports the NEW role, not the one it was issued with",
+          reread.json?.access?.role === "counselor", show(reread));
+      }
+    }
   }
 }
 

@@ -386,3 +386,19 @@ test("writeUserRole delegates to the one role writer that keeps the existing bra
   assert.doesNotMatch(s, /INSERT INTO user_roles/);
   assert.match(s, /upsertUserRole\(pool/);
 });
+test("createAccount refuses an address nobody could be reached at", async () => {
+  // Found by scripts/acceptance-onboarding.mjs: POST /api/users accepted "not-an-email" and the
+  // account it produced could sign in. The rule lives in createAccount so every creation path shares it.
+  const { isUsableEmail } = await import("../server/lib/accountWrites.mjs");
+  for (const good of ["a@b.co", "first.last@sub.example.com", "x+tag@example.co.uk"]) {
+    assert.equal(isUsableEmail(good), true, `${good} should be accepted`);
+  }
+  for (const bad of ["not-an-email", "", "  ", "a@b", "@example.com", "a b@example.com", "a@ex ample.com", "a@@b.com"]) {
+    assert.equal(isUsableEmail(bad), false, `${bad} should be refused`);
+  }
+  const pool = { connect: () => { throw new Error("createAccount reached the database with a bad email"); } };
+  await assert.rejects(
+    () => createAccount(pool, { id: "x", email: "not-an-email", passwordHash: "h", role: "telecaller", branchIds: ["b1"] }),
+    /valid email/i,
+  );
+});

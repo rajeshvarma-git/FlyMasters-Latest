@@ -330,6 +330,48 @@ machine and a third database, independent of the two developer machines that pro
 without `TEST_DATABASE_URL` reports 568 passed and 140 skipped; those 140 are the opt-in database tests,
 not failures.
 
+## Acceptance widened, and a validation gap it found (2026-11-09)
+
+`scripts/acceptance-onboarding.mjs` now also covers the parts of the M1.2 acceptance list that HTTP can
+reach, and reports **52 passed, 0 failed** against a local instance.
+
+Added:
+- **Invalid submissions:** a malformed email, a branch-scoped role with no branch, and a missing password.
+- **Password reset:** an Admin resets a staff password in their own branch, the old password then fails
+  and the new one works. (`PUT /api/users/:id/password` already rewrites the counselor-portal password
+  too, so the two stores do not diverge.)
+- **Existing sessions, which was the open question.** A token lasts days, so what matters is whether a
+  request made with an already-issued token is still honoured after the account changes. Verified: the
+  same token is refused as soon as the account is suspended, works again after restore, and reports the
+  NEW role after a role change — because `session` re-reads role and branches from SQL on every request.
+
+### DEFECT found and fixed: staff creation accepted any string as an email
+
+`POST /api/users` accepted `not-an-email`, created a working account, and that account signed in. There
+was no email validation on any creation path.
+
+Effect: an account nobody can be reached at cannot have its password reset or be notified, and duplicate
+detection keys on email, so a typo quietly creates a second parallel account for the same person. The
+Super Admin bootstrap validated the address while the main route did not.
+
+Fixed in `createAccount`, the one writer every creation path goes through, so the admin screens, both
+sign-up routes and the bootstrap now share the rule. Pragmatic rather than RFC-exact: a local part, an
+@, and a domain with a dot, none containing spaces. Covered by `tests/accountWrites.test.mjs`.
+
+### Still not covered by the runner (covered by the database suite instead)
+
+Lead reassignment between counselors, student-portal isolation, and the counselor and telecaller
+cross-branch rules are exercised by the opt-in PostgreSQL tests
+(`counselorConversationScope.db.test.mjs`, `telecallerQueue.db.test.mjs`, `staffSuspend.db.test.mjs`),
+not by the HTTP runner. The deployed run should still include a browser pass for logout, reload and
+direct navigation per role, which HTTP cannot show.
+
+### Storage note for staging
+
+Uploaded files are **not** on disk and not in object storage: `app_storage (path, data_url)` keeps them
+in PostgreSQL as base64 data URLs. So staging needs no bucket or volume — its database *is* the file
+store — but documents uploaded during testing will grow that database.
+
 ### Known open defects (not fixed on this branch)
 - Student-portal side of the same threads (`server/routes/student.mjs`, `/__auth` and the student chat routes) was not read or changed here.
 - Not exercised against a real WhatsApp provider: the "no outbound message on refusal" check stubs the network and asserts nothing is sent; the allowed send path stops at its own phone validation in tests.

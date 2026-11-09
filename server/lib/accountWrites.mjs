@@ -176,8 +176,22 @@ export async function setAccountBranches(pool, { userId, branchIds, assignedBy =
  * allowUnassigned: for self-registration, where the person cannot choose their own branch. The
  * account exists with its role but no branch and no branch access until an admin assigns one.
  */
+/**
+ * The address has to be a real one. Until this check existed, `POST /api/users` accepted
+ * "not-an-email" and produced a working account that could sign in
+ * (found by scripts/acceptance-onboarding.mjs). An account nobody can be reached at cannot have its
+ * password reset or be notified, and duplicate detection keys on email, so a typo quietly creates a
+ * second parallel account for the same person.
+ *
+ * Deliberately pragmatic rather than RFC-exact: a local part, an @, and a domain with a dot, none of
+ * them containing spaces. It lives here, in the one writer every creation path goes through, so the
+ * admin screens, both sign-up routes and the Super Admin bootstrap all get the same rule.
+ */
+export const isUsableEmail = (value) => /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(value || "").trim());
+
 export async function createAccount(pool, { id, email, passwordHash, metadata = {}, role, branchIds = [], assignedBy = null, allowUnassigned = false }) {
   const ids = unique(branchIds);
+  if (!isUsableEmail(email)) throw new AccountWriteError(400, "Give a valid email address.");
   if (needsBranch(role) && !ids.length && !allowUnassigned) throw new AccountWriteError(400, scopedMessage(role));
   try {
     return await inTransaction(pool, async (client) => {
