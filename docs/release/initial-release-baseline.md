@@ -456,15 +456,42 @@ Cleanup deletes the lead before the staff, because an account that still holds l
 the right refusal, which would otherwise leave the run's accounts behind. Branches remain: there is no
 branch delete route.
 
-### What this does NOT cover
+### The student's own half, added the same day: 47 passed, 0 failed
 
-- **The student's own side.** The document is requested but never uploaded, because that needs a signed-in
-  student session; `documentUploadAuthorization.test.mjs` and `countryDocumentApproval.test.mjs` cover the
-  authorization rules instead. Review-after-upload is therefore unproven end to end.
+Milestone 2.2's gate ends at "document upload/review", which needs a signed-in student, so the script now
+carries a second person all the way through:
+
+7. A student **registers** through `POST /__auth`, which is how the student journey actually starts.
+8. The Super Admin places that lead in branch One; the telecaller takes it, fills in the details
+   conversion needs, and converts it; the Admin hands it to the counselor.
+9. The counselor requests a passport. The student **uploads the file** to their own folder and records
+   the document row through the student data API.
+10. The counselor **opens the file and approves it**, and the approval shows on the student's checklist,
+    so the next step is visible.
+
+Refusals at each point: the student cannot upload into another student's folder, and the other branch's
+counselor can neither open nor review the document.
+
+### Four behaviours this exercise established, worth knowing
+
+- **A registered person is a lead, not a student.** `bulk-assign` skips anything not converted
+  (`if (!converted) continue`), so a self-registered student cannot be handed to a counselor until a
+  telecaller converts them. The script follows that real path rather than short-cutting it.
+- **`bulk-assign` answers `ok: true` with `count: 0` when it assigns nothing.** A caller checking only the
+  status would believe an assignment happened. Every assignment check here asserts `count`.
+- **A student may set `status` only to `"uploaded"`.** Anything else is refused with "Document review is
+  controlled by staff", which is correct and worth knowing before writing an upload client.
+- **An employee holding leads cannot be deleted** (409, "Transfer or reassign them first"), so cleanup
+  deletes the lead and the student before the staff.
+
+### What is still NOT covered
+
 - **2.3 delivery outcomes.** `waDelivery.test.mjs` covers the receipt state machine (accepted → sent →
   delivered → read, with stale and unknown receipts refused), but nothing has run against a real WhatsApp
   provider. That gate still needs a live send.
 - **Commission on conversion.** `commissionOnConvert` runs on the conversion path and is not asserted here.
+- **The application record itself.** `applicationJourney.test.mjs` and `applicationWorkflow.test.mjs` cover
+  submission, withdrawal and counselor isolation in 17 tests; the journey script stops at the document step.
 
 ### Known open defects (not fixed on this branch)
 - Student-portal side of the same threads (`server/routes/student.mjs`, `/__auth` and the student chat routes) was not read or changed here.

@@ -1,7 +1,8 @@
 // The business journey, run against a DEPLOYED environment over HTTP.
 //
-// Milestones 2.1 and 2.2: a lead is captured, assigned to a telecaller, followed up, converted, handed
-// to a counselor, and taken through a document request. The question this answers is not whether each
+// Milestones 2.1 and 2.2: a lead is captured, assigned to a telecaller, followed up, converted and
+// handed to a counselor; then a student registers, is assigned, uploads the document the counselor
+// asked for, and has it reviewed. The question this answers is not whether each
 // route works on its own — the test suite covers that — but whether **ownership and history survive
 // every step**, and whether the branch next door stays out of all of it.
 //
@@ -58,7 +59,7 @@ async function signIn(email, password) {
   const r = await call("POST", "/api/auth/signin", { body: { email, password } });
   return { ok: r.status === 200 && Boolean(r.json?.token), token: r.json?.token, res: r };
 }
-const created = { accounts: [], leadId: null };
+const created = { accounts: [], leadId: null, studentLeadId: null };
 async function makeStaff(token, role, branchId, label) {
   const email = `${tag}.${label}@example.invalid`;
   const r = await call("POST", "/api/users", {
@@ -116,7 +117,8 @@ created.leadId = leadId;
 const assigned = await call("POST", "/api/leads/bulk-assign-telecaller", {
   token: admin.token, body: { ids: [leadId], telecallerId: telecaller.id },
 });
-check("the Admin assigns the lead to the telecaller", assigned.status === 200, show(assigned));
+check("the Admin assigns the lead to the telecaller", assigned.status === 200 && assigned.json?.count === 1,
+  `${show(assigned)} — count 0 means nothing was assigned`);
 
 const queue = await call("GET", "/api/telecaller/state", { token: telecaller.token });
 const inQueue = (rows) => (rows || []).some((row) => String(row.id) === String(leadId));
@@ -159,7 +161,8 @@ check("the telecaller converts the lead", converted.status === 200, show(convert
 const handed = await call("POST", "/api/leads/bulk-assign", {
   token: admin.token, body: { ids: [leadId], counselorId: counselor.id },
 });
-check("the Admin hands the converted lead to a counselor", handed.status === 200, show(handed));
+check("the Admin hands the converted lead to a counselor", handed.status === 200 && handed.json?.count === 1,
+  `${show(handed)} — count 0 means nothing was handed over`);
 
 const counselorState = await call("GET", "/api/counselor/state", { token: counselor.token });
 const mine = [...(counselorState.json?.leads || []), ...(counselorState.json?.students || [])];
@@ -192,6 +195,119 @@ if (studentRef) {
   check("the other branch's counselor cannot read that checklist (403)", farChecklist.status === 403, show(farChecklist));
 }
 
+// ---- 2.2 the student's own half: sign-up, upload, and the counselor's review ----------------
+// A self-registering student, which is how the student journey actually begins. The lead above was
+// captured by staff, and sign-up refuses an email that already has a login, so this is a second person.
+const studentEmail = `${tag}.student@example.invalid`;
+const studentSignup = await call("POST", "/__auth", {
+  body: {
+    action: "signup", email: studentEmail, password: PASSWORD,
+    user_metadata: { first_name: "Jny", last_name: "Student" },
+  },
+});
+const studentToken = studentSignup.json?.session?.access_token || studentSignup.json?.session?.token;
+if (check("a student can register", studentSignup.status === 200 && Boolean(studentToken), show(studentSignup))) {
+  // The new student's lead has to reach this branch's counselor before any of the rest applies.
+  // Staff read leads through /api/state; there is no GET /api/leads.
+  const allLeads = await call("GET", "/api/state", { token: boss.token });
+  const pool = [
+    ...(allLeads.json?.leads || []),
+    ...(allLeads.json?.students || []),
+  ];
+  const studentLead = pool.find((row) => String(row.email || "").toLowerCase() === studentEmail);
+  if (check("the registration created a lead the staff can see", Boolean(studentLead), show(allLeads))) {
+    const toBranch = await call("POST", `/api/leads/${studentLead.id}/branch`, {
+      token: boss.token, body: { branchId: B1 },
+    });
+    check("the Super Admin places that lead in branch One", toBranch.status === 200, show(toBranch));
+    // A registered person is a LEAD, not yet a student: bulk-assign refuses anything not converted
+    // (`if (!converted) continue`), so the real path runs through the telecaller first. Worth knowing:
+    // that route answers ok:true with count:0 when it assigns nothing, so count is what to check.
+    const toTelecaller = await call("POST", "/api/leads/bulk-assign-telecaller", {
+      token: admin.token, body: { ids: [studentLead.id], telecallerId: telecaller.id },
+    });
+    check("the registered lead reaches the telecaller", toTelecaller.status === 200 && toTelecaller.json?.count === 1, show(toTelecaller));
+
+    // Conversion needs countries, a field of interest and a phone number; a sign-up supplies none.
+    const enriched = await call("PATCH", `/api/telecaller/leads/${studentLead.id}`, {
+      token: telecaller.token,
+      body: { preferred_countries: ["Australia"], field_of_interest: "Data Science", phone: "9800000222" },
+    });
+    check("the telecaller completes the details conversion needs", enriched.status === 200, show(enriched));
+
+    const studentConverted = await call("POST", `/api/telecaller/leads/${studentLead.id}/convert`, { token: telecaller.token, body: {} });
+    check("the telecaller converts the registered student", studentConverted.status === 200, show(studentConverted));
+
+    const toCounselor = await call("POST", "/api/leads/bulk-assign", {
+      token: admin.token, body: { ids: [studentLead.id], counselorId: counselor.id },
+    });
+    check("the Admin assigns the converted student to the counselor",
+      toCounselor.status === 200 && toCounselor.json?.count === 1,
+      `${show(toCounselor)} — count 0 means it assigned nothing while still answering ok`);
+
+    created.studentLeadId = studentLead.id;
+    const studentUserId = studentLead.user_id;
+    const request = await call("POST", `/api/counselor/students/${studentUserId}/document-requests`, {
+      token: counselor.token,
+      body: { document_types: ["passport"], note: `${tag} upload your passport` },
+    });
+    check("the counselor requests a passport from the registered student", request.status === 200, show(request));
+
+    // The file first: the student's own folder, which is the only place they may write.
+    const filePath = `${studentUserId}/passport-${tag}.pdf`;
+    const upload = await call("PUT", "/__storage", {
+      token: studentToken,
+      body: { path: filePath, dataUrl: "data:application/pdf;base64,JVBERi0xLjQK" },
+    });
+    check("the student can upload into their own folder", upload.status === 200, show(upload));
+
+    const foreign = await call("PUT", "/__storage", {
+      token: studentToken,
+      body: { path: `someone-else/passport-${tag}.pdf`, dataUrl: "data:application/pdf;base64,JVBERi0xLjQK" },
+    });
+    check("the student cannot upload into another student's folder (403)", foreign.status === 403, show(foreign));
+
+    // Then the documents row that points at it, through the student data API.
+    const docId = `jdoc-${tag}`;
+    const record = await call("POST", "/__local_db", {
+      token: studentToken,
+      // The student data API takes `rows`, not `values`; with `values` it answers ok and writes nothing.
+      body: {
+        table: "documents", action: "insert",
+        rows: [{
+          id: docId, user_id: studentUserId, document_type: "passport",
+          file_name: `passport-${tag}.pdf`, file_path: filePath,
+          // "uploaded" is the only status a student may set: review belongs to staff
+          // (dataPolicy.ts — "Document review is controlled by staff.").
+          status: "uploaded", created_at: new Date().toISOString(),
+        }],
+      },
+    });
+    check("the student's upload is recorded against the request", record.status === 200, show(record));
+
+    // And the counselor's side of it: read the file, then decide.
+    const fetched = await call("GET", `/api/counselor/documents/${docId}/file`, { token: counselor.token });
+    check("the assigned counselor can open the uploaded file", fetched.status === 200 && Boolean(fetched.json?.dataUrl), show(fetched));
+    const farFetched = await call("GET", `/api/counselor/documents/${docId}/file`, { token: farCounselor.token });
+    check("the other branch's counselor cannot open it (403)", farFetched.status === 403, show(farFetched));
+
+    const reviewed = await call("PATCH", `/api/counselor/documents/${docId}`, {
+      token: counselor.token, body: { status: "approved", note: `${tag} looks correct` },
+    });
+    check("the counselor reviews and approves the document", reviewed.status === 200, show(reviewed));
+
+    const checklistAfter = await call("GET", `/api/counselor/students/${studentUserId}/checklist`, { token: counselor.token });
+    const checklistText = JSON.stringify(checklistAfter.json || {});
+    check("the approval shows on the student's checklist, so the next step is visible",
+      checklistAfter.status === 200 && /approved/i.test(checklistText), show(checklistAfter));
+
+    const farReview = await call("PATCH", `/api/counselor/documents/${docId}`, {
+      token: farCounselor.token, body: { status: "rejected", note: "from another branch" },
+    });
+    check("the other branch's counselor cannot review it (403)", farReview.status === 403, show(farReview));
+  }
+}
+
 // ---- isolation across the whole journey -----------------------------------------------------
 const farCounselorState = await call("GET", "/api/counselor/state", { token: farCounselor.token });
 const farSees = [...(farCounselorState.json?.leads || []), ...(farCounselorState.json?.students || [])]
@@ -210,9 +326,14 @@ if (keep) {
 } else {
   // The lead goes first: an account that still holds leads cannot be deleted, which is the right
   // refusal and would otherwise leave this run's staff behind.
-  const leadDelete = await call("POST", `/api/admin/delete/lead/${created.leadId}`, {
-    token: boss.token, body: { confirm: "DELETE", reason: `journey run ${tag}` },
-  });
+  let leadDelete = { status: 0, json: null };
+  for (const id of [created.leadId, created.studentLeadId].filter(Boolean)) {
+    // Both people this run created: the staff-captured lead and the registered student.
+    leadDelete = await call("POST", `/api/admin/delete/${id === created.studentLeadId ? "student" : "lead"}/${id}`, {
+      token: boss.token, body: { confirm: "DELETE", reason: `journey run ${tag}` },
+    });
+    if (leadDelete.status !== 200) console.log(`      note: could not delete ${id} (${show(leadDelete)})`);
+  }
   let removed = 0;
   for (const id of [...created.accounts].reverse()) {
     const r = await call("POST", `/api/admin/delete/staff/${id}`, { token: boss.token, body: { confirm: "DELETE", reason: `journey run ${tag}` } });
