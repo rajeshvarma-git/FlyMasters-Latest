@@ -77,25 +77,53 @@ export async function deleteLeadOrStudent(db, id) {
     );
   }
 
+  // Which app_records belong to this person. A whatsapp_messages row reaches them only through its
+  // conversation — it carries conversation_id and nothing else — so matching by lead, student or user id
+  // alone left the message bodies behind after a "permanent" delete.
+  const MINE = `
+    table_name NOT IN ('universities','university_programs','system_settings','knowledge_articles',
+                       'document_checklists','user_roles','status_vocabulary')
+    AND ( id = ANY($1::text[])
+       OR data->>'lead_id'    = ANY($2::text[])
+       OR data->>'student_id' = ANY($2::text[])
+       OR ($3::text IS NOT NULL AND data->>'user_id' = $3::text)
+       OR data->>'conversation_id' IN (
+            SELECT data->>'id' FROM app_records
+             WHERE table_name IN ('whatsapp_conversations','private_conversations','conversations')
+               AND ( data->>'lead_id' = ANY($2::text[])
+                  OR data->>'student_id' = ANY($2::text[])
+                  OR ($3::text IS NOT NULL AND data->>'user_id' = $3::text) ) ) )`;
+  const args = [leadIds, keys, userId];
+
+  // The snapshot is the ONLY copy of what is about to go (see the note at the top of this file), so it
+  // carries the rows themselves, not just the lead. Capped, because one very chatty student should not
+  // write an unbounded audit row; `truncated` says so rather than letting a partial snapshot look whole.
+  const SNAPSHOT_ROW_CAP = 2000;
+  const mine = await tryRun(
+    db,
+    `SELECT id, table_name, data, branch_id FROM app_records WHERE ${MINE} ORDER BY table_name, id LIMIT ${SNAPSHOT_ROW_CAP + 1}`,
+    args,
+  );
+  const captured = mine.rows.slice(0, SNAPSHOT_ROW_CAP);
+  const account = userId
+    ? (await tryRun(db, "SELECT id, email, password, user_metadata FROM auth_users WHERE id = $1", [userId])).rows[0] || null
+    : null;
+  const roles = userId
+    ? (await tryRun(db, "SELECT role, branch_id FROM user_roles WHERE user_id = $1", [userId])).rows
+    : [];
   const snapshot = {
     lead: sqlRow || data,
     email: sqlRow?.email || data.email || null,
     userId,
+    records: captured,
+    account,
+    roles,
+    truncated: mine.rows.length > SNAPSHOT_ROW_CAP,
   };
 
   const removed = {};
   // Everything in the JSON store that belongs to this person, except shared catalogues/settings.
-  removed.records = count(await tryRun(
-    db,
-    `DELETE FROM app_records
-      WHERE table_name NOT IN ('universities','university_programs','system_settings','knowledge_articles',
-                               'document_checklists','user_roles','status_vocabulary')
-        AND ( id = ANY($1::text[])
-           OR data->>'lead_id'    = ANY($2::text[])
-           OR data->>'student_id' = ANY($2::text[])
-           OR ($3::text IS NOT NULL AND data->>'user_id' = $3::text) )`,
-    [leadIds, keys, userId],
-  ));
+  removed.records = count(await tryRun(db, `DELETE FROM app_records WHERE ${MINE}`, args));
 
   // The SQL tables.
   removed.privateMessages = count(await tryRun(

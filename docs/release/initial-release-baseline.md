@@ -568,6 +568,57 @@ Staging and CI, both infrastructure. When staging exists, `GET /api/version` ans
 that were previously unanswerable from outside: which commit it serves, and whether all nine migrations
 applied.
 
+## Milestone 3.3: recovery checks, and two defects they found (2026-11-09)
+
+3.3 asks that "recovery checks pass". Nothing tested recovery, and `deletion.mjs` makes a specific
+promise in its own design note: nothing is soft-deleted, so the audit row is the only copy, and "a
+delete is recoverable by hand from audit_log". Testing that promise broke it twice.
+
+### DEFECT 1: the snapshot could not put the person back
+
+The delete removed everything belonging to a student — profile, documents, applications, conversations,
+messages, shortlists, notifications and the portal login — while the snapshot held only
+`{ lead, email, userId }`. So of all that, exactly one row was recoverable. Worse, uploaded files live in
+`app_storage` keyed by path, and the `documents` rows naming those paths were deleted too, leaving the
+files as orphaned blobs with nothing to match them to a person.
+
+The snapshot now carries the rows themselves: every matching `app_records` row with its `table_name` and
+`branch_id`, the `auth_users` row, and the role rows. Capped at 2000 rows so one very chatty student
+cannot write an unbounded audit row, with `truncated: true` when the cap is hit — a partial snapshot says
+so rather than looking complete.
+
+### DEFECT 2: a "permanent" delete left the message bodies behind
+
+A `whatsapp_messages` row reaches its person only through `conversation_id`; it carries no lead, student
+or user id. The delete matched on those three only, so **the message bodies survived**. A deleted
+student's WhatsApp history stayed in the database, orphaned and unreachable through the app but fully
+present — a data-retention problem as much as a correctness one. The delete now follows
+`conversation_id` into `whatsapp_conversations`, `private_conversations` and `conversations`.
+
+### The check itself
+
+`tests/deleteRecovery.db.test.mjs` builds a student with the history a real one accumulates — profile,
+document with a stored file, application, conversation, message — then:
+
+1. asserts the delete removes all of it, message bodies included;
+2. asserts the snapshot contains a row for each table, the message body, the document's `file_path` and
+   the login;
+3. **rebuilds the student from the snapshot alone** and asserts the result is the same size as the
+   original, the conversation history is back, the login works and the restored document still points at
+   a file that exists in storage;
+4. asserts a snapshot forced past the cap reports `truncated`.
+
+All four fail before the fix. 736/736 on PostgreSQL 16.15; typecheck and build clean.
+
+### What 3.3 still needs
+
+- **A database-level restore drill.** Files live in PostgreSQL (`app_storage`), so a database restore is
+  also the file restore; a `pg_dump`/`pg_restore` rehearsal against staging has not been done.
+- Staff deletion's snapshot is still thin (`email`, `role`, `metadata`). A staff account holds no student
+  history, and leads must be reassigned before one can be deleted, so the exposure is smaller — but it is
+  not the same guarantee as the student path now has.
+- Web acceptance and the mobile device checks, which the rest of this document covers.
+
 ### Known open defects (not fixed on this branch)
 - Student-portal side of the same threads (`server/routes/student.mjs`, `/__auth` and the student chat routes) was not read or changed here.
 - Not exercised against a real WhatsApp provider: the "no outbound message on refusal" check stubs the network and asserts nothing is sent; the allowed send path stops at its own phone validation in tests.
