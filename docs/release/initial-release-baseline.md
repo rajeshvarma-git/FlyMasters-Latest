@@ -619,6 +619,46 @@ All four fail before the fix. 736/736 on PostgreSQL 16.15; typecheck and build c
   not the same guarantee as the student path now has.
 - Web acceptance and the mobile device checks, which the rest of this document covers.
 
+## Milestone 3.2: responsive screens checked at phone width (2026-11-09)
+
+The mobile shell wraps this same web app, so a screen that overflows in a 390px browser overflows on the
+device. That half of 3.2 is checkable without a device, and it is where mobile layout actually breaks.
+
+`scripts/responsive-audit.mjs` signs in, renders every portal screen at 390x844 and reports page-level
+horizontal overflow, blank renders, and controls too small to hit with a thumb.
+
+    npx playwright install chromium
+    $env:AUDIT_PASSWORD = "..."
+    node scripts/responsive-audit.mjs --url http://localhost:8788 --email boss@example.com
+
+Playwright is deliberately **not** a project dependency: nothing in the build uses it, and this is a
+check you run. The script says so if it is missing, and `PLAYWRIGHT_MODULE` points it at a global install.
+Read-only — it signs in, looks, and writes nothing. It prints the deployed commit first, like the
+acceptance scripts.
+
+### Result: 18 of 18 screens fit, which is the good news
+
+Every admin, counselor, telecaller and sign-in screen renders at 390px with **no page-level horizontal
+overflow and no blank screens**. The app was already responsive; this records it rather than assuming it.
+
+Two small-target findings, both fixed: a 13px checkbox on Universities (now 20px inside a 36px label
+row), and a 20px block link on the Dashboard (now padded to 28px, which costs nothing on a desktop).
+
+### Two refinements the first run needed, so the report can be trusted
+
+- **A tab strip inside a deliberately scrollable box** was flagged as overflow. It is meant to be wider
+  than the screen — the person swipes it — so an element is only a problem when no scrollable ancestor
+  explains it.
+- **A link inside a sentence**, and a checkbox inside a label, were flagged as small targets. Text is
+  the height of text, and a checkbox is tapped by its label. Both are now judged correctly; a bare count
+  of "small controls" was not actionable, so each is named with its height and label.
+
+### What 3.2 still needs
+
+A device or emulator: file handling (the picker, the camera, downloads), navigation including the
+hardware back button beyond the top level, and session transport under a real network. The native
+projects have to be generated first — see the M1.3 groundwork section.
+
 ### Known open defects (not fixed on this branch)
 - Student-portal side of the same threads (`server/routes/student.mjs`, `/__auth` and the student chat routes) was not read or changed here.
 - Not exercised against a real WhatsApp provider: the "no outbound message on refusal" check stubs the network and asserts nothing is sent; the allowed send path stops at its own phone validation in tests.

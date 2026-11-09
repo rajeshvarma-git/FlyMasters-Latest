@@ -251,6 +251,7 @@ export default function Universities() {
               <label className="flex items-center gap-2 pb-2 text-sm">
                 <input
                   type="checkbox"
+                  className="h-5 w-5"
                   checked={replaceExisting}
                   onChange={(e) => setReplaceExisting(e.target.checked)}
                   disabled={busy}

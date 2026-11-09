@@ -297,7 +297,7 @@ export default function Dashboard() {
         <Card className="p-5">
           <div className="mb-3 flex items-center justify-between">
             <h2 className="font-semibold">Latest leads &amp; students</h2>
-            <Link to="/leads" className="text-sm text-sky-600">Open lead list</Link>
+            <Link to="/leads" className="-my-1 py-1 text-sm text-sky-600">Open lead list</Link>
           </div>
           {recent.length === 0 && <p className="text-sm text-slate-500">Nothing yet. Leads appear here from signups and AI chat.</p>}
           {recent.map((lead) => (
