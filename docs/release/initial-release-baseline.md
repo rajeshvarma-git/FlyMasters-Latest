@@ -307,10 +307,33 @@ guard-level check that only Admin and Super Admin reach the routes. The acceptan
 re-run against a local instance: **36 passed, 0 failed**, the two previously failing checks among them.
 Full suite 708 tests, 708 passed on PostgreSQL 16.15; typecheck and build clean.
 
+## Accountant included in Team Status (2026-11-09)
+
+Recorded defect, now closed. `TEAM_ROLES` listed Counselor, Telecaller, Branch Head and Admin, and a
+test asserted Accountants were excluded, so an Accountant appeared on no team screen at all.
+
+Accountant is an ordinary branch-scoped employee: it is in `SCOPED_ROLES` (it cannot work without a
+branch) and in `ORDINARY_STAFF` (an Admin may create one), and its portal home is `/admin/finance`.
+So it belongs in Team Status beside the rest. Super Admin and Student remain excluded, for the reasons
+now written next to the list: the first is global rather than branch staff, the second is not an employee.
+
+Accountants have no detail screen of their own, so their row has no "Open full profile" link; the
+client already guarded that link, so nothing else changed. Server, screen and the role tab were updated
+together, and the three team-status tests that encoded the old exclusion were updated to require the
+Accountant instead.
+
+## Independent verification of the database suite (2026-11-09)
+
+The owner ran the full suite against their own PostgreSQL, on the tree now on `main`:
+**708 tests, 708 passed, 0 failed, 0 skipped**. That reproduces the figures recorded above on a third
+machine and a third database, independent of the two developer machines that produced them. A run
+without `TEST_DATABASE_URL` reports 568 passed and 140 skipped; those 140 are the opt-in database tests,
+not failures.
+
 ### Known open defects (not fixed on this branch)
 - Student-portal side of the same threads (`server/routes/student.mjs`, `/__auth` and the student chat routes) was not read or changed here.
 - Not exercised against a real WhatsApp provider: the "no outbound message on refusal" check stubs the network and asserts nothing is sent; the allowed send path stops at its own phone validation in tests.
-- Reported by review, not re-verified here: Team Status omits the Accountant role. (The deletion/audit ordering and referral attribution defects are fixed, above.)
+- (Resolved: the deletion/audit ordering, referral attribution, staff access revocation and Team Status Accountant defects are all fixed above.)
 - Referral recovery is manual: `POST /api/referrals/recover` has no schedule and no admin screen, so someone has to run it after an outage. A count of pending markers is not surfaced anywhere.
 
 ---

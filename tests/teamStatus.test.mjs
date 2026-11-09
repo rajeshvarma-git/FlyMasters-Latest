@@ -26,10 +26,17 @@ const users = [
 const branches = [{ id: A, name: "Hyderabad" }, { id: B, name: "Vizag" }];
 const base = { users, counselors: [], branches, today: TODAY, attendance: [], leave: [], everClocked: new Set() };
 
-test("all four roles are listed; students, accountants and super admins are not", () => {
+test("all five employee roles are listed; students and super admins are not", () => {
   const rows = buildTeamList({ ...base, scope: everything });
-  assert.deepEqual([...new Set(rows.map((r) => r.role))].sort(), ["admin", "branch_head", "counselor", "telecaller"]);
-  assert.ok(!rows.some((r) => ["stu", "acct", "boss"].includes(r.id)));
+  assert.deepEqual(
+    [...new Set(rows.map((r) => r.role))].sort(),
+    ["accountant", "admin", "branch_head", "counselor", "telecaller"],
+  );
+  // The Accountant is an ordinary branch-scoped employee, so it is listed. A Student is not an
+  // employee and a Super Admin is global rather than branch staff, so neither is.
+  assert.ok(rows.some((r) => r.id === "acct"), "the accountant is missing from Team Status");
+  assert.equal(rows.find((r) => r.id === "acct")?.roleLabel, "Accountant");
+  assert.ok(!rows.some((r) => ["stu", "boss"].includes(r.id)));
 });
 
 test("each row carries name, role label, branch names and the two statuses", () => {
@@ -50,9 +57,9 @@ test("a person known by two records (login + profile) is listed once", () => {
 
 test("super admin sees every branch; a scoped viewer sees only people wholly inside their branches", () => {
   const ids = (scope) => buildTeamList({ ...base, scope }).map((r) => r.id).sort();
-  assert.deepEqual(ids(everything), ["ad1", "ad2", "adx", "c1", "c2", "h1", "noBranch", "t1"]);
-  assert.deepEqual(ids(only(A)), ["ad1", "c1", "h1", "t1"], "adx spans A and B; noBranch has none: both withheld");
-  assert.deepEqual(ids(only(A, B)), ["ad1", "ad2", "adx", "c1", "c2", "h1", "t1"]);
+  assert.deepEqual(ids(everything), ["acct", "ad1", "ad2", "adx", "c1", "c2", "h1", "noBranch", "t1"]);
+  assert.deepEqual(ids(only(A)), ["acct", "ad1", "c1", "h1", "t1"], "adx spans A and B; noBranch has none: both withheld");
+  assert.deepEqual(ids(only(A, B)), ["acct", "ad1", "ad2", "adx", "c1", "c2", "h1", "t1"]);
   assert.deepEqual(ids(only()), [], "a viewer with no branch sees nobody");
 });
 

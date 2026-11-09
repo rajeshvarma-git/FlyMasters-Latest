@@ -6,7 +6,7 @@ import { useAutoRefresh } from "@shared/hooks/useAutoRefresh";
 import { Card } from "@admin/components/ui/Card";
 
 type Working = "working" | "finished" | "leave" | "not_clocked_in" | "unknown";
-type Role = "counselor" | "telecaller" | "branch_head" | "admin";
+type Role = "counselor" | "telecaller" | "accountant" | "branch_head" | "admin";
 
 interface Employee {
   id: string;
@@ -39,6 +39,7 @@ const WORKING_LABEL: Record<Working, { text: string; dot: string; chip: string }
 const ROLES: { key: Role; label: string }[] = [
   { key: "counselor", label: "Counselors" },
   { key: "telecaller", label: "Telecallers" },
+  { key: "accountant", label: "Accountants" },
   { key: "branch_head", label: "Branch Heads" },
   { key: "admin", label: "Admins" },
 ];
@@ -50,7 +51,8 @@ const profilePath = (employee: Employee) =>
 
 const branchText = (employee: Employee) => (employee.branches.length ? employee.branches.map((b) => b.name).join(", ") : "No branch");
 
-/** Counselors, telecallers, branch heads and admins in one live list. The server decides who the caller may see. */
+/** Every employee role in one live list: the server decides who the caller may see. Accountants have no
+ * detail screen of their own, so their row simply has no "Open full profile" link. */
 export default function TeamStatus() {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [branches, setBranches] = useState<{ id: string; name: string }[]>([]);
@@ -109,7 +111,7 @@ export default function TeamStatus() {
         <Activity className="h-6 w-6 text-sky-500" />
         <div>
           <h1 className="text-2xl font-bold">Team status</h1>
-          <p className="text-slate-600">Counselors, telecallers, branch heads and admins you manage. Working status comes from clock-in records; where there are none it shows Unknown.</p>
+          <p className="text-slate-600">Counselors, telecallers, accountants, branch heads and admins you manage. Working status comes from clock-in records; where there are none it shows Unknown.</p>
         </div>
       </div>
 

@@ -1,5 +1,9 @@
-// Team Status: one canonical list of employees (Counselor, Telecaller, Branch Head, Admin) with two
-// SEPARATE statuses.
+// Team Status: one canonical list of employees (Counselor, Telecaller, Accountant, Branch Head, Admin)
+// with two SEPARATE statuses.
+//
+// Accountant belongs here because it is an ordinary branch-scoped employee like the others
+// (SCOPED_ROLES and ORDINARY_STAFF both include it, and an Admin may create one). Super Admin and
+// Student stay out: the first is global rather than branch staff, the second is not an employee.
 //
 //   account  "enabled" | "disabled"      whether the login may be used. Says nothing about presence.
 //   working  "working" | "finished" | "leave" | "not_clocked_in" | "unknown"
@@ -10,8 +14,8 @@
 // Pure functions, no database: the route loads the rows, these decide. Tested in tests/teamStatus.test.mjs.
 import { allInScope } from "./scopeGuards.mjs";
 
-export const TEAM_ROLES = ["counselor", "telecaller", "branch_head", "admin"];
-export const ROLE_LABEL = { counselor: "Counselor", telecaller: "Telecaller", branch_head: "Branch Head", admin: "Admin" };
+export const TEAM_ROLES = ["counselor", "telecaller", "accountant", "branch_head", "admin"];
+export const ROLE_LABEL = { counselor: "Counselor", telecaller: "Telecaller", accountant: "Accountant", branch_head: "Branch Head", admin: "Admin" };
 export const WORKING = ["working", "finished", "leave", "not_clocked_in", "unknown"];
 
 const norm = (value) => String(value || "").trim().toLowerCase();
