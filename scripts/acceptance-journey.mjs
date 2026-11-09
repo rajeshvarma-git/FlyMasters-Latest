@@ -1,0 +1,227 @@
+// The business journey, run against a DEPLOYED environment over HTTP.
+//
+// Milestones 2.1 and 2.2: a lead is captured, assigned to a telecaller, followed up, converted, handed
+// to a counselor, and taken through a document request. The question this answers is not whether each
+// route works on its own — the test suite covers that — but whether **ownership and history survive
+// every step**, and whether the branch next door stays out of all of it.
+//
+// IT WRITES DATA. It creates a branch pair, four staff accounts and a lead, then deletes the accounts
+// it made. Run it on staging, never on an environment whose data matters. It refuses to start without
+// --allow-writes.
+//
+//   $env:ACCEPTANCE_URL = "https://<staging-host>"
+//   $env:SUPER_EMAIL = "boss@example.com"; $env:SUPER_PASSWORD = "..."
+//   node scripts/acceptance-journey.mjs --allow-writes
+//
+// Exit code 0 means every check passed. --keep leaves what it created in place.
+
+const base = String(process.env.ACCEPTANCE_URL || "").replace(/\/+$/, "");
+const superEmail = process.env.SUPER_EMAIL || "";
+const superPassword = process.env.SUPER_PASSWORD || "";
+if (!base || !superEmail || !superPassword) {
+  console.error("Set ACCEPTANCE_URL, SUPER_EMAIL and SUPER_PASSWORD. See the top of this file.");
+  process.exit(2);
+}
+if (!process.argv.includes("--allow-writes")) {
+  console.error("This creates a branch, staff and a lead on the target environment. Re-run with --allow-writes once you are sure it is staging.");
+  process.exit(2);
+}
+const keep = process.argv.includes("--keep");
+
+const tag = `jny${new Date().toISOString().replace(/[^0-9]/g, "").slice(0, 14)}`;
+const PASSWORD = "journey-pass-123";
+let pass = 0;
+let fail = 0;
+const failures = [];
+
+const check = (name, ok, detail = "") => {
+  if (ok) { pass += 1; console.log(`PASS  ${name}`); return true; }
+  fail += 1; failures.push(name);
+  console.log(`FAIL  ${name}\n        ${detail}`);
+  return false;
+};
+
+async function call(method, path, { token, body } = {}) {
+  const res = await fetch(base + path, {
+    method,
+    headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const text = await res.text();
+  let json = null;
+  try { json = text ? JSON.parse(text) : null; } catch { json = { raw: text.slice(0, 200) }; }
+  return { status: res.status, json };
+}
+const show = (r) => `status ${r.status} ${JSON.stringify(r.json)?.slice(0, 240)}`;
+
+async function signIn(email, password) {
+  const r = await call("POST", "/api/auth/signin", { body: { email, password } });
+  return { ok: r.status === 200 && Boolean(r.json?.token), token: r.json?.token, res: r };
+}
+const created = { accounts: [], leadId: null };
+async function makeStaff(token, role, branchId, label) {
+  const email = `${tag}.${label}@example.invalid`;
+  const r = await call("POST", "/api/users", {
+    token, body: { email, password: PASSWORD, firstName: "Jny", lastName: label, role, branchId },
+  });
+  if (!check(`a ${role} is created for branch ${label.includes("far") ? "Two" : "One"}`, r.status === 200 && r.json?.id, show(r))) return null;
+  created.accounts.push(r.json.id);
+  const session = await signIn(email, PASSWORD);
+  if (!check(`that ${role} can sign in`, session.ok, show(session.res))) return null;
+  return { id: r.json.id, email, token: session.token };
+}
+
+console.log(`\n== Target ${base}\n== Run tag ${tag}\n`);
+
+const health = await call("GET", "/api/health");
+if (!check("the server and its database are reachable", health.status === 200 && health.json?.ok === true, show(health))) process.exit(1);
+
+const boss = await signIn(superEmail, superPassword);
+if (!check("the Super Admin can sign in", boss.ok, show(boss.res))) {
+  console.log("\nStopping: create the first Super Admin with scripts/bootstrap-super-admin.mjs.");
+  process.exit(1);
+}
+
+// ---- the cast -------------------------------------------------------------------------------
+const branches = [];
+for (const label of ["One", "Two"]) {
+  const r = await call("POST", "/api/branches", { token: boss.token, body: { name: `${tag} Branch ${label}`, city: "Testville" } });
+  const id = r.json?.branch?.id || r.json?.id;
+  if (check(`branch ${label} is created`, r.status === 200 && Boolean(id), show(r))) branches.push(id);
+}
+if (branches.length < 2) { console.log("\nStopping: the isolation checks need two branches."); process.exit(1); }
+const [B1, B2] = branches;
+
+const admin = await makeStaff(boss.token, "admin", B1, "admin");
+if (!admin) process.exit(1);
+const telecaller = await makeStaff(admin.token, "telecaller", B1, "telecaller");
+const counselor = await makeStaff(admin.token, "counselor", B1, "counselor");
+const farCounselor = await makeStaff(boss.token, "counselor", B2, "far-counselor");
+if (!telecaller || !counselor || !farCounselor) process.exit(1);
+
+// ---- 2.1 capture ----------------------------------------------------------------------------
+// Converting needs preferred countries, a field of interest and a phone number, so they are captured
+// up front: a lead that cannot convert would stop the journey at step three.
+const leadBody = {
+  firstName: "Journey", lastName: "Lead", email: `${tag}.lead@example.invalid`,
+  phone: "9800000111", countries: "United Kingdom, Canada", field: "Computer Science",
+  branchId: B1,
+};
+const captured = await call("POST", "/api/leads", { token: admin.token, body: leadBody });
+const leadId = captured.json?.lead?.id || captured.json?.id;
+if (!check("a lead is captured with the details conversion needs", captured.status === 200 && Boolean(leadId), show(captured))) process.exit(1);
+created.leadId = leadId;
+
+// ---- 2.1 assignment -------------------------------------------------------------------------
+const assigned = await call("POST", "/api/leads/bulk-assign-telecaller", {
+  token: admin.token, body: { ids: [leadId], telecallerId: telecaller.id },
+});
+check("the Admin assigns the lead to the telecaller", assigned.status === 200, show(assigned));
+
+const queue = await call("GET", "/api/telecaller/state", { token: telecaller.token });
+const inQueue = (rows) => (rows || []).some((row) => String(row.id) === String(leadId));
+check("the lead appears in that telecaller's own queue",
+  queue.status === 200 && inQueue(queue.json?.leads), show(queue));
+
+const farQueue = await call("GET", "/api/telecaller/state", { token: telecaller.token });
+check("the queue read is repeatable", farQueue.status === 200 && inQueue(farQueue.json?.leads), show(farQueue));
+
+// ---- 2.1 follow-up, and the history it must leave -------------------------------------------
+const contact = await call("POST", `/api/telecaller/leads/${leadId}/contact`, {
+  token: telecaller.token,
+  body: { outcome: "connected", note: `${tag} first call: interested in January intake`, lead_status: "warm" },
+});
+check("the telecaller records a follow-up", contact.status === 200, show(contact));
+
+const second = await call("POST", `/api/telecaller/leads/${leadId}/contact`, {
+  token: telecaller.token,
+  body: { outcome: "connected", note: `${tag} second call: documents discussed`, lead_status: "hot" },
+});
+check("a second follow-up is recorded", second.status === 200, show(second));
+
+const afterCalls = await call("GET", "/api/telecaller/state", { token: telecaller.token });
+const lead = (afterCalls.json?.leads || []).find((row) => String(row.id) === String(leadId));
+check("the follow-up moved the lead's status, rather than leaving it untouched",
+  String(lead?.lead_status || "") === "hot", `lead_status ${lead?.lead_status}`);
+const history = JSON.stringify(lead || {});
+check("BOTH follow-up notes are still on the lead: the first was not overwritten by the second",
+  history.includes("first call") && history.includes("second call"),
+  "one of the two notes is missing from the lead, so the call history does not accumulate");
+check("the lead still belongs to the same telecaller after the follow-ups",
+  String(lead?.assigned_telecaller_id || "") === String(telecaller.id),
+  `assigned_telecaller_id ${lead?.assigned_telecaller_id}`);
+
+// ---- 2.1 conversion -------------------------------------------------------------------------
+const converted = await call("POST", `/api/telecaller/leads/${leadId}/convert`, { token: telecaller.token, body: {} });
+check("the telecaller converts the lead", converted.status === 200, show(converted));
+
+// ---- 2.2 handoff to a counselor -------------------------------------------------------------
+const handed = await call("POST", "/api/leads/bulk-assign", {
+  token: admin.token, body: { ids: [leadId], counselorId: counselor.id },
+});
+check("the Admin hands the converted lead to a counselor", handed.status === 200, show(handed));
+
+const counselorState = await call("GET", "/api/counselor/state", { token: counselor.token });
+const mine = [...(counselorState.json?.leads || []), ...(counselorState.json?.students || [])];
+const held = mine.find((row) => String(row.id) === String(leadId) || String(row.lead_id || "") === String(leadId));
+check("the student now appears for the assigned counselor", counselorState.status === 200 && Boolean(held), show(counselorState));
+check("the telecaller's work survived the handoff: their id is still on the record",
+  JSON.stringify(held || {}).includes(String(telecaller.id)),
+  "the converted record no longer names the telecaller who worked it, so that history is lost");
+
+const studentRef = held?.user_id || held?.student_id || held?.id;
+
+// ---- 2.2 document request -------------------------------------------------------------------
+if (studentRef) {
+  const request = await call("POST", `/api/counselor/students/${studentRef}/document-requests`, {
+    token: counselor.token,
+    body: { document_types: ["passport"], note: `${tag} please upload your passport` },
+  });
+  check("the counselor can request a document from their own student", request.status === 200, show(request));
+
+  const farRequest = await call("POST", `/api/counselor/students/${studentRef}/document-requests`, {
+    token: farCounselor.token,
+    body: { document_types: ["passport"], note: "from another branch" },
+  });
+  check("a counselor in the other branch cannot request a document from this student (403)",
+    farRequest.status === 403, show(farRequest));
+
+  const checklist = await call("GET", `/api/counselor/students/${studentRef}/checklist`, { token: counselor.token });
+  check("the assigned counselor can read the student's checklist", checklist.status === 200, show(checklist));
+  const farChecklist = await call("GET", `/api/counselor/students/${studentRef}/checklist`, { token: farCounselor.token });
+  check("the other branch's counselor cannot read that checklist (403)", farChecklist.status === 403, show(farChecklist));
+}
+
+// ---- isolation across the whole journey -----------------------------------------------------
+const farCounselorState = await call("GET", "/api/counselor/state", { token: farCounselor.token });
+const farSees = [...(farCounselorState.json?.leads || []), ...(farCounselorState.json?.students || [])]
+  .some((row) => String(row.id) === String(leadId));
+check("the other branch's counselor never sees this student in their own list", !farSees, show(farCounselorState));
+
+const stealAssign = await call("POST", "/api/leads/bulk-assign", {
+  token: admin.token, body: { ids: [leadId], counselorId: farCounselor.id },
+});
+check("the lead cannot be assigned to a counselor outside the Admin's branches (403/400)",
+  stealAssign.status === 403 || stealAssign.status === 400, show(stealAssign));
+
+// ---- clean up -------------------------------------------------------------------------------
+if (keep) {
+  console.log(`\n--keep given: leaving the accounts, the lead (${created.leadId}) and the branches in place.`);
+} else {
+  // The lead goes first: an account that still holds leads cannot be deleted, which is the right
+  // refusal and would otherwise leave this run's staff behind.
+  const leadDelete = await call("POST", `/api/admin/delete/lead/${created.leadId}`, {
+    token: boss.token, body: { confirm: "DELETE", reason: `journey run ${tag}` },
+  });
+  let removed = 0;
+  for (const id of [...created.accounts].reverse()) {
+    const r = await call("POST", `/api/admin/delete/staff/${id}`, { token: boss.token, body: { confirm: "DELETE", reason: `journey run ${tag}` } });
+    if (r.status === 200) removed += 1; else console.log(`      note: could not delete account ${id} (${show(r)})`);
+  }
+  console.log(`\nCleanup: lead delete ${leadDelete.status === 200 ? "ok" : show(leadDelete)}; deleted ${removed} of ${created.accounts.length} accounts.`);
+  console.log(`Branches named "${tag} Branch One/Two" remain: there is no branch delete route.`);
+}
+
+console.log(`\n${pass} passed, ${fail} failed`);
+if (fail) { console.log("\nFailed checks:"); for (const name of failures) console.log(`  - ${name}`); }
+process.exit(fail ? 1 : 0);

@@ -430,6 +430,42 @@ checked for the emulator addresses: gone. 719/719 on PostgreSQL 16.15; typecheck
 - Nothing has been run on a device or emulator. The authentication checks M1.3 asks for are the last
   step, after the above.
 
+## Business journey acceptance, Stream 2 (2026-11-09)
+
+`scripts/acceptance-journey.mjs` runs milestones 2.1 and 2.2 end to end against a deployed environment,
+the same shape as the onboarding runner. **31 passed, 0 failed** against a local instance.
+
+The point is not whether each route works alone — the suite covers that — but whether ownership and
+history survive every step, and whether the branch next door stays out. The sequence:
+
+1. An Admin captures a lead with the details conversion needs.
+2. The Admin assigns it to a telecaller; it appears in that telecaller's own queue.
+3. The telecaller records two follow-ups. Checked: the status moved (`warm` then `hot`), **both** notes
+   are still on the lead so call history accumulates rather than overwriting, and the lead still belongs
+   to the same telecaller afterwards.
+4. The telecaller converts it.
+5. The Admin hands it to a counselor; the student appears for that counselor. Checked: the telecaller's
+   id is **still on the record**, so the work that produced the conversion is not lost in the handoff.
+6. The counselor requests a document and reads the student's checklist.
+
+Isolation, at every point: a counselor in the other branch cannot request a document from this student,
+cannot read the checklist, never sees the student in their own list, and the lead cannot be assigned to a
+counselor outside the Admin's branches.
+
+Cleanup deletes the lead before the staff, because an account that still holds leads cannot be deleted —
+the right refusal, which would otherwise leave the run's accounts behind. Branches remain: there is no
+branch delete route.
+
+### What this does NOT cover
+
+- **The student's own side.** The document is requested but never uploaded, because that needs a signed-in
+  student session; `documentUploadAuthorization.test.mjs` and `countryDocumentApproval.test.mjs` cover the
+  authorization rules instead. Review-after-upload is therefore unproven end to end.
+- **2.3 delivery outcomes.** `waDelivery.test.mjs` covers the receipt state machine (accepted → sent →
+  delivered → read, with stale and unknown receipts refused), but nothing has run against a real WhatsApp
+  provider. That gate still needs a live send.
+- **Commission on conversion.** `commissionOnConvert` runs on the conversion path and is not asserted here.
+
 ### Known open defects (not fixed on this branch)
 - Student-portal side of the same threads (`server/routes/student.mjs`, `/__auth` and the student chat routes) was not read or changed here.
 - Not exercised against a real WhatsApp provider: the "no outbound message on refusal" check stubs the network and asserts nothing is sent; the allowed send path stops at its own phone validation in tests.
