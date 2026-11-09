@@ -185,3 +185,89 @@ test("a snapshot that had to be truncated says so, instead of looking complete",
     assert.ok(kept >= 46, `nothing was marked truncated, so every row must be present; got ${kept}`);
   }
 });
+
+// ---- the same question for a staff account ----------------------------------------------------
+
+/** An employee the way the app makes one: a login, a role, a branch and a profile card. */
+async function addStaff(role = "counselor") {
+  const n = ++seq;
+  const userId = randomUUID();
+  await pool.query("INSERT INTO auth_users (id, email, password, user_metadata) VALUES ($1,$2,'x',$3::jsonb)",
+    [userId, `staff${n}@x.test`, JSON.stringify({ first_name: "Staff", last_name: String(n) })]);
+  await pool.query("INSERT INTO user_roles (user_id, role, branch_id) VALUES ($1,$2,$3)", [userId, role, B1]);
+  await pool.query("INSERT INTO user_branches (user_id, branch_id) VALUES ($1,$2)", [userId, B1]);
+  await pool.query(
+    "INSERT INTO app_records (id, table_name, data, branch_id) VALUES ($1,'profiles',$2::jsonb,$3)",
+    [`profile-${userId}`, JSON.stringify({ id: `profile-${userId}`, user_id: userId, first_name: "Staff", last_name: String(n), phone: "77000000" }), B1],
+  );
+  await pool.query(
+    "INSERT INTO app_records (id, table_name, data, branch_id) VALUES ($1,'counselors',$2::jsonb,$3)",
+    [`counselor-${userId}`, JSON.stringify({ id: `counselor-${userId}`, auth_user_id: userId, user_id: userId, name: `Staff ${n}`, is_active: true }), B1],
+  );
+  return { userId, n, email: `staff${n}@x.test` };
+}
+
+test("a deleted employee's snapshot carries the rows needed to recreate them", { skip }, async () => {
+  const s = await addStaff();
+  const { snapshot } = await runDelete(pool, "staff", s.userId, { actorId: "boss" });
+
+  assert.equal(snapshot.email, s.email);
+  assert.equal(snapshot.role, "counselor");
+  // The student path carries the rows themselves; this one carried only email, role and metadata, so a
+  // deleted employee could be named but not rebuilt — not the guarantee the rest of the delete gives.
+  assert.ok(Array.isArray(snapshot.records), "the snapshot has no rows, so the profile cards are gone for good");
+  const tables = new Set(snapshot.records.map((row) => row.table_name));
+  assert.ok(tables.has("profiles"), "the profile card is not in the snapshot");
+  assert.ok(tables.has("counselors"), "the counselor record is not in the snapshot");
+  assert.equal(String(snapshot.account?.id || ""), String(s.userId), "the login is not in the snapshot");
+  assert.deepEqual(snapshot.roles?.map((r) => r.role), ["counselor"], "the role row is not in the snapshot");
+  assert.deepEqual(snapshot.branches?.map((b) => String(b.branch_id)), [String(B1)], "the branch membership is not in the snapshot");
+});
+
+test("an employee can be rebuilt from their snapshot alone, and sign in again", { skip }, async () => {
+  const s = await addStaff("telecaller");
+  const { snapshot } = await runDelete(pool, "staff", s.userId, { actorId: "boss" });
+  assert.equal(Number((await pool.query("SELECT count(*)::int AS n FROM auth_users WHERE id = $1", [s.userId])).rows[0].n), 0);
+
+  for (const row of snapshot.records || []) {
+    await pool.query(
+      "INSERT INTO app_records (id, table_name, data, branch_id) VALUES ($1,$2,$3::jsonb,$4) ON CONFLICT (id) DO NOTHING",
+      [row.id, row.table_name, JSON.stringify(row.data), row.branch_id],
+    );
+  }
+  await pool.query(
+    "INSERT INTO auth_users (id, email, password, user_metadata) VALUES ($1,$2,$3,$4::jsonb) ON CONFLICT (id) DO NOTHING",
+    [snapshot.account.id, snapshot.account.email, snapshot.account.password || "x", JSON.stringify(snapshot.account.user_metadata || {})],
+  );
+  for (const role of snapshot.roles || []) {
+    await pool.query("INSERT INTO user_roles (user_id, role, branch_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING",
+      [snapshot.account.id, role.role, role.branch_id || null]);
+  }
+  for (const b of snapshot.branches || []) {
+    await pool.query("INSERT INTO user_branches (user_id, branch_id) VALUES ($1,$2) ON CONFLICT DO NOTHING",
+      [snapshot.account.id, b.branch_id]);
+  }
+
+  const back = (await pool.query(
+    `SELECT a.email, r.role, r.is_active, (SELECT count(*)::int FROM user_branches WHERE user_id = a.id) AS branches,
+            (SELECT count(*)::int FROM app_records WHERE data->>'user_id' = a.id::text) AS cards
+       FROM auth_users a JOIN user_roles r ON r.user_id = a.id WHERE a.id = $1`,
+    [s.userId],
+  )).rows[0];
+  assert.equal(back?.email, s.email, "the login did not come back");
+  assert.equal(back?.role, "telecaller", "the role did not come back");
+  assert.equal(back?.is_active, true, "the restored account cannot sign in");
+  assert.equal(Number(back?.branches), 1, "the branch membership did not come back");
+  assert.ok(Number(back?.cards) >= 2, "the profile cards did not come back");
+});
+
+test("payroll history is deliberately kept, and the snapshot does not pretend otherwise", { skip }, async () => {
+  const s = await addStaff();
+  await pool.query(
+    "INSERT INTO app_records (id, table_name, data, branch_id) VALUES ($1,'counselor_salary',$2::jsonb,$3)",
+    [`salary-${s.userId}`, JSON.stringify({ id: `salary-${s.userId}`, counselor_id: s.userId, amount: 1000 }), B1],
+  );
+  await runDelete(pool, "staff", s.userId, { actorId: "boss" });
+  const kept = Number((await pool.query("SELECT count(*)::int AS n FROM app_records WHERE id = $1", [`salary-${s.userId}`])).rows[0].n);
+  assert.equal(kept, 1, "payroll history was deleted with the employee");
+});

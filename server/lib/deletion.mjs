@@ -189,17 +189,36 @@ export async function deleteStaff(db, id, { actorId }) {
     );
   }
 
-  const snapshot = { email: acct.rows[0]?.email || counselor.rows[0]?.email, role, metadata: acct.rows[0]?.user_metadata || {} };
+  // The cards this delete will take. Captured BEFORE the deletes, for the same reason as the student
+  // path: audit_log is the only copy, so a snapshot that names the person without their rows lets you
+  // say who was deleted but not put them back.
+  const CARDS = "table_name IN ('profiles','counselors','telecallers') AND (data->>'user_id' = $1 OR id = ANY($2::text[]))";
+  const cardArgs = [id, [`profile-${id}`, `counselor-${id}`, `telecaller-${id}`]];
+  const cards = await tryRun(db, `SELECT id, table_name, data, branch_id FROM app_records WHERE ${CARDS}`, cardArgs);
+  const roleRows = await tryRun(db, "SELECT role, branch_id, is_active FROM user_roles WHERE user_id = $1", [id]);
+  const branchRows = await tryRun(db, "SELECT branch_id FROM user_branches WHERE user_id = $1", [id]);
+  const fullAccount = await tryRun(db, "SELECT id, email, password, user_metadata FROM auth_users WHERE id = $1", [id]);
+  const counselorLogin = await tryRun(db, "SELECT * FROM counselor_users WHERE id::text = $1", [id]);
+
+  const snapshot = {
+    email: acct.rows[0]?.email || counselor.rows[0]?.email,
+    role,
+    metadata: acct.rows[0]?.user_metadata || {},
+    records: cards.rows,
+    account: fullAccount.rows[0] || null,
+    roles: roleRows.rows,
+    branches: branchRows.rows,
+    counselorLogin: counselorLogin.rows[0] || null,
+    // Payroll history (attendance, leave, salary) is deliberately NOT deleted, so it is not in here
+    // either: it stays in place and needs no restoring.
+    payrollKept: true,
+  };
   const removed = {};
   await tryRun(db, "DELETE FROM auth_sessions WHERE user_id = $1", [id]);
   removed.roles = count(await tryRun(db, "DELETE FROM user_roles WHERE user_id = $1", [id]));
   removed.branches = count(await tryRun(db, "DELETE FROM user_branches WHERE user_id = $1", [id]));
   // Their profile cards only. Case messages and conversation history stay with the student.
-  removed.records = count(await tryRun(
-    db,
-    "DELETE FROM app_records WHERE table_name IN ('profiles','counselors','telecallers') AND (data->>'user_id' = $1 OR id = ANY($2::text[]))",
-    [id, [`profile-${id}`, `counselor-${id}`, `telecaller-${id}`]],
-  ));
+  removed.records = count(await tryRun(db, `DELETE FROM app_records WHERE ${CARDS}`, cardArgs));
   removed.counselorRow = count(await tryRun(db, "DELETE FROM counselor_users WHERE id::text = $1", [id]));
   removed.account = count(await tryRun(db, "DELETE FROM auth_users WHERE id = $1", [id]));
   // Attendance, leave and salary rows are deliberately KEPT: they are payroll history.

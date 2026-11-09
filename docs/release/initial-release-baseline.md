@@ -635,9 +635,22 @@ All four fail before the fix. 736/736 on PostgreSQL 16.15; typecheck and build c
 
 - **A database-level restore drill.** Files live in PostgreSQL (`app_storage`), so a database restore is
   also the file restore; a `pg_dump`/`pg_restore` rehearsal against staging has not been done.
-- Staff deletion's snapshot is still thin (`email`, `role`, `metadata`). A staff account holds no student
-  history, and leads must be reassigned before one can be deleted, so the exposure is smaller — but it is
-  not the same guarantee as the student path now has.
+- (Staff deletion now carries the same guarantee — see below.)
+
+### Staff deletion made recoverable too
+
+The staff snapshot held `email`, `role` and `metadata`: enough to say who was deleted, not enough to put
+them back. Same asymmetry, same reasoning — `audit_log` is the only copy.
+
+It now carries the profile and counselor/telecaller cards, the `auth_users` row, the role rows with their
+`is_active`, the branch memberships and the counselor-portal login, all captured before the deletes run.
+`payrollKept: true` records that attendance, leave and salary are deliberately **not** deleted and so are
+deliberately absent from the snapshot, rather than leaving that ambiguous.
+
+Three more tests: the snapshot contains each of those; an employee **rebuilt from the snapshot alone** has
+their login, role, branch membership and cards back and can sign in; and payroll history is confirmed to
+survive the delete. Two of the three fail before the fix; the payroll one already held and is now pinned
+so it keeps holding.
 - Web acceptance and the mobile device checks, which the rest of this document covers.
 
 ## Milestone 3.2: responsive screens checked at phone width (2026-11-09)
