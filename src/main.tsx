@@ -1,6 +1,11 @@
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import "./index.css";
+import { initNative } from "@shared/lib/native";
+
+// A no-op in a browser. Nothing called the old student-only version, so the native shell started with
+// its splash screen up and the Android back button unhandled.
+void initNative();
 
 const container = document.getElementById("root");
 if (!container) throw new Error("#root is missing from index.html");

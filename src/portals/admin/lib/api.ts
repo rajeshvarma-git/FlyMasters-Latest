@@ -1,23 +1,26 @@
+import { apiBase } from "@shared/lib/apiBase";
+import { readToken, writeToken } from "@shared/lib/tokenStore";
+
 const TOKEN_KEY = "fm_token";  // unified across portals
 const USER_KEY = "fm_user";    // unified across portals
 
 export function getToken() {
-  return sessionStorage.getItem(TOKEN_KEY) || "";
+  return readToken(TOKEN_KEY) || "";
 }
 
 export function setAuth(token: string, user: unknown) {
-  sessionStorage.setItem(TOKEN_KEY, token);
-  sessionStorage.setItem(USER_KEY, JSON.stringify(user));
+  writeToken(TOKEN_KEY, token);
+  writeToken(USER_KEY, JSON.stringify(user));
 }
 
 export function clearAuth() {
-  sessionStorage.removeItem(TOKEN_KEY);
-  sessionStorage.removeItem(USER_KEY);
+  writeToken(TOKEN_KEY, null);
+  writeToken(USER_KEY, null);
 }
 
 export function readStoredUser<T>() {
   try {
-    return JSON.parse(sessionStorage.getItem(USER_KEY) || "null") as T | null;
+    return JSON.parse(readToken(USER_KEY) || "null") as T | null;
   } catch {
     return null;
   }
@@ -31,7 +34,7 @@ export async function api<T = unknown>(path: string, options: { method?: string;
   }
   let res: Response;
   try {
-    res = await fetch(`/api${path}`, {
+    res = await fetch(`${apiBase()}/api${path}`, {
       method: options.method || "GET",
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),

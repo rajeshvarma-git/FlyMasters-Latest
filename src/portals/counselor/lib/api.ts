@@ -1,3 +1,4 @@
+import { apiBase } from "@shared/lib/apiBase";
 const TOKEN_KEY = "fm_token";  // unified across portals
 const USER_KEY = "fm_user";    // unified across portals
 
@@ -42,7 +43,7 @@ export async function api<T = unknown>(path: string, options: { method?: string;
     // portals (server/routes/core.mjs's /api/whatsapp/*) and stayed there —
     // they never had counselor-specific copies, unlike everything else here.
     const isShared = path.startsWith("/auth/signin") || path.startsWith("/whatsapp") || path.startsWith("/alerts");
-    const url = isShared ? `/api${path}` : `/api/counselor${path}`;
+    const url = isShared ? `${apiBase()}/api${path}` : `${apiBase()}/api/counselor${path}`;
     res = await fetch(url, {
       method: options.method || "GET",
       headers,

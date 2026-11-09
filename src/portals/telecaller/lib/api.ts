@@ -1,18 +1,14 @@
 // Deliberately distinct from the admin portal's storage keys. If both sites are ever
 // served from the same origin, an admin session and a telecaller session must not
 // overwrite each other.
+import { apiBase } from "@shared/lib/apiBase";
 const TOKEN_KEY = "fm_token";  // unified across portals
 const USER_KEY = "fm_user";    // unified across portals
 
 /** Absolute API origin in production; empty in dev so the Vite proxy handles /api. */
-function resolveApiBase() {
-  // Every portal is served from one origin now, so /api is same-origin. The old
-  // build hardcoded the admin portal's Railway hostname here as a fallback.
-  const fromEnv = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/$/, "");
-  return fromEnv;
-}
-
-const API_BASE = resolveApiBase();
+// Every portal is served from one origin on the web, so this is "" there. In the native shell there
+// is no origin to be served from, so it is the configured absolute URL: shared/lib/apiBase.ts.
+const API_BASE = () => apiBase();
 
 function apiErrorMessage(status: number, data: unknown): string {
   if (data && typeof data === "object") {
@@ -61,7 +57,7 @@ export async function api<T = unknown>(
   }
   let res: Response;
   try {
-    res = await fetch(`${API_BASE}/api${path}`, {
+    res = await fetch(`${API_BASE()}/api${path}`, {
       method: options.method || "GET",
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),

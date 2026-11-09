@@ -10,33 +10,18 @@
  * cutover so signed-in users are not kicked out on the deploy, then cleared.
  */
 import { HR_ENABLED } from "./features";
+import { readToken, writeToken } from "./tokenStore";
 
 const TOKEN_KEY = "fm_token";
 const USER_KEY = "fm_user";
 const LEGACY_TOKEN_KEYS = ["fm_admin_token", "fm_pg_token", "fm_telecaller_token"];
 const LEGACY_USER_KEYS = ["fm_admin_user", "fm_pg_user", "fm_telecaller_user"];
 
-function safeGet(key: string): string | null {
-  try {
-    // read both: the old telecaller build used localStorage, the others sessionStorage
-    return sessionStorage.getItem(key) ?? localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function safeSet(key: string, value: string | null) {
-  try {
-    if (value === null) {
-      sessionStorage.removeItem(key);
-      localStorage.removeItem(key);
-    } else {
-      sessionStorage.setItem(key, value);
-    }
-  } catch {
-    /* private mode / storage disabled */
-  }
-}
+// Reads forgive either store (the old telecaller build used localStorage, the others sessionStorage);
+// writes follow the platform rule in shared/lib/tokenStore.ts, because sessionStorage is emptied every
+// time the operating system reclaims a native WebView.
+const safeGet = (key: string): string | null => readToken(key);
+const safeSet = (key: string, value: string | null) => writeToken(key, value);
 
 function migrateLegacy() {
   if (safeGet(TOKEN_KEY)) return;

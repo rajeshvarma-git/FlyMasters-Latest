@@ -1,4 +1,5 @@
 import { getToken, clearSession } from "@shared/lib/session";
+import { apiBase } from "@shared/lib/apiBase";
 
 /** Partner portal API client. Same shared token as every other portal. */
 export async function api<T = unknown>(
@@ -9,7 +10,7 @@ export async function api<T = unknown>(
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const res = await fetch(`/api/partner${path}`, {
+  const res = await fetch(`${apiBase()}/api/partner${path}`, {
     method: options.method || "GET",
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),

@@ -372,6 +372,64 @@ Uploaded files are **not** on disk and not in object storage: `app_storage (path
 in PostgreSQL as base64 data URLs. So staging needs no bucket or volume — its database *is* the file
 store — but documents uploaded during testing will grow that database.
 
+## M1.3 groundwork: the mobile layer was never wired up (2026-11-09)
+
+M1.3 reads as a verification task ("test login/logout and protected navigation on both platforms"), but
+there was nothing to verify. Capacitor is in `package.json` — core, android, ios, CLI and four plugins —
+and the code was never connected:
+
+- **No native projects.** No `capacitor.config.ts`, no `android/`, no `ios/`. `npx cap add` had never run.
+- **`initCapacitor()` was never called by anything.** The splash screen would never hide and Android's
+  back button was unhandled.
+- **Three different env names for the backend URL** across the portals: `VITE_API_BASE_URL` (telecaller),
+  `VITE_API_URL` (student), `VITE_API_TARGET` (declared, unused).
+
+Two of those would have broken a device build in ways that look like server faults:
+
+**Relative requests cannot reach the backend from a WebView.** Admin, counselor and partner built
+`fetch("/api/...")`. There is no server origin in the shell, so that resolves against
+`capacitor://localhost` (iOS) or `http://localhost` (Android) and never leaves the device.
+
+**`sessionStorage` is emptied when the operating system reclaims the app.** Staff tokens were in
+`sessionStorage`, so a staff user would be signed out every time they left the app long enough for the
+WebView to be destroyed.
+
+### What is now in place
+
+- `capacitor.config.ts` (appId `com.flymasters.app`, webDir `dist`), with the `npx cap add` steps and the
+  build-time URL requirement written in it. The native project folders are **not** committed: generating
+  them needs the platform tools, and whether to commit them is a decision for whoever does.
+- `src/shared/lib/native.ts` — one answer to "is this the shell", plus `initNative()`, now actually
+  called from `src/main.tsx`.
+- `src/shared/lib/apiBase.ts` — one resolver for every portal. On the web it returns `""`, so relative
+  requests behave exactly as before. On a native platform it returns the configured absolute URL,
+  accepting all three env names, and when nothing is configured it **says so** instead of guessing an
+  emulator address. The old student resolver returned `http://10.0.2.2:8087` on Android and
+  `http://localhost:8087` on iOS, which is right on an emulator and wrong on a phone. All five API
+  clients (admin, counselor, telecaller, partner, student) now go through it.
+- `src/shared/lib/tokenStore.ts` — `localStorage` on a device, `sessionStorage` in a browser. The web
+  rule is unchanged and deliberate: a staff token should not outlive the tab on a shared machine.
+
+Verified: 10 new tests in `tests/nativeShell.test.mjs`, written as pure rules taking `native` as an
+argument so they need no device — the web base stays empty, a configured base wins, all three names are
+accepted in order, a native build with nothing configured reports it, a web build stays quiet, storage
+follows the platform, every API client uses the shared base and none builds a relative `/api` URL, no
+emulator address survives in the source, and the entry point starts the shell. A production build was
+checked for the emulator addresses: gone. 719/719 on PostgreSQL 16.15; typecheck and build clean.
+
+### Still open for M1.3, and needing a decision
+
+- **Token storage is not secure storage.** `localStorage` in a WebView is readable on a rooted or
+  jailbroken device, and the JWT lasts seven days with no server-side revocation. Options:
+  `@capacitor/preferences` with an encrypted store, or a shorter token with a refresh endpoint (there is
+  no refresh endpoint today). Not decided.
+- **The native projects still have to be generated** on a machine with Android Studio, and with Xcode
+  and CocoaPods for iOS, then `npx cap sync` after each web build.
+- **Deep links and the hardware back button beyond the top level** are unhandled apart from
+  `App.exitApp()` at the root.
+- Nothing has been run on a device or emulator. The authentication checks M1.3 asks for are the last
+  step, after the above.
+
 ### Known open defects (not fixed on this branch)
 - Student-portal side of the same threads (`server/routes/student.mjs`, `/__auth` and the student chat routes) was not read or changed here.
 - Not exercised against a real WhatsApp provider: the "no outbound message on refusal" check stubs the network and asserts nothing is sent; the allowed send path stops at its own phone validation in tests.
