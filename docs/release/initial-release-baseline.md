@@ -525,8 +525,29 @@ environment. Everything between the payload arriving and staff seeing the outcom
 
 ### What is still NOT covered
 - **Commission on conversion.** `commissionOnConvert` runs on the conversion path and is not asserted here.
-- **The application record itself.** `applicationJourney.test.mjs` and `applicationWorkflow.test.mjs` cover
-  submission, withdrawal and counselor isolation in 17 tests; the journey script stops at the document step.
+- (The application step is now covered end to end — see below.)
+
+### The application step, the middle of 2.2's gate: 59 passed, 0 failed
+
+2.2's gate reads "counselor handoff → **application** → document upload/review → next step". The
+document half was covered; the application itself was only unit-tested. The journey now runs it:
+
+11. The counselor shortlists a university for the student.
+12. Starting an application **before the student accepts is refused (409)** — checked before the
+    acceptance rather than assumed after it.
+13. The student accepts the university from their own portal.
+14. The counselor starts the application; **starting it twice reuses the same one** rather than creating
+    a duplicate, which is the behaviour `applicationWorkflow.test.mjs` pins at unit level.
+15. The counselor submits it to the university, then records an offer.
+16. The student sees **their own** application at `offer_received` — the "next step" in the gate — and a
+    second registered student cannot see it.
+
+Refusals throughout: the other branch's counselor cannot start an application for this student and
+cannot change one.
+
+One correction worth recording: the student portal reads its applications through the data API
+(`GET /__local_db?table=applications`), which filters rows to the signed-in student;
+`/api/case/me/shortlist-details` returns university catalogue detail, not application status.
 
 ## Stream 3 begun: deployed commit and schema visibility (2026-11-09)
 

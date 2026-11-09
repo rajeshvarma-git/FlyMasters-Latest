@@ -213,6 +213,7 @@ if (studentRef) {
 // A self-registering student, which is how the student journey actually begins. The lead above was
 // captured by staff, and sign-up refuses an email that already has a login, so this is a second person.
 const studentEmail = `${tag}.student@example.invalid`;
+const studentSession = { token: null, leadId: null, userId: null };
 const studentSignup = await call("POST", "/__auth", {
   body: {
     action: "signup", email: studentEmail, password: PASSWORD,
@@ -261,6 +262,9 @@ if (check("a student can register", studentSignup.status === 200 && Boolean(stud
 
     created.studentLeadId = studentLead.id;
     const studentUserId = studentLead.user_id;
+    studentSession.token = studentToken;
+    studentSession.leadId = studentLead.id;
+    studentSession.userId = studentUserId;
     const request = await call("POST", `/api/counselor/students/${studentUserId}/document-requests`, {
       token: counselor.token,
       body: { document_types: ["passport"], note: `${tag} upload your passport` },
@@ -319,6 +323,82 @@ if (check("a student can register", studentSignup.status === 200 && Boolean(stud
       token: farCounselor.token, body: { status: "rejected", note: "from another branch" },
     });
     check("the other branch's counselor cannot review it (403)", farReview.status === 403, show(farReview));
+  }
+}
+
+// ---- 2.2 the application step, which is the middle of 2.2's gate -----------------------------
+// "counselor handoff -> application -> document upload/review -> next step". The documents half is
+// above; this is the application itself: shortlist, the student's own acceptance, starting the
+// application, submitting it to the university, and an offer coming back.
+if (studentSession.token && studentSession.leadId) {
+  const shortlist = await call("POST", "/api/counselor/shortlists", {
+    token: counselor.token,
+    body: {
+      student_id: studentSession.leadId, university_name: `${tag} Imperial College`,
+      course_name: "MSc Data Science", location: "London",
+    },
+  });
+  const shortlistId = shortlist.json?.shortlist?.id || shortlist.json?.id;
+  if (check("the counselor shortlists a university for the student", shortlist.status === 200 && Boolean(shortlistId), show(shortlist))) {
+    // A counselor cannot start an application the student has not accepted: that is the rule, so it is
+    // checked before the acceptance rather than assumed afterwards.
+    const tooEarly = await call("POST", `/api/counselor/shortlists/${shortlistId}/start-application`, { token: counselor.token, body: {} });
+    check("an application cannot start before the student accepts (409)", tooEarly.status === 409, show(tooEarly));
+
+    const accepted = await call("POST", `/api/case/me/shortlists/${shortlistId}/decision`, {
+      token: studentSession.token, body: { decision: "accept" },
+    });
+    check("the student accepts the university", accepted.status === 200, show(accepted));
+
+    const started = await call("POST", `/api/counselor/shortlists/${shortlistId}/start-application`, { token: counselor.token, body: {} });
+    const applicationId = started.json?.application?.id || started.json?.id;
+    if (check("the counselor starts the application", started.status === 200 && Boolean(applicationId), show(started))) {
+      // One application per student and university: a second click must reuse it, not make a duplicate.
+      const again = await call("POST", `/api/counselor/shortlists/${shortlistId}/start-application`, { token: counselor.token, body: {} });
+      const againId = again.json?.application?.id || again.json?.id;
+      check("starting it twice reuses the same application rather than duplicating it",
+        again.status === 200 && String(againId) === String(applicationId), `${show(again)} — expected ${applicationId}`);
+
+      const farStart = await call("POST", `/api/counselor/shortlists/${shortlistId}/start-application`, { token: farCounselor.token, body: {} });
+      check("the other branch's counselor cannot start an application for this student (403)", farStart.status === 403, show(farStart));
+
+      const submitted = await call("PATCH", `/api/counselor/applications/${applicationId}`, {
+        token: counselor.token, body: { status: "submitted_to_university", comments: `${tag} sent` },
+      });
+      check("the counselor submits the application to the university", submitted.status === 200, show(submitted));
+
+      const offer = await call("PATCH", `/api/counselor/applications/${applicationId}`, {
+        token: counselor.token, body: { status: "offer_received", comments: `${tag} offer in` },
+      });
+      check("an offer from the university is recorded", offer.status === 200, show(offer));
+
+      const farUpdate = await call("PATCH", `/api/counselor/applications/${applicationId}`, {
+        token: farCounselor.token, body: { status: "rejected", comments: "from another branch" },
+      });
+      check("the other branch's counselor cannot change the application (403)", farUpdate.status === 403, show(farUpdate));
+
+      // The student has to be able to see where they stand: that is the "next step" in the gate. The
+      // student portal reads its own rows through the data API, which filters them to this student.
+      const studentView = await call("GET", "/__local_db?table=applications", { token: studentSession.token });
+      const rows = studentView.json?.rows || studentView.json || [];
+      const own = (Array.isArray(rows) ? rows : []).find((row) => String(row.id) === String(applicationId));
+      check("the student can see their own application and its latest status",
+        studentView.status === 200 && own?.status === "offer_received",
+        `${show(studentView)} — the student cannot see where their application stands`);
+
+      // And only their own: another student's application must not be in that answer.
+      const otherEmail = `${tag}.student2@example.invalid`;
+      const other = await call("POST", "/__auth", {
+        body: { action: "signup", email: otherEmail, password: PASSWORD, user_metadata: { first_name: "Other" } },
+      });
+      const otherToken = other.json?.session?.access_token || other.json?.session?.token;
+      if (otherToken) {
+        const otherView = await call("GET", "/__local_db?table=applications", { token: otherToken });
+        const otherRows = otherView.json?.rows || otherView.json || [];
+        const leaked = (Array.isArray(otherRows) ? otherRows : []).some((row) => String(row.id) === String(applicationId));
+        check("another student cannot see this application", !leaked, show(otherView));
+      }
+    }
   }
 }
 
