@@ -27,11 +27,36 @@ const hrItems = [
 export default function Layout() {
   const { user, signOut } = useAuth();
   const store = useStore();
-  const [hrOn, setHrOn] = useState(false);
+  // Three states, not two. "unknown" is a question that could not be asked - a cold start, a dropped
+  // request - and it used to be indistinguishable from "HR is off", which is why the three items
+  // appearing locally and not on the deployed site took an afternoon to explain. The items stay hidden
+  // either way, because the server would refuse the routes, but the reason is now said out loud.
+  const [hr, setHr] = useState<"unknown" | "on" | "off">("unknown");
   useEffect(() => {
-    api<{ hr: boolean }>("/telecaller/me/features").then((d) => setHrOn(Boolean(d.hr))).catch(() => setHrOn(false));
+    let alive = true;
+    const ask = async (attempt = 1): Promise<void> => {
+      try {
+        const data = await api<{ hr: boolean }>("/telecaller/me/features");
+        if (alive) setHr(data.hr ? "on" : "off");
+      } catch (error) {
+        // One retry: this runs on first paint, and a container waking up answers the first request badly.
+        if (attempt < 2) {
+          await new Promise((resolve) => { setTimeout(resolve, 1500); });
+          return ask(attempt + 1);
+        }
+        console.error(
+          "[telecaller] Could not read /api/telecaller/me/features, so Attendance, Leave and Salary stay hidden. " +
+            "This is NOT the same as HR being switched off: GET /api/version reports features.telecallerHr to settle which it is.",
+          error,
+        );
+        if (alive) setHr("unknown");
+      }
+      return undefined;
+    };
+    void ask();
+    return () => { alive = false; };
   }, []);
-  const me = hrOn ? [profileItem, ...hrItems] : [profileItem];
+  const me = hr === "on" ? [profileItem, ...hrItems] : [profileItem];
   const all = [...work, ...me];
   const open = store.leads.filter((lead) => !isConvertedStudent(lead)).length;
   // Same count as the per-student badges in Student Chat.

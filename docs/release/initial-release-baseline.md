@@ -503,6 +503,41 @@ admin action could stop it. `auth_sessions` already did this properly for studen
   refresh token: they keep working until that token expires, then sign in once more. Nothing to do,
   but worth saying before the deploy rather than after.
 
+## Telecaller HR missing after deploy: configuration, and a switch nobody could see (2026-11-10)
+
+Reported: Attendance, Leave and Salary appear in the telecaller sidebar on a local run and not on the
+deployed one.
+
+**Not a code defect.** The telecaller sidebar asks the server (`GET /api/telecaller/me/features`), and
+the server answers `false` unless it runs with `TELECALLER_HR_ENABLED=true`, or `HR_ENABLED=true`.
+Local has one of them set; the deployed environment has neither. The menu is behaving as rule 8 of the
+permission matrix says it should.
+
+**What was wrong is that this could not be seen.** Two states looked identical from a browser: "the
+server has HR switched off" and "the portal never managed to ask". The sidebar caught every failure and
+set the flag to false, so a cold start, a dropped request or an old build all presented as "HR is off".
+Fixed:
+
+- `GET /api/version` now reports `features: { hr, telecallerHr }`. Switch STATE only, no values and no
+  secrets, on the route that is already public for exactly this purpose. Checking a deployed host is
+  now one unauthenticated request instead of a sign-in and a guess.
+- `telecallerHrEnabled()` moved into `server/lib/hrSwitch.mjs` beside `hrEnabled()`, since the routes
+  and `/api/version` both answer this question and two copies could disagree.
+- The telecaller sidebar now holds three states, not two — `on`, `off`, `unknown` — retries once for a
+  cold start, and says in the console which of the two it hit, naming `/api/version` as the way to
+  settle it. The items stay hidden when unknown, because the server would refuse the routes anyway.
+
+Verified: 6 new assertions in `tests/hrSwitch.test.mjs` (the override truth table, `/api/version`
+reporting both switches and no secrets, and the sidebar not calling a failed request an answer);
+`tests/launchContract.test.mjs` rule 8 follows the switch to its new home. Checked at run time against a
+local server: `features.telecallerHr` is `false` with nothing set and `true` with
+`TELECALLER_HR_ENABLED=true`. 778/778 on PostgreSQL 16.15, typecheck and build clean.
+
+**To turn the three screens on for telecallers in a deployed environment:** set
+`TELECALLER_HR_ENABLED=true` on the server and restart. No rebuild is needed — that portal asks the
+server. The counselor and admin HR screens are hidden at BUILD time by `VITE_HR_ENABLED`, so those need
+a rebuild as well, and the server still needs `HR_ENABLED=true`.
+
 ## Business journey acceptance, Stream 2 (2026-11-09)
 
 `scripts/acceptance-journey.mjs` runs milestones 2.1 and 2.2 end to end against a deployed environment,

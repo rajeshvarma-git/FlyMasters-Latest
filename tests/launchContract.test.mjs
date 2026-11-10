@@ -203,7 +203,9 @@ test("rule 8: telecaller HR is gated too, and its switch is off unless HR_ENABLE
     'router.post("/api/telecaller/me/clock-out"', 'router.post("/api/telecaller/me/leave"',
   ]) assert.match(block(core, marker), /hrGate/, marker);
   // hrGate must not be open by default: with TELECALLER_HR_ENABLED unset it follows hrEnabled().
-  const gate = block(core, "const telecallerHrEnabled =");
+  // The switch itself lives in hrSwitch.mjs, beside hrEnabled, because /api/version reports it too and
+  // two copies of this rule could disagree.
+  const gate = block(read("server/lib/hrSwitch.mjs"), "export const telecallerHrEnabled =");
   assert.match(gate, /return hrEnabled\(\);/, "telecaller HR must fall back to the HR_ENABLED switch");
   assert.doesNotMatch(gate, /!==\s*"false"/, "telecaller HR must not default to on");
 });

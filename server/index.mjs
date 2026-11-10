@@ -25,6 +25,7 @@ import { migrate } from "./lib/migrate.mjs";
 import { preflight } from "./lib/preflight.mjs";
 import { alignAssignedLeadBranches } from "./lib/branches.mjs";
 import { pool } from "./lib/db.mjs";
+import { hrEnabled, telecallerHrEnabled } from "./lib/hrSwitch.mjs";
 import coreRoutes, { startUnassignedWatcher } from "./routes/core.mjs";
 import counselorRoutes from "./routes/counselor.mjs";
 import universityInfoRoutes from "./routes/universityInfo.mjs";
@@ -75,12 +76,23 @@ app.get("/api/health", async (_req, res) => {
  *
  * Open deliberately: confirming which commit a host serves is something anyone on the team needs to do
  * without an account, and for a public repository the commit is public anyway. It reports the commit,
- * the branch, the environment name and the schema version — nothing about configuration, and no secrets.
- * A null commit means the platform gave none, which is worth knowing rather than hiding.
+ * the branch, the environment name, the schema version and which feature switches are on — no values,
+ * no secrets. A null commit means the platform gave none, which is worth knowing rather than hiding.
+ *
+ * `features` is here because of a real afternoon lost to it: Attendance, Leave and Salary showed in the
+ * telecaller portal locally and not on the deployed one, and there was no way to tell from outside
+ * whether the server had HR switched off or the portal had failed to ask. Both switches are reported,
+ * so the question is now one unauthenticated request.
  */
 app.get("/api/version", async (_req, res) => {
   const build = resolveBuildInfo(process.env);
-  res.json({ service: "flymaster-platform", ...build, migrations: await appliedMigrations(pool), time: new Date().toISOString() });
+  res.json({
+    service: "flymaster-platform",
+    ...build,
+    migrations: await appliedMigrations(pool),
+    features: { hr: hrEnabled(), telecallerHr: telecallerHrEnabled() },
+    time: new Date().toISOString(),
+  });
 });
 
 // The student handler claims only its own /__ paths, so it can run first.

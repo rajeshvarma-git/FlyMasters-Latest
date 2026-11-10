@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import core from "../server/routes/core.mjs";
 import counselor from "../server/routes/counselor.mjs";
 import { pool } from "../server/lib/db.mjs";
-import { hrEnabled } from "../server/lib/hrSwitch.mjs";
+import { hrEnabled, telecallerHrEnabled } from "../server/lib/hrSwitch.mjs";
 
 const HR_ROUTES = [
   [core, "patch", "/api/leave/:id"],
@@ -85,4 +85,55 @@ test("the state payloads send no leave, attendance or salary rows while HR is of
   assert.match(counselorSrc, /leave: hrEnabled\(\) \? leave\.rows : \[\]/);
   assert.match(counselorSrc, /attendance: \(hrEnabled\(\) \? attendance\.rows : \[\]\)\.map/);
   assert.match(counselorSrc, /salary: \(hrEnabled\(\) \? salary\.rows : \[\]\)\.map/);
+});
+
+// ---- the telecaller override, and being able to see it from outside ----------------------------
+//
+// Attendance, Leave and Salary showed in the telecaller portal locally and not on the deployed one.
+// Nothing was broken: the deployed server simply had neither switch set. It took far too long to
+// establish that, because "the server has HR off" and "the portal never managed to ask" looked
+// identical from the browser. These pin both halves of the fix.
+
+test("telecallerHrEnabled follows HR_ENABLED, and the telecaller override wins either way", () => {
+  const wasHr = process.env.HR_ENABLED;
+  const wasOwn = process.env.TELECALLER_HR_ENABLED;
+  const set = (name, value) => { if (value === undefined) delete process.env[name]; else process.env[name] = value; };
+  try {
+    for (const [hr, own, expected] of [
+      [undefined, undefined, false],   // nothing set: off, which is the deployed default
+      ["true", undefined, true],       // follows the one switch
+      ["false", undefined, false],
+      [undefined, "true", true],       // on for telecallers alone
+      ["false", "true", true],
+      ["true", "false", false],        // off for telecallers even when HR is on
+      ["true", "", true],              // empty is "unset", not "false"
+      [undefined, "TRUE", true],       // same casing rule as hrEnabled
+    ]) {
+      set("HR_ENABLED", hr);
+      set("TELECALLER_HR_ENABLED", own);
+      assert.equal(telecallerHrEnabled(), expected, `HR_ENABLED=${hr} TELECALLER_HR_ENABLED=${own}`);
+    }
+  } finally {
+    set("HR_ENABLED", wasHr);
+    set("TELECALLER_HR_ENABLED", wasOwn);
+  }
+});
+
+test("/api/version reports both HR switches, so a deployed host can be checked without signing in", () => {
+  const src = readFileSync(new URL("../server/index.mjs", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const route = src.slice(src.indexOf('app.get("/api/version"'));
+  assert.ok(route, "/api/version is gone");
+  assert.match(route.slice(0, 600), /features:\s*\{\s*hr:\s*hrEnabled\(\),\s*telecallerHr:\s*telecallerHrEnabled\(\)/,
+    "/api/version no longer reports the HR switches: a deployment with HR off looks the same as a broken one");
+  // Switch STATE is public; switch values and secrets are not.
+  assert.doesNotMatch(route.slice(0, 600), /process\.env\.(JWT_SECRET|DATABASE_URL)/);
+});
+
+test("the telecaller sidebar hides HR until the server says on, and does not call a failed request an answer", () => {
+  const src = readFileSync(new URL("../src/portals/telecaller/screens/Layout.tsx", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  assert.match(src, /api<\{ hr: boolean \}>\("\/telecaller\/me\/features"\)/, "the sidebar no longer asks the server");
+  assert.match(src, /hr === "on" \? \[profileItem, \.\.\.hrItems\] : \[profileItem\]/, "the HR items are not gated on the server's answer");
+  assert.match(src, /"unknown" \| "on" \| "off"/, "a failed request is being treated as a definite 'off' again");
+  assert.match(src, /attempt < 2/, "the one retry for a cold start is gone");
+  assert.match(src, /console\.error\(/, "a failed features request is silent again");
 });

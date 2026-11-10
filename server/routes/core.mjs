@@ -35,7 +35,7 @@ import {
   WHATSAPP,
 } from "../lib/env.mjs";
 import { assignRole, setAccountBranches, createAccount, discardAccount, AccountWriteError } from "../lib/accountWrites.mjs";
-import { hrEnabled, hrOff } from "../lib/hrSwitch.mjs";
+import { hrEnabled, hrOff, telecallerHrEnabled } from "../lib/hrSwitch.mjs";
 import { decideAccountAction } from "../lib/accessPolicy.mjs";
 import { loadAccountTarget } from "../lib/accountTargets.mjs";
 import { allow, branchInScope, checkLeadInScope, checkRecipientInScope, checkStaffInScope, managerSeesConversation, requireGlobalScope, checkRowInScope, checkLeaveInScope, staffAuthId } from "../lib/scopeGuards.mjs";
@@ -2291,12 +2291,6 @@ router.post("/api/telecaller/notifications/read", telecallerAuth, markNotificati
 // counselor_attendance / leave / salary counselor_id to TEXT, so telecaller ids no longer fail in
 // PostgreSQL (22P02) once HR is switched on. TELECALLER_HR_ENABLED=true turns it on for telecallers
 // alone; =false keeps it off even when HR_ENABLED is true.
-const telecallerHrEnabled = () => {
-  const own = String(process.env.TELECALLER_HR_ENABLED || "").trim().toLowerCase();
-  if (own === "true") return true;
-  if (own === "false") return false;
-  return hrEnabled();
-};
 const hrGate = (_req, res, next) => (telecallerHrEnabled()
   ? next()
   : res.status(403).json({ error: "Attendance, leave and salary are not available for telecallers yet.", enabled: false }));
