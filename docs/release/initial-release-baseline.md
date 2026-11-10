@@ -419,16 +419,89 @@ checked for the emulator addresses: gone. 719/719 on PostgreSQL 16.15; typecheck
 
 ### Still open for M1.3, and needing a decision
 
-- **Token storage is not secure storage.** `localStorage` in a WebView is readable on a rooted or
-  jailbroken device, and the JWT lasts seven days with no server-side revocation. Options:
-  `@capacitor/preferences` with an encrypted store, or a shorter token with a refresh endpoint (there is
-  no refresh endpoint today). Not decided.
+- ~~**Token storage is not secure storage.**~~ **Decided and built (2026-11-10):** short access tokens
+  with refresh-token rotation, and the refresh token in encrypted storage where the platform offers it.
+  See the section below.
 - **The native projects still have to be generated** on a machine with Android Studio, and with Xcode
   and CocoaPods for iOS, then `npx cap sync` after each web build.
 - **Deep links and the hardware back button beyond the top level** are unhandled apart from
   `App.exitApp()` at the root.
 - Nothing has been run on a device or emulator. The authentication checks M1.3 asks for are the last
   step, after the above.
+
+## M1.3 token decision: short access tokens with refresh rotation (2026-11-10)
+
+The decision left open above, taken by the owner: **short-lived access tokens, refresh-token rotation,
+and encrypted storage for the refresh token.** What that is, as built:
+
+**Before.** One JWT per sign-in, `expiresIn: "7d"`, no server-side revocation of any kind. Signing out
+cleared the browser and nothing else, so a token copied off a device kept working for a week and no
+admin action could stop it. `auth_sessions` already did this properly for students; staff did not.
+
+**Now.**
+
+- `ACCESS_TOKEN_TTL` (default `15m`) in `server/lib/auth.mjs`. A copied access token is worth minutes.
+  The value is configurable because staging may want to watch one expire; it is not meant to be raised.
+- `server/lib/refreshTokens.mjs` + migration `010_refresh_tokens.sql`. A refresh token is 32 random
+  bytes, shown once, and stored only as its SHA-256, so a leaked database row is not a live session.
+  Each one is good for exactly ONE use and rotation issues the next in the same `family_id`.
+- **Reuse detection.** Presenting an already-used token means two parties hold it. There is no way to
+  tell the thief from the owner, so the whole family is revoked and both must sign in again. The
+  revocation is written outside the deciding transaction, or the throw would roll it back — found by
+  test, not by reading.
+- **Rotation is atomic.** The token is claimed and marked used in one `UPDATE ... RETURNING`, so two
+  requests arriving together cannot both succeed.
+- `POST /api/auth/refresh`, `POST /api/auth/signout`, `POST /api/auth/signout-everywhere`. The first two
+  are unauthenticated by design — the access token is exactly what the caller cannot present — and are
+  recorded as such in the known-public allowlist in `tests/routeMatrix.test.mjs` with the reason.
+  Sign-out answers `ok` for an unknown token rather than confirming whether one is real.
+- **A refresh is treated as a sign-in.** It re-resolves role, branches and enabled state from SQL
+  through `resolveAccountIdentity`, the same check `session` makes. An account suspended, demoted or
+  deleted since sign-in cannot refresh, and its family is revoked on the spot. A counselor token is
+  signed with the `counselor_users` id, so that path resolves back to the `auth_users` row by email and
+  judges that row — a leftover portal row is not an account.
+- **Client.** `src/shared/lib/authClient.ts` refreshes on 401 and retries the request once, and the
+  refresh is single-flight: ten requests failing together cause one refresh, not ten. Ten would end the
+  session, because rotation would read the extras as theft. All four staff portals (admin, counselor,
+  telecaller, partner) go through it, and sign-out now calls the server instead of only clearing the
+  browser.
+- **Storage.** `src/shared/lib/secureStore.ts` puts the refresh token in the iOS Keychain or Android
+  Keystore when a secure-storage plugin is present, falls back to native preferences, then to browser
+  storage. Plugins are looked up on `window.Capacitor.Plugins` at run time rather than imported, so a
+  native build that adds one picks it up with no code change and the web build is unaffected.
+  `refreshStoreKind()` reports which of the three is actually in use.
+
+### Verified (automated, this machine)
+
+- `tests/sessionExpiry.db.test.mjs` (4) — an expired token is refused 401 on every portal, through the
+  real middleware stack; a live short token passes; a token signed with another secret and one with an
+  edited `exp` are both refused.
+- `tests/refreshRotation.db.test.mjs` (11) — the raw token is never stored; tokens never repeat;
+  rotation keeps the family and spends the old token; a chain of rotations works; reuse revokes the
+  family and records why; one device's reuse does not touch another device; sign-out and sign-out-
+  everywhere revoke; an expired token is refused; unknown and empty tokens are refused without saying
+  which; housekeeping deletes only long-expired rows.
+- `tests/refreshRoutes.db.test.mjs` (10) — sign-in returns a short access token plus a refresh token;
+  the refresh token is opaque, not a JWT; refreshing returns a working token with the right role; the
+  refresh token is single-use and reuse ends the session; a made-up token gives 401 and not 500; after
+  sign-out the token no longer refreshes; signing out everywhere ends every device; **a suspended
+  account cannot refresh and keeps no usable token**; a deleted account cannot refresh.
+- `tests/authClient.test.ts` (11) — the retry-once behaviour, the single-flight refresh under ten
+  parallel 401s, a refused refresh clearing the session, a network failure NOT clearing it, no refresh
+  without a refresh token, no refresh on an unauthenticated request, sign-out online and offline, and
+  the storage choice for each platform (nothing claims encryption that has none).
+- Whole suite: **775/775 on PostgreSQL 16.15** (739 before this change), typecheck and build clean.
+
+### Still not verified, and what it needs
+
+- **On a device.** The Keychain/Keystore path cannot run here: no native project exists and no
+  secure-storage plugin is in `package.json`. On a device today the chosen store would be
+  `browser-storage`, which `refreshStoreKind()` reports honestly. Generating the native projects and
+  adding the plugin is a machine-with-Android-Studio task, and the sign-in / sign-out / protected-
+  navigation walkthrough M1.3 asks for comes after it.
+- **Existing sessions.** A staff member signed in before this deploys holds a seven-day token and no
+  refresh token: they keep working until that token expires, then sign in once more. Nothing to do,
+  but worth saying before the deploy rather than after.
 
 ## Business journey acceptance, Stream 2 (2026-11-09)
 
@@ -746,16 +819,19 @@ projects have to be generated first — see the M1.3 groundwork section.
 - Web first; shared backend for future Android/iOS.
 
 ## Migration and configuration prerequisites
-- Required migrations: `001` to `007` (`server/migrations/`). Applied once, tracked by file name in table `schema_migrations`.
-- Existing migration 008 upgrade condition: the baseline has no 008. 008 exists only on the 03C and telecaller branches, and was
+- Required migrations: `001` to `010` (`server/migrations/`). Applied once, tracked by file name in table `schema_migrations`.
+  `010_refresh_tokens.sql` (2026-11-10) adds `auth_refresh_tokens` for the M1.3 token decision above.
+- Existing migration 008 upgrade condition (historical, written at the baseline; `008` and `009` are on `main` now): the baseline has no 008. 008 exists only on the 03C and telecaller branches, and was
   edited after first commit (`d12ce47` created it, `de0f3ad` changed it). The runner tracks by file name, so an edited 008 is
-  never re-applied. If any database already applied the old 008, enabling 03C later needs a new migration (010 or later), not an edit of 008.
+  never re-applied. If any database already applied the old 008, enabling 03C later needs a new migration (`011` or later, since `010` is taken), not an edit of 008.
 - Required configuration names (values never recorded here):
   - `ADMIN_SCOPE_ENFORCED`: **must be `true`.** When off (default) Admin sees every branch, so the launch rule
     "Admin works only in assigned branches" is not enforced. Missing from `.env.example`.
   - `IDENTITY_STRICT`: rollout switch for strict role and branch checks. Decision needed before staging. Missing from `.env.example`.
   - `ADMIN_SIGNUP_CODE` unset and `ADMIN_SIGNUP_OPEN` not `true` in production, so public admin sign-up stays closed.
   - `TELECALLER_SIGNUP_CODE`, `COUNSELOR_SIGNUP_CODE`: decide whether self sign-up stays on.
+  - `ACCESS_TOKEN_TTL` (default `15m`) and `REFRESH_TOKEN_TTL_DAYS` (default `30`): leave at the defaults unless
+    there is a reason. Raising `ACCESS_TOKEN_TTL` gives back exactly the exposure the short token removes.
   - `JWT_SECRET`, `DATABASE_URL`, `ALLOWED_ORIGINS`, `PUBLIC_APP_URL`, `NODE_ENV`, email and WhatsApp settings (see `.env.example`).
 - Staging applied migrations: **UNVERIFIED.** Settle with `SELECT name FROM schema_migrations ORDER BY name;` on staging.
   Also record whether `ADMIN_SCOPE_ENFORCED` and `IDENTITY_STRICT` are set there.

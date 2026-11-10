@@ -1,5 +1,6 @@
 import { getToken, clearSession } from "@shared/lib/session";
 import { apiBase } from "@shared/lib/apiBase";
+import { fetchWithRefresh } from "@shared/lib/authClient";
 
 /** Partner portal API client. Same shared token as every other portal. */
 export async function api<T = unknown>(
@@ -10,7 +11,8 @@ export async function api<T = unknown>(
   const token = getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  const res = await fetch(`${apiBase()}/api/partner${path}`, {
+  // Refreshes once on 401 before giving up (shared/lib/authClient.ts).
+  const res = await fetchWithRefresh(`${apiBase()}/api/partner${path}`, {
     method: options.method || "GET",
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),

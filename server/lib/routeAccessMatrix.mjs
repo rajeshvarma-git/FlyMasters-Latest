@@ -143,7 +143,7 @@ export function classifyRoute(route) {
   if (DECISION_PREFIXES.some((p) => path.startsWith(p)) || /^\/api\/(university-catalog|university-programs|university-info)/.test(path) || path === "/api/branches/suggest-code" || path === "/api/config/statuses") {
     return { ...base, scope: "global-config", verdict: "ok", note: "reads shared configuration, not branch-owned data" };
   }
-  if (path.startsWith("/api/case/me") || key === "POST /api/comms/escalations" || key === "GET /api/comms/auto-response/resolve" || path.startsWith("/api/notifications/read") || path.startsWith("/api/alerts/") || path === "/api/me" || path.startsWith("/api/me/") || path.startsWith("/api/student/")) {
+  if (path.startsWith("/api/case/me") || key === "POST /api/comms/escalations" || key === "GET /api/comms/auto-response/resolve" || path.startsWith("/api/notifications/read") || path.startsWith("/api/alerts/") || path === "/api/me" || path.startsWith("/api/me/") || key === "POST /api/auth/signout-everywhere" || path.startsWith("/api/student/")) {
     return { ...base, scope: "own", verdict: "ok", note: "the caller's own records" };
   }
   return { ...base, scope: "branch", verdict: "needs-review", note: "admin-reachable and no scope check detected; read the handler and classify" };

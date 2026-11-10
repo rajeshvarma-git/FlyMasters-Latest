@@ -15,6 +15,7 @@ import { JWT_SECRET } from "./env.mjs";
 import { pool } from "./db.mjs";
 import { scopeFor } from "./accessScope.mjs";
 import { noteWarnings, resolveAccountIdentity } from "./accountIdentity.mjs";
+import { issueRefreshToken } from "./refreshTokens.mjs";
 
 export const ROLES = Object.freeze({
   SUPER_ADMIN: "super_admin",
@@ -49,12 +50,39 @@ export const BRANCH_SCOPED_ROLES = [
   ROLES.ACCOUNTANT,
 ];
 
-export function signUser(user) {
+/**
+ * How long an access token lives. Minutes, not days: it cannot be revoked, so its lifetime IS the
+ * window a copied token stays useful. A refresh token (server/lib/refreshTokens.mjs) issues the next
+ * one, and that one CAN be revoked.
+ *
+ * Overridable for staging and for tests that need to watch one expire. Kept well under an hour: the
+ * point of the change is lost if this is raised.
+ */
+export const ACCESS_TOKEN_TTL = String(process.env.ACCESS_TOKEN_TTL || "15m");
+
+export function signUser(user, { expiresIn = ACCESS_TOKEN_TTL } = {}) {
   return jwt.sign(
     { id: user.id, email: user.email, role: user.role, branch_id: user.branch_id || null },
     JWT_SECRET,
-    { expiresIn: "7d" },
+    { expiresIn },
   );
+}
+
+/**
+ * Everything a signed-in client needs: a short access token and the refresh token that will replace
+ * it. Every sign-in path returns this shape, so there is one place to change if the scheme changes.
+ *
+ * `expiresIn` is reported so the client can refresh BEFORE the access token dies rather than after a
+ * request has already failed.
+ */
+export async function issueSession(user, db = pool) {
+  const refresh = await issueRefreshToken(db, { userId: user.id });
+  return {
+    token: signUser(user),
+    expiresIn: ACCESS_TOKEN_TTL,
+    refreshToken: refresh.token,
+    refreshExpiresAt: refresh.expiresAt.toISOString(),
+  };
 }
 
 /**

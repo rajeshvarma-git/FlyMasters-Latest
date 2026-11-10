@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Route, Routes, NavLink, Navigate } from "react-router-dom";
 import { Handshake, Users, Receipt, LogOut } from "lucide-react";
 import { api, type PartnerProfile } from "@partner/lib/api";
-import { clearSession } from "@shared/lib/session";
+import { endSession } from "@shared/lib/session";
 import Referrals from "@partner/screens/Referrals";
 import Commissions from "@partner/screens/Commissions";
 
@@ -32,7 +32,7 @@ export default function App() {
           <p className="text-sm text-red-700">{error}</p>
           <button
             className="mt-4 rounded-xl bg-navy-900 px-4 py-2 text-sm text-white"
-            onClick={() => { clearSession(); window.location.href = "/staff"; }}
+            onClick={() => { void endSession().finally(() => { window.location.href = "/staff"; }); }}
           >
             Sign in again
           </button>
@@ -61,7 +61,7 @@ export default function App() {
             </p>
           </div>
           <button
-            onClick={() => { clearSession(); window.location.href = "/staff"; }}
+            onClick={() => { void endSession().finally(() => { window.location.href = "/staff"; }); }}
             className="flex items-center gap-1 text-sm text-slate-600 hover:text-navy-900"
           >
             <LogOut className="h-4 w-4" /> Sign out

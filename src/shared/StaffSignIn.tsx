@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { HOME_FOR_ROLE, setToken, setStoredUser, type PortalRole } from "./lib/session";
+import { HOME_FOR_ROLE, setSession, setStoredUser, type PortalRole } from "./lib/session";
 
 /**
  * One sign-in page for every staff role.
@@ -57,7 +57,7 @@ export default function StaffSignIn() {
         throw new Error("This account has no staff role assigned. Ask an admin.");
       }
 
-      setToken(data.token);
+      setSession(data);
       setStoredUser(data.user);
       window.location.href = home;
     } catch (err: any) {

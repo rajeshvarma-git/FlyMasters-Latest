@@ -8,11 +8,11 @@
 // for a while, and they would be signed out constantly. On a native platform the token goes to
 // localStorage, which survives that.
 //
-// NOTE, still open: localStorage in a WebView is not secure storage. The token is a JWT valid for
-// seven days with no server-side revocation, so on a rooted or jailbroken device it could be read.
-// Moving to @capacitor/preferences with an encrypted store, or shortening the token's life and adding
-// a refresh, is a decision for whoever signs off M1.3. It is not a reason to keep sessionStorage,
-// which simply does not work.
+// localStorage in a WebView is not secure storage, so what is kept here matters. It is now the ACCESS
+// token only, and that is fifteen minutes long (server/lib/auth.mjs): on a rooted or jailbroken device
+// a copied one is worth minutes rather than the seven days it used to be. The refresh token, which is
+// the long-lived credential, is NOT kept here - it goes to the platform's best store, the Keychain or
+// Keystore where a plugin is present (shared/lib/secureStore.ts).
 import { isNative } from "./native";
 
 /** The pure rule, testable without a device: which Storage a platform should use. */

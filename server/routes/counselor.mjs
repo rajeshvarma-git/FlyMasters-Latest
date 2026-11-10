@@ -34,7 +34,7 @@ import {
   COUNSELOR_SIGNUP_CODE,
   EMAIL_VERIFICATION_EXPIRY_MINUTES,
 } from "../lib/env.mjs";
-import { ROLES, signUser, session, requireRole, branchScope, audit, counselorAuth } from "../lib/auth.mjs";
+import { ROLES, issueSession, session, requireRole, branchScope, audit, counselorAuth } from "../lib/auth.mjs";
 
 async function roleForAuthUser(userId) {
   const result = await pool.query("SELECT role FROM user_roles WHERE user_id = $1", [String(userId)]);
@@ -933,7 +933,7 @@ router.post("/api/counselor/auth/signup", async (req, res) => {
       }
       const row = await ensurePortalUserFromAuth(authRow, password);
       await publishCounselorAccount(row, password);
-      return res.json({ token: signUser(row), user: publicUser(row) });
+      return res.json({ ...(await issueSession(row)), user: publicUser(row) });
     }
 
     // Counselor accounts are created by an admin (Admin > Users). This page signs in a counselor

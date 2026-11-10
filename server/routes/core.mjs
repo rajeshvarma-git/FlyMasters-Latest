@@ -40,6 +40,7 @@ import { decideAccountAction } from "../lib/accessPolicy.mjs";
 import { loadAccountTarget } from "../lib/accountTargets.mjs";
 import { allow, branchInScope, checkLeadInScope, checkRecipientInScope, checkStaffInScope, managerSeesConversation, requireGlobalScope, checkRowInScope, checkLeaveInScope, staffAuthId } from "../lib/scopeGuards.mjs";
 import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
+import { rotateRefreshToken, revokeFamily, revokeAllForUser, RefreshRejected } from "../lib/refreshTokens.mjs";
 import { branchExists, listBranches, allocateBranchCode, suggestBranchCode } from "../lib/branches.mjs";
 import {
   allocateReferralCode,
@@ -57,7 +58,9 @@ import {
   BRANCH_ADMIN_ROLES,
   BRANCH_SCOPED_ROLES,
   STAFF_ROLES,
+  ACCESS_TOKEN_TTL,
   signUser,
+  issueSession,
   session,
   requireRole,
   branchScope,
@@ -1705,7 +1708,7 @@ router.post("/api/auth/signup", async (req, res) => {
       throw error;
     }
     const user = publicUser({ id, email, first_name: firstName, last_name: lastName, phone }, "admin");
-    res.json({ token: signUser(user), user });
+    res.json({ ...(await issueSession(user)), user });
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not create account" });
   }
@@ -1765,7 +1768,7 @@ router.post("/api/auth/telecaller-signup", async (req, res) => {
       await notify(admin.id, "New telecaller registered", `${firstName} ${lastName} created a telecaller account. Assign a branch so they can start.`, "info", "/admin/telecallers");
     }
     const user = publicUser({ id, email, first_name: firstName, last_name: lastName, phone }, "telecaller");
-    res.json({ token: signUser(user), user });
+    res.json({ ...(await issueSession(user)), user });
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not create account" });
   }
@@ -1822,9 +1825,131 @@ router.post("/api/auth/signin", async (req, res) => {
     const profiles = await jsonTable("profiles");
     const profile = profiles.find((item) => String(item.user_id) === String(row.id));
     const user = publicUser({ ...row, first_name: profile?.first_name, last_name: profile?.last_name, phone: profile?.phone }, role);
-    res.json({ token: signUser(user), user });
+    res.json({ ...(await issueSession(user)), user });
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not sign in" });
+  }
+});
+
+/**
+ * Rebuilds the account behind a refresh token, with the same checks sign-in makes.
+ *
+ * A refresh is a new sign-in in everything but the password, so an account that has been disabled,
+ * demoted or moved since the last one must not get a token carrying the old answer.
+ */
+async function accountForRefresh(userId) {
+  const found = await pool.query("SELECT * FROM auth_users WHERE id::text = $1", [String(userId)]);
+  const row = found.rows[0];
+  if (row) {
+    const access = await resolveAccountIdentity(pool, row.id);
+    if (!access.ok) {
+      return {
+        ok: false,
+        status: access.status,
+        code: access.code,
+        error: access.code === "ACCOUNT_DISABLED" ? "This account is disabled. Ask an admin." : access.error,
+      };
+    }
+    noteWarnings(access.identity);
+    const profiles = await jsonTable("profiles");
+    const profile = profiles.find((item) => String(item.user_id) === String(row.id));
+    return {
+      ok: true,
+      user: publicUser(
+        { ...row, first_name: profile?.first_name, last_name: profile?.last_name, phone: profile?.phone },
+        access.identity.role,
+      ),
+    };
+  }
+  // A counselor token is signed with the counselor_users id, which can differ from the auth_users id.
+  // The account is still the auth_users row, so match on email and judge that row: a counselor whose
+  // login has been deleted or disabled must not refresh on the strength of a leftover portal row.
+  const counselor = await pool.query("SELECT * FROM counselor_users WHERE id::text = $1", [String(userId)]);
+  const email = counselor.rows[0]?.email;
+  if (email) {
+    const linked = await pool.query("SELECT * FROM auth_users WHERE lower(email) = lower($1)", [String(email)]);
+    if (linked.rows[0]) {
+      const access = await resolveAccountIdentity(pool, linked.rows[0].id);
+      if (!access.ok) {
+        return {
+          ok: false,
+          status: access.status,
+          code: access.code,
+          error: access.code === "ACCOUNT_DISABLED" ? "This account is disabled. Ask an admin." : access.error,
+        };
+      }
+      noteWarnings(access.identity);
+      return { ok: true, user: { ...publicUser(counselor.rows[0], access.identity.role), id: String(userId) } };
+    }
+  }
+  return { ok: false, status: 401, code: "ACCOUNT_MISSING", error: "That account no longer exists. Sign in again." };
+}
+
+/**
+ * Exchanges a refresh token for a new access token and the next refresh token.
+ *
+ * Unauthenticated on purpose: the expired access token is exactly what the caller cannot present.
+ * The refresh token is the credential, it is single-use, and reuse ends the whole sign-in.
+ */
+router.post("/api/auth/refresh", async (req, res) => {
+  let rotated;
+  try {
+    rotated = await rotateRefreshToken(pool, req.body?.refreshToken);
+  } catch (error) {
+    if (error instanceof RefreshRejected) return res.status(error.status).json({ error: error.message, code: error.code });
+    return res.status(500).json({ error: "Could not refresh the session" });
+  }
+  try {
+    const account = await accountForRefresh(rotated.userId);
+    if (!account.ok) {
+      // The rotation already minted the next token. An account that may no longer sign in must not
+      // keep one, so the sign-in ends here rather than at the next refresh.
+      await revokeFamily(pool, rotated.familyId, account.code === "ACCOUNT_DISABLED" ? "account disabled" : "account unavailable");
+      return res.status(account.status).json({ error: account.error, code: account.code });
+    }
+    res.json({
+      token: signUser(account.user),
+      expiresIn: ACCESS_TOKEN_TTL,
+      refreshToken: rotated.token,
+      refreshExpiresAt: rotated.expiresAt.toISOString(),
+      user: account.user,
+    });
+  } catch (error) {
+    await revokeFamily(pool, rotated.familyId, "refresh failed").catch(() => {});
+    res.status(500).json({ error: error.message || "Could not refresh the session" });
+  }
+});
+
+/**
+ * Ends a sign-in. Unauthenticated for the same reason as refresh: signing out must work when the
+ * access token has already expired, and presenting a refresh token is itself the proof of holding it.
+ *
+ * This is what makes sign-out mean something. The access token still runs out its few minutes - that
+ * is the price of a stateless token - but nothing will issue another.
+ */
+router.post("/api/auth/signout", async (req, res) => {
+  const presented = String(req.body?.refreshToken || "");
+  if (!presented) return res.json({ ok: true });
+  try {
+    const { rows } = await pool.query(
+      "SELECT family_id FROM auth_refresh_tokens WHERE token_hash = encode(sha256($1::bytea), 'hex')",
+      [presented],
+    );
+    // Unknown tokens answer ok as well: sign-out is not a place to confirm whether a token is real.
+    if (rows[0]) await revokeFamily(pool, rows[0].family_id, "signed out");
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not sign out" });
+  }
+});
+
+/** Signs the current user out of every device, for a lost or stolen laptop. */
+router.post("/api/auth/signout-everywhere", session, async (req, res) => {
+  try {
+    const revoked = await revokeAllForUser(pool, req.user.id, "signed out everywhere");
+    res.json({ ok: true, sessionsEnded: revoked });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not sign out" });
   }
 });
 

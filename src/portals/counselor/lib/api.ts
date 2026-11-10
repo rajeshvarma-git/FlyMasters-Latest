@@ -1,24 +1,33 @@
 import { apiBase } from "@shared/lib/apiBase";
-const TOKEN_KEY = "fm_token";  // unified across portals
+import { readToken, writeToken } from "@shared/lib/tokenStore";
+import { clearTokens, fetchWithRefresh, getAccessToken, saveTokens, signOut } from "@shared/lib/authClient";
+
 const USER_KEY = "fm_user";    // unified across portals
 
+// Storage goes through the shared helpers: sessionStorage is emptied whenever the operating system
+// reclaims a native WebView, and the refresh token belongs in the platform's best store
+// (shared/lib/tokenStore.ts, shared/lib/secureStore.ts).
 export function getToken() {
-  return sessionStorage.getItem(TOKEN_KEY) || "";
+  return getAccessToken();
 }
 
-export function setAuth(token: string, user: unknown) {
-  sessionStorage.setItem(TOKEN_KEY, token);
-  sessionStorage.setItem(USER_KEY, JSON.stringify(user));
+export function setAuth(token: string, user: unknown, refreshToken?: string | null) {
+  saveTokens({ token, refreshToken });
+  writeToken(USER_KEY, JSON.stringify(user));
 }
 
 export function clearAuth() {
-  sessionStorage.removeItem(TOKEN_KEY);
-  sessionStorage.removeItem(USER_KEY);
+  clearTokens();
+}
+
+/** Signs out on the server as well, so the refresh token cannot be used again. */
+export async function endSession() {
+  await signOut();
 }
 
 export function readStoredUser<T>() {
   try {
-    return JSON.parse(sessionStorage.getItem(USER_KEY) || "null") as T | null;
+    return JSON.parse(readToken(USER_KEY) || "null") as T | null;
   } catch {
     return null;
   }
@@ -44,7 +53,8 @@ export async function api<T = unknown>(path: string, options: { method?: string;
     // they never had counselor-specific copies, unlike everything else here.
     const isShared = path.startsWith("/auth/signin") || path.startsWith("/whatsapp") || path.startsWith("/alerts");
     const url = isShared ? `${apiBase()}/api${path}` : `${apiBase()}/api/counselor${path}`;
-    res = await fetch(url, {
+    // Refreshes once on 401 before giving up (shared/lib/authClient.ts).
+    res = await fetchWithRefresh(url, {
       method: options.method || "GET",
       headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),

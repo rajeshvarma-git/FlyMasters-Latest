@@ -59,7 +59,9 @@ let cached: string | null = null;
 export function apiBase(): string {
   if (cached === null) {
     cached = resolveApiBase(
-      import.meta.env as unknown as Record<string, string | undefined>,
+      // `|| {}` because there is no import.meta.env outside a Vite build, and the tests run this file
+      // directly under node.
+      (import.meta.env || {}) as unknown as Record<string, string | undefined>,
       isNative(),
       (message) => console.error(message),
     );

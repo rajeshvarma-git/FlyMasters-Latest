@@ -11,6 +11,7 @@
  */
 import { HR_ENABLED } from "./features";
 import { readToken, writeToken } from "./tokenStore";
+import { clearTokens, saveTokens, setRefreshToken, signOut } from "./authClient";
 
 const TOKEN_KEY = "fm_token";
 const USER_KEY = "fm_user";
@@ -47,6 +48,16 @@ export function setToken(token: string | null) {
   safeSet(TOKEN_KEY, token);
 }
 
+/**
+ * Stores a whole sign-in response: the short access token and the refresh token that will replace it.
+ * Prefer this over setToken, which leaves a session that dies in fifteen minutes.
+ */
+export function setSession(data: { token: string; refreshToken?: string | null }) {
+  saveTokens(data);
+}
+
+export { setRefreshToken };
+
 export function getStoredUser<T = unknown>(): T | null {
   const raw = safeGet(USER_KEY);
   if (!raw) return null;
@@ -62,7 +73,13 @@ export function setStoredUser(user: unknown | null) {
 }
 
 export function clearSession() {
-  setToken(null);
+  clearTokens();
+  setStoredUser(null);
+}
+
+/** Ends the session on the server too, so the refresh token cannot be used again. */
+export async function endSession() {
+  await signOut();
   setStoredUser(null);
 }
 

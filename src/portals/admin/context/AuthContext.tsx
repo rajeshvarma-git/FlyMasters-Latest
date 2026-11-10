@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { AppUser } from "@admin/lib/types";
-import { api, clearAuth, readStoredUser, setAuth } from "@admin/lib/api";
+import { api, endSession, readStoredUser, setAuth } from "@admin/lib/api";
 import { refreshStore } from "@admin/lib/store";
 
 interface AuthValue {
@@ -54,28 +54,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       loading,
       signIn: async (email, password) => {
-        const data = await api<{ token: string; user: AppUser }>("/auth/signin", {
+        const data = await api<{ token: string; refreshToken?: string | null; user: AppUser }>("/auth/signin", {
           method: "POST",
           auth: false,
           body: { email, password },
         });
-        setAuth(data.token, data.user);
+        setAuth(data.token, data.user, data.refreshToken);
         setUser(data.user);
         await refreshStore();
       },
       signUp: async (input) => {
         if (input.password.length < 6) throw new Error("Password must be at least 6 characters");
-        const data = await api<{ token: string; user: AppUser }>("/auth/signup", {
+        const data = await api<{ token: string; refreshToken?: string | null; user: AppUser }>("/auth/signup", {
           method: "POST",
           auth: false,
           body: input,
         });
-        setAuth(data.token, data.user);
+        setAuth(data.token, data.user, data.refreshToken);
         setUser(data.user);
         await refreshStore();
       },
       signOut: async (redirect = true) => {
-        clearAuth();
+        // Ends the session on the server first: clearing the browser alone used to leave a token that
+        // kept working for a week.
+        await endSession();
         setUser(null);
         if (redirect) window.location.href = "/";
       },

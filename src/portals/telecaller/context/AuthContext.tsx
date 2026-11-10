@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { AppUser } from "@telecaller/lib/types";
-import { api, clearAuth, readStoredUser, setAuth } from "@telecaller/lib/api";
+import { api, clearAuth, endSession, readStoredUser, setAuth } from "@telecaller/lib/api";
 import { clearStore, refreshStore } from "@telecaller/lib/store";
 
 interface SignUpInput {
@@ -17,7 +17,7 @@ interface AuthValue {
   loading: boolean;
   signIn: (email: string, password: string) => Promise<void>;
   signUp: (input: SignUpInput) => Promise<void>;
-  signOut: () => void;
+  signOut: () => void | Promise<void>;
 }
 
 const AuthContext = createContext<AuthValue | null>(null);
@@ -56,29 +56,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       loading,
       signIn: async (email, password) => {
-        const data = await api<{ token: string; user: AppUser }>("/auth/signin", {
+        const data = await api<{ token: string; refreshToken?: string | null; user: AppUser }>("/auth/signin", {
           method: "POST",
           auth: false,
           body: { email, password },
         });
         // The API lets admins sign in too. This site does not.
         if (data.user.role !== "telecaller") throw new Error(WRONG_PORTAL);
-        setAuth(data.token, data.user);
+        setAuth(data.token, data.user, data.refreshToken);
         setUser(data.user);
         await refreshStore();
       },
       signUp: async ({ email, password, firstName, lastName, phone, code }) => {
-        const data = await api<{ token: string; user: AppUser }>("/auth/telecaller-signup", {
+        const data = await api<{ token: string; refreshToken?: string | null; user: AppUser }>("/auth/telecaller-signup", {
           method: "POST",
           auth: false,
           body: { email, password, firstName, lastName, phone, code },
         });
-        setAuth(data.token, data.user);
+        setAuth(data.token, data.user, data.refreshToken);
         setUser(data.user);
         await refreshStore();
       },
-      signOut: () => {
-        clearAuth();
+      signOut: async () => {
+        // Ends the session on the server first, not just in this browser.
+        await endSession();
         clearStore();
         setUser(null);
       },

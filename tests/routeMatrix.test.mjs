@@ -71,6 +71,12 @@ test("routes reachable without sign-in are exactly the known public ones", () =>
     // public anyway. It reports the commit, branch, environment name and schema version only.
     "GET /__auth", "GET /__public_media", "GET /api/health", "GET /api/health", "GET /api/referral/:code",
     "GET /api/version",
+    // Refresh and sign-out are open because the access token is exactly what the caller cannot
+    // present: refresh is called BECAUSE it expired, and sign-out has to work after it has. The
+    // refresh token is the credential in both, it is single-use, and reuse revokes the whole sign-in
+    // (milestone 1.3, tests/refreshRotation.db.test.mjs). Sign-out answers ok for an unknown token
+    // rather than confirming whether one is real.
+    "POST /api/auth/refresh", "POST /api/auth/signout",
     "POST /__auth", "POST /api/auth/signin", "POST /api/auth/signup", "POST /api/auth/telecaller-signup",
     "POST /api/counselor/auth/send-verification-code", "POST /api/counselor/auth/signup",
   ].sort());
