@@ -33,6 +33,31 @@ export function readStoredUser<T>() {
   }
 }
 
+/**
+ * Endpoints the counselor portal must NOT prefix with /api/counselor.
+ *
+ * Counselor endpoints moved under /api/counselor/* in the merge so they no longer shadow the shared
+ * routes, and prefixing became the default. But some screens here are SHARED with the admin portal and
+ * call the shared routes through a `fetchJson` prop — shared/components/StudentChecklistPanel.tsx is
+ * one — so prefixing their calls turns a working endpoint into "API route not found" on the screen.
+ *
+ * Mind the singular and the plural: /students/:id/checklist and /students/:id/document-requests ARE
+ * counselor routes and keep the prefix; /students/:id/checklists and /students/:id/progress are the
+ * shared ones (server/routes/config.mjs) and must not be prefixed. Each entry is anchored and exact
+ * for that reason.
+ */
+const SHARED_PATHS = [
+  /^\/auth\/signin\b/,
+  /^\/whatsapp\b/,
+  /^\/alerts\b/,
+  /^\/config\//,
+  /^\/students\/[^/]+\/checklists(\?|$)/,
+  /^\/students\/[^/]+\/progress(\?|$)/,
+];
+
+/** Exported for the test that pins which paths are shared; the two are easy to confuse by eye. */
+export const isSharedPath = (path: string): boolean => SHARED_PATHS.some((shared) => shared.test(path));
+
 export async function api<T = unknown>(path: string, options: { method?: string; body?: unknown; auth?: boolean } = {}) {
   // LOCAL PREVIEW ONLY: dev server + VITE_COUNSELOR_PREVIEW=true. Compiled out of
   // production builds. Delete this block and lib/previewMode.ts to remove it.
@@ -47,12 +72,7 @@ export async function api<T = unknown>(path: string, options: { method?: string;
   }
   let res: Response;
   try {
-    // Counselor endpoints moved under /api/counselor/* in the merge so they no
-    // longer shadow the shared routes. Sign-in and WhatsApp are shared across
-    // portals (server/routes/core.mjs's /api/whatsapp/*) and stayed there —
-    // they never had counselor-specific copies, unlike everything else here.
-    const isShared = path.startsWith("/auth/signin") || path.startsWith("/whatsapp") || path.startsWith("/alerts");
-    const url = isShared ? `${apiBase()}/api${path}` : `${apiBase()}/api/counselor${path}`;
+    const url = isSharedPath(path) ? `${apiBase()}/api${path}` : `${apiBase()}/api/counselor${path}`;
     // Refreshes once on 401 before giving up (shared/lib/authClient.ts).
     res = await fetchWithRefresh(url, {
       method: options.method || "GET",

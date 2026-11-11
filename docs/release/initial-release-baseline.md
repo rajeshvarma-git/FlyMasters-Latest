@@ -538,6 +538,58 @@ local server: `features.telecallerHr` is `false` with nothing set and `true` wit
 server. The counselor and admin HR screens are hidden at BUILD time by `VITE_HR_ENABLED`, so those need
 a rebuild as well, and the server still needs `HR_ENABLED=true`.
 
+## The three release journeys, driven through a browser (2026-11-11)
+
+The 19-step acceptance checklist for milestone 3.3 is now a command rather than an afternoon:
+`scripts/acceptance-walkthrough.mjs` signs in as each role in its own browser context - which is what
+the checklist means by separate browser profiles - carries out every step through the real screens, and
+prints the report in the shape the checklist asks for, Pass / Fail / Blocked per step. Fail means the
+product did the wrong thing; Blocked means a control was not there to use. The two never merge.
+
+    npx playwright install chromium
+    $env:SUPER_PASSWORD = "<the Super Admin password>"
+    node scripts/acceptance-walkthrough.mjs --url <staging url> --super <super admin email>
+
+Run against a local server on this commit, with its own database, PostgreSQL 16.15:
+
+    Journey 1: 1.1 Pass, 1.2 Pass, 1.3 Pass, 1.4 Pass, 1.5 Pass, 1.6 Pass        PASSED (6/6)
+    Journey 2: 2.1 Pass, 2.2 Pass, 2.3 Pass, 2.4 Pass, 2.5 Pass, 2.6 Pass        PASSED (6/6)
+    Journey 3: 3.1 Pass, 3.2 Pass, 3.3 Pass, 3.4 Pass, 3.5 Pass, 3.6 Pass, 3.7 Pass   PASSED (7/7)
+    Failed/blocked step: none
+
+**This is not the release sign-off.** It is the same check, run somewhere that is not staging. Step 7
+stays pending until it passes on the deployed environment, on the commit being released.
+
+### What the run established about the product, beyond pass or fail
+
+- **An Admin cannot be created directly.** The create form offers no Admin role: a Super Admin creates
+  the account as a Branch Head and then changes its role. 1.1 does exactly that and says so.
+- **The handoff in Journey 2 is two moves, not one.** The telecaller converts the qualified lead, and
+  only then can an Admin give it a counselor: the assign screen lists converted students waiting for a
+  counselor and nothing else. `bulk-assign` silently skips anything unconverted - it answers `ok` with
+  `count: 0` - so an assignment that looks accepted can do nothing. 2.3 checks the count, not the status.
+- **Nothing in any portal changes a lead's branch.** `POST /api/leads/:id/branch` exists and works;
+  no screen calls it. 2.5 therefore goes through the API as Super Admin and records that in its result
+  rather than quietly passing. Worth a decision before release: either a control, or a documented
+  support action.
+- **Someone who signs up on the student portal arrives as a lead with no branch**, not as a student,
+  and branch-scoped staff cannot see a record that belongs to no branch. Journey 3's prerequisite puts
+  Student A through the same road as any other student - branch, telecaller, convert, assign - because
+  setting it up any other way would prove something the product does not do.
+- **A counselor's checklist panel was calling routes that do not exist.** `/config/reasons`,
+  `/students/:id/checklists` and `/students/:id/progress` are shared routes, but the counselor portal
+  prefixes everything with `/api/counselor` by default, so those three returned "API route not found"
+  on the screen. Fixed in `src/portals/counselor/lib/api.ts`, with `tests/counselorApiPrefix.test.ts`
+  checking the shared list against the routes the server actually registers - the singular
+  `/checklist` and `/document-requests` ARE counselor routes and must keep the prefix, which is exactly
+  the confusion that caused it.
+
+### What the walkthrough does not cover
+
+Step 2.5 goes through the API, as above. Everything else is driven through the screens. The run needs a
+Super Admin to start from (`scripts/bootstrap-super-admin.mjs` on a clean database) and two branches
+named by `--branch-a` and `--branch-b`.
+
 ## Business journey acceptance, Stream 2 (2026-11-09)
 
 `scripts/acceptance-journey.mjs` runs milestones 2.1 and 2.2 end to end against a deployed environment,
