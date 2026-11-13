@@ -301,6 +301,9 @@ await step("1.6", "after signing out, a protected Telecaller URL asks for a logi
   const page = state.telePage;
   await page.goto(`${BASE}/telecaller/queue`, { waitUntil: "domcontentloaded" });
   await settle(page);
+  // Taken before signing out, because signing out clears it from the browser. This is the token
+  // somebody could already have copied.
+  const beforeSignOut = await page.evaluate(() => sessionStorage.getItem("fm_token") || localStorage.getItem("fm_token") || "");
   await clickText(page, /sign out/i);
   await settle(page, 1500);
   await page.goto(`${BASE}/telecaller/queue`, { waitUntil: "domcontentloaded" });
@@ -312,7 +315,19 @@ await step("1.6", "after signing out, a protected Telecaller URL asks for a logi
     throw new Fail(`the queue opened after signing out (${path})`);
   }
   if (/qa lead|queue/i.test(body) && !/sign in/i.test(body)) throw new Fail("protected content rendered after signing out");
-  return `sent to ${path} and asked to sign in`;
+
+  // The honest part. Signing out revokes the refresh token at once, so no new access token can be
+  // issued - but the access token already in hand is a signed JWT and stays valid until it expires,
+  // by design (ACCESS_TOKEN_TTL, 15 minutes). A copied token therefore outlives the sign-out by up to
+  // that long. Reported rather than asserted either way, because it is a decision, not a defect.
+  const copied = await page.evaluate(async (token) => {
+    const res = await fetch("/api/telecaller/state", { headers: { Authorization: `Bearer ${token}` } });
+    return { status: res.status };
+  }, beforeSignOut);
+  const window = copied.status < 400
+    ? `a token copied before sign-out still answers for up to ACCESS_TOKEN_TTL (15m); the refresh token is revoked, so nothing renews it`
+    : `and a token copied before sign-out is already refused`;
+  return `sent to ${path} and asked to sign in - ${window}`;
 });
 
 // ---- prerequisites the checklist names, done as a person would ---------------------------------
@@ -559,14 +574,27 @@ await step("2.6", "Counselor A's open session loses the lead once it leaves thei
   const page = state.counselorPage;
   const direct = await asStaff(page, `/api/counselor/leads/${state.leadId}`);
   if (direct.status < 400) throw new Fail(`the counselor can still read the lead after it moved branch: ${direct.status}`);
-  await page.goto(`${BASE}/counselor/leads`, { waitUntil: "domcontentloaded" });
-  await settle(page, 1600);
-  const body = await textOf(page.locator("main").first());
-  if (body.includes(`Lead A ${STAMP}`)) {
-    await shot(page, "2.6-still-visible");
-    throw new Fail("the lead is still listed for a counselor whose branch no longer holds it");
+
+  // Check back on every screen that showed it in 2.4, not just one: a record that disappears from the
+  // leads list while still sitting on the students list has not gone anywhere. The counselor portal
+  // has no per-lead URL to reopen - there is no /counselor/leads/:id route - so these screens, plus
+  // the direct read above, are the whole of what "reopen it" can mean here.
+  const stillOn = [];
+  for (const path of ["/counselor/students", "/counselor/leads"]) {
+    await page.goto(`${BASE}${path}`, { waitUntil: "domcontentloaded" });
+    await settle(page, 1600);
+    const body = await textOf(page.locator("main").first());
+    if (body.includes(`Lead A ${STAMP}`)) stillOn.push(path);
   }
-  return `refused with ${direct.status}, and the lead is gone from their list`;
+  if (stillOn.length) {
+    await shot(page, "2.6-still-visible");
+    throw new Fail(`the record is still listed on ${stillOn.join(" and ")} for a counselor whose branch no longer holds it`);
+  }
+  const everywhere = await asStaff(page, "/api/counselor/state");
+  const leaked = [...(everywhere.body?.students || []), ...(everywhere.body?.leads || [])]
+    .find((row) => String(row.id) === String(state.leadId));
+  if (leaked) throw new Fail("the counselor's own data still carries the record after it changed branch");
+  return `refused with ${direct.status}; gone from both their students and leads screens, and from their data`;
 });
 
 // ================================================================================================
@@ -653,7 +681,9 @@ await step("3.3", "an uploaded PDF persists and shows as waiting for review", as
   const page = state.studentAPage;
   if (!page) throw new Blocked("Student A was never registered");
   const pdf = join(SHOTS, "qa-dummy.pdf");
-  writeFileSync(pdf, "%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n");
+  // Stamped, so 3.4 can prove the counselor is served THIS file and not merely a file.
+  state.uploadedBytes = `%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\ntrailer<</Root 1 0 R>>\n% ${STAMP}\n%%EOF\n`;
+  writeFileSync(pdf, state.uploadedBytes);
   const input = page.locator('input[type="file"]').first();
   await input.setInputFiles(pdf);
   await settle(page, 3000);
@@ -688,7 +718,13 @@ await step("3.4", "Counselor A opens the file and rejects it with a reason", asy
   if (complaint) throw new Fail(`opening the file failed: ${complaint}`);
   const file = await asStaff(page, `/api/counselor/documents/${state.docId}/file`);
   if (file.status >= 400) throw new Fail(`the counselor cannot open the file they must judge: ${file.status}`);
-  if (!String(file.body?.dataUrl || "").startsWith("data:")) throw new Fail("the file opened with no content");
+  const dataUrl = String(file.body?.dataUrl || "");
+  if (!dataUrl.startsWith("data:")) throw new Fail("the file opened with no content");
+  // "Correct file" means Student A's bytes. A data URL that merely exists could be anyone's.
+  const served = Buffer.from(dataUrl.slice(dataUrl.indexOf(",") + 1), "base64").toString("utf8");
+  if (served !== state.uploadedBytes) {
+    throw new Fail(`the file served is not the one Student A uploaded (${served.length} bytes vs ${String(state.uploadedBytes).length})`);
+  }
   const REASON = `QA rejection reason ${STAMP}`;
   const note = page.locator("textarea").last();
   if (!(await note.count())) throw new Blocked("the review panel has nowhere to write a reason");
