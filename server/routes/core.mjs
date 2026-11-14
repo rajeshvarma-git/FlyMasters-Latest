@@ -807,7 +807,13 @@ async function loadUsers() {
       role,
       branch_id: homeBranch,
       branch_ids: branchIds,
-      is_active: profile?.is_active !== false,
+      // TWO flags disable an account, written by different paths: suspension writes
+      // user_roles.is_active (the one resolveAccountIdentity honours when it refuses a sign-in), and
+      // the telecaller removal path writes profiles.is_active. This read used to look only at the
+      // profile, so a suspended employee appeared perfectly active in the staff list - the one screen
+      // that should show it was reading the wrong flag. Either flag being false means somebody
+      // disabled this person, so neither is ignored.
+      is_active: (roleRow ? roleRow.is_active !== false : true) && profile?.is_active !== false,
       created_at: user.created_at,
     };
   });
@@ -3015,15 +3021,31 @@ router.post("/api/leads/bulk-assign", auth, async (req, res) => {
   let count = 0;
   let skippedBranch = 0;
   let skippedScope = 0;
+  // Every skip is named. This route used to answer {ok:true, count:0} when it had assigned nobody -
+  // an unconverted lead was dropped by a bare `continue` - so a caller was told the assignment had
+  // happened when it had not, and nothing said conversion was the reason.
+  const skipped = [];
   for (const id of ids) {
     const jsonLeads = await jsonTable("student_leads");
     const lead = jsonLeads.find((row) => String(row.id) === id);
-    if (!lead) continue;
+    if (!lead) { skipped.push({ id, reason: "no_such_lead", message: "That record no longer exists." }); continue; }
     const converted = lead.entity_type === "student" || lead.lead_status === "converted";
-    if (!converted) continue;
-    if (!branchInScope(req.scope, lead.branch_id)) { skippedScope += 1; continue; }
+    if (!converted) {
+      skipped.push({
+        id,
+        reason: "not_converted",
+        message: "A lead has to be converted to a student by a telecaller before a counselor can take it.",
+      });
+      continue;
+    }
+    if (!branchInScope(req.scope, lead.branch_id)) {
+      skippedScope += 1;
+      skipped.push({ id, reason: "out_of_scope", message: "That record is in a branch you do not cover." });
+      continue;
+    }
     if (lead.branch_id && counselorBranchIds.length && !counselorBranchIds.includes(String(lead.branch_id))) {
       skippedBranch += 1;
+      skipped.push({ id, reason: "counselor_other_branch", message: "That counselor does not work in this record's branch." });
       continue;
     }
     const updated = await applyLeadPatch(id, { assigned_counselor_id: counselorId, status: "assigned" });
@@ -3039,7 +3061,20 @@ router.post("/api/leads/bulk-assign", auth, async (req, res) => {
       "/counselor/students",
     );
   }
-  res.json({ ok: true, count, skippedBranch, skippedScope });
+  // Assigning nobody is not success. Say so with a status the caller cannot read past, and give the
+  // reason for the first thing skipped so the person is told WHY rather than just "nothing happened".
+  if (!count) {
+    const first = skipped[0];
+    return res.status(409).json({
+      ok: false,
+      count: 0,
+      error: first ? first.message : "Nothing could be assigned.",
+      skipped,
+      skippedBranch,
+      skippedScope,
+    });
+  }
+  res.json({ ok: true, count, skipped, skippedBranch, skippedScope });
 });
 
 router.post("/api/leads/bulk-assign-telecaller", auth, async (req, res) => {

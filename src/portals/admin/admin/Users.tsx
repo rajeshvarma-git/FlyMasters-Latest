@@ -140,6 +140,19 @@ export default function UsersPage() {
     }
   };
 
+  /** Gives a suspended employee their access back. The server re-enables their role row. */
+  const restore = async (id: string) => {
+    setBusy(true);
+    try {
+      await api(`/users/${id}/restore`, { method: "POST" });
+      await refreshStore();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : "Could not restore access");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const resetPassword = async (id: string) => {
     const password = window.prompt("New password (min 6 characters)");
     if (!password) return;
@@ -298,6 +311,15 @@ export default function UsersPage() {
             </div>
             <div className="flex items-center gap-2">
               <Badge value={user.role} />
+              {/* A suspended employee cannot sign in, and until now nothing here said so: the list read
+                  profiles.is_active while suspension writes user_roles.is_active. An admin had no way
+                  to tell an active account from a disabled one. */}
+              {user.is_active === false && <Badge value="deactivated" />}
+              {user.is_active === false && user.id !== currentUser?.id && (
+                <Button size="sm" variant="secondary" disabled={busy} onClick={() => void restore(user.id)}>
+                  Restore access
+                </Button>
+              )}
               {/* A Super Admin's role is read-only unless you are one too. */}
               {user.role === "super_admin" && !isSuperAdmin ? null : (
                 <Select className="w-36" value={user.role} onChange={(e) => void setRole(user.id, e.target.value)}>

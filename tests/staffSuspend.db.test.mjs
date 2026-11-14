@@ -47,6 +47,7 @@ if (!skip) {
     removeTelecaller: last("/api/telecallers/:id/remove", "post"),
     suspend: last("/api/users/:id/suspend", "post"),
     restore: last("/api/users/:id/restore", "post"),
+    state: last("/api/state", "get"),
   };
   B1 = (await pool.query("INSERT INTO branches (name, code) VALUES ('Hyderabad', 'HYD') RETURNING id")).rows[0].id;
   B2 = (await pool.query("INSERT INTO branches (name, code) VALUES ('Vizag', 'VIZ') RETURNING id")).rows[0].id;
@@ -206,4 +207,48 @@ test("only Admin and Super Admin may suspend or restore; other roles are refused
       assert.equal(roleOutcome(path, role).code, 403, `${role} was allowed through to ${path}`);
     }
   }
+});
+
+
+// ---- what an admin can SEE about a suspended account -------------------------------------------
+//
+// Journey 6.5 of the release walkthrough: suspend an employee, then look at the staff list. Access was
+// correctly refused (6.6, 6.7 pass), but the list showed the account as perfectly normal - it read
+// profiles.is_active while suspension writes user_roles.is_active, the flag resolveAccountIdentity
+// actually honours. The one screen that should tell an admin "this person is disabled" was reading a
+// different flag from the one that disables them.
+
+const staffRow = async (id) => {
+  const r = await run(h.state, { actor: SUPER });
+  assert.equal(r.code, 200, JSON.stringify(r.body).slice(0, 200));
+  return (r.body?.users || []).find((row) => String(row.id) === String(id));
+};
+
+test("the staff list shows a suspended employee as inactive", { skip }, async () => {
+  const staff = await makeStaff("telecaller", B1);
+  const before = await staffRow(staff.id);
+  assert.ok(before, "the new employee is not in the staff list at all");
+  assert.equal(before.is_active, true, "a new employee is already shown as inactive");
+
+  const done = await run(h.suspend, { actor: SUPER, params: { id: staff.id }, body: { reason: "left the company" } });
+  assert.equal(done.code, 200, JSON.stringify(done.body));
+
+  const after = await staffRow(staff.id);
+  assert.equal(after.is_active, false,
+    "the staff list still calls a suspended employee active, so an admin cannot tell who has been disabled");
+
+  // And the flag has to mean what the sign-in check means by it.
+  const tried = await canSignIn(staff.email);
+  assert.equal(tried.ok, false, "the account shown as inactive can still sign in");
+});
+
+test("restoring puts the account back to active in the same list", { skip }, async () => {
+  const staff = await makeStaff("counselor", B1);
+  await run(h.suspend, { actor: SUPER, params: { id: staff.id }, body: { reason: "temporary" } });
+  assert.equal((await staffRow(staff.id)).is_active, false);
+
+  const back = await run(h.restore, { actor: SUPER, params: { id: staff.id } });
+  assert.equal(back.code, 200, JSON.stringify(back.body));
+  assert.equal((await staffRow(staff.id)).is_active, true, "a restored employee is still shown as inactive");
+  assert.equal((await canSignIn(staff.email)).ok, true, "a restored employee cannot sign in");
 });

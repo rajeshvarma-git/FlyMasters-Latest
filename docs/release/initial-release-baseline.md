@@ -590,6 +590,52 @@ Step 2.5 goes through the API, as above. Everything else is driven through the s
 Super Admin to start from (`scripts/bootstrap-super-admin.mjs` on a clean database) and two branches
 named by `--branch-a` and `--branch-b`.
 
+## Journeys 4-6, and three defects they found (2026-11-14)
+
+Three more journeys were added to `scripts/acceptance-walkthrough.mjs`, driven the same way: signup and
+branch placement (4), conversion before counselor assignment (5), and reassignment then deactivation (6).
+38 steps now, run on this commit against a local server with its own PostgreSQL 16.15:
+
+    Journey 1 PASSED (6/6)   Journey 2 PASSED (6/6)   Journey 3 PASSED (7/7)
+    Journey 4 NOT PASSED (5/6, 4.3 Blocked)
+    Journey 5 PASSED (6/6)   Journey 6 NOT PASSED (6/7, 6.2 Blocked)
+
+Still not the release sign-off: a local server is not staging.
+
+### Fixed here
+
+- **`bulk-assign` reported success for work it had not done** (found by 5.2). An unconverted lead was
+  dropped by a bare `continue`, and the route answered `200 {"ok":true,"count":0}`. A caller was told
+  the assignment had happened, with nothing to say conversion was what was missing. It now names every
+  skip with a reason, answers **409** when it assigned nobody, and carries the skipped list when a
+  mixed batch does part of the work. `tests/bulkAssign.db.test.mjs`, 6 checks.
+- **The staff list called a suspended employee active** (found by 6.5). Access removal was correct -
+  6.6 and 6.7 pass, the session dies at once and sign-in is refused - but the one screen an admin would
+  look at read `profiles.is_active`, while suspension writes `user_roles.is_active`, the flag
+  `resolveAccountIdentity` honours. Both flags are written by different paths, so the read now treats
+  either as disabling. The admin staff list shows a **Deactivated** badge and a **Restore access**
+  button. `tests/staffSuspend.db.test.mjs`, 2 new checks.
+- **The telecaller's call history disappears on conversion** (found by 5.3). The note survives on the
+  record and the admin's student page shows it, so the step passes, but the telecaller who wrote it
+  loses sight of it the moment they convert, and the counselor receiving the student has no view of it
+  at all. Recorded, not changed: who should see the history after a handoff is a product decision.
+
+### Blocked, and why it matters
+
+- **4.3 - nothing places a branch-less signup.** Someone who signs up on the student portal arrives as
+  a lead with no branch, and branch-scoped staff cannot see a record that belongs to no branch. No
+  screen in the admin portal sets a lead's branch: no picker on `/admin/leads` or on the lead's own
+  page. `POST /api/leads/:id/branch` exists and works, so the walkthrough used it to continue, but in
+  the product such a signup cannot be placed by anyone without API access. Same gap as 2.5.
+- **6.2 - nothing reassigns a lead that already has a telecaller.** `/admin/alerts` lists only leads
+  with no owner, and the lead's own page shows the telecaller as read-only text. `PATCH /api/leads/:id`
+  works and was used to continue. Reassignment is an everyday office action; it cannot be done from a
+  screen.
+
+Both are one control each, on screens that already exist. They are listed here rather than built
+because who may move a record between branches, and who may take work off a colleague, are decisions
+for the people running the office, not for the test harness.
+
 ## Business journey acceptance, Stream 2 (2026-11-09)
 
 `scripts/acceptance-journey.mjs` runs milestones 2.1 and 2.2 end to end against a deployed environment,
