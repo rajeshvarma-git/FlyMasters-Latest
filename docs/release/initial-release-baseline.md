@@ -718,6 +718,41 @@ launch contract now pins the counselor gate and its fallback.
 **To turn it on:** set `COUNSELOR_HR_ENABLED=true` (or `HR_ENABLED=true` for every portal) and
 restart. No rebuild - the portal asks the server.
 
+## Dashboard tiles that led nowhere useful (2026-11-19)
+
+Reported: on the admin dashboard, "Leads" and "Hot leads" open the same page.
+
+They did. Both pointed at `/leads`, so clicking the 4 hot leads gave the whole list with nothing
+marking which were hot. Worse, the lead list opens on its Telecaller tab, which hides any lead that
+already has a counselor - so even the plain "Leads" tile showed a different set than the number on it.
+Two more tiles had the same fault: "With a counselor" and "Converted this month" both opened the
+unfiltered student list.
+
+A tile is a question - *which 4?* - and the answer has to be on the page it opens.
+
+- The lead list's status filter now lives in the URL (`?status=hot`) exactly as the owner filter
+  already did, and the drop-down writes back to it, so any view can be linked to or shared.
+- An **All** tab joins Telecaller and Counselor, because both lead tiles count every open lead
+  regardless of who holds it.
+- The student list reads `?counselor=assigned` and `?converted=month`, shows a badge naming the
+  narrowing, and offers **Show all students** - a filtered list that looks like the full list is how
+  someone concludes their students have vanished.
+- An unrecognised `?status=` value falls back to "all" rather than filtering everything away.
+
+Checked in a browser against a database with 51 leads: every tile's number now equals the rows on the
+page it opens.
+
+| Tile | Count | Opens | Rows shown |
+|---|---|---|---|
+| Leads | 51 | `/admin/leads?owner=all` | 51 |
+| Hot leads | 28 | `/admin/leads?owner=all&status=hot` | 28 |
+| With a counselor | 50 | `/admin/students?counselor=assigned` | 50 |
+| Converted this month | 51 | `/admin/students?converted=month` | 51 |
+
+`tests/dashboardTiles.test.mjs` (6 checks) parses the tile list out of the dashboard and fails if two
+tiles counting different things ever share a destination again, plus pins the filters the screens must
+understand. 814/814 on PostgreSQL 16.15, typecheck and build clean.
+
 ## Business journey acceptance, Stream 2 (2026-11-09)
 
 `scripts/acceptance-journey.mjs` runs milestones 2.1 and 2.2 end to end against a deployed environment,
