@@ -234,9 +234,13 @@ export default function LeadDetail() {
                 onChange={(e) => void assignTelecaller(e.target.value)}
               >
                 <option value="">Unassigned</option>
+                {/* Counselors are offered on purpose - the client gives them telecalling work when
+                    short of telecallers, and the lead then shows in their My Leads - but they must
+                    be labelled as such, as Lead Alerts does, or a counselor reads as a telecaller. */}
                 {store.telecallers.map((row) => (
                   <option key={row.id} value={row.id}>
                     {displayName(row.first_name, row.last_name, row.email)}
+                    {row.can_telecall ? " · Counsellor (can telecall)" : ""}
                   </option>
                 ))}
               </Select>
