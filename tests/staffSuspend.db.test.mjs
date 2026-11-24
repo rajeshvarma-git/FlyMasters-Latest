@@ -252,3 +252,33 @@ test("restoring puts the account back to active in the same list", { skip }, asy
   assert.equal((await staffRow(staff.id)).is_active, true, "a restored employee is still shown as inactive");
   assert.equal((await canSignIn(staff.email)).ok, true, "a restored employee cannot sign in");
 });
+
+// ---- Journey 6.6 / 6.7 on production: listed as deactivated, but still signed in ----------------
+//
+// QA TeleA2 showed "Deactivated" in the staff list while its session and a fresh sign-in were still
+// accepted, and Restore access could not clear the label. Two flags can say "disabled": the profile
+// flag the list reads and user_roles.is_active that the server enforces. An account whose PROFILE
+// flag alone was false looked disabled but was not; Restore only wrote user_roles, so the label stuck.
+
+test("an account whose profile flag alone says disabled is shown active again after Restore, and suspend writes both", { skip }, async () => {
+  const { jsonUpsert, jsonTable } = await import("../server/lib/db.mjs");
+  const staff = await makeStaff("telecaller", B1);
+  const profileFlag = async () => (await jsonTable("profiles")).find((p) => String(p.user_id) === String(staff.id))?.is_active;
+
+  // The stuck state: profile says disabled, user_roles says enabled (so the server lets them in).
+  await jsonUpsert("profiles", { id: `profile-${staff.id}`, user_id: String(staff.id), is_active: false });
+  assert.equal((await staffRow(staff.id)).is_active, false, "setup: the list should show the stuck account as disabled");
+  assert.equal((await canSignIn(staff.email)).ok, true, "setup: the server still lets this account in");
+
+  const back = await run(h.restore, { actor: SUPER, params: { id: staff.id } });
+  assert.equal(back.code, 200, JSON.stringify(back.body));
+  assert.equal(await profileFlag(), true, "Restore left the profile flag false");
+  assert.equal((await staffRow(staff.id)).is_active, true, "Restore could not clear the Deactivated label");
+
+  // And suspension now writes both, so the list and the server cannot disagree.
+  const done = await run(h.suspend, { actor: SUPER, params: { id: staff.id }, body: { reason: "left" } });
+  assert.equal(done.code, 200, JSON.stringify(done.body));
+  assert.equal((await roleRow(staff.id))?.is_active, false);
+  assert.equal(await profileFlag(), false, "suspend left the profile flag true");
+  assert.equal((await canSignIn(staff.email)).ok, false, "a suspended account still signed in");
+});

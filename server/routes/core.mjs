@@ -3586,6 +3586,15 @@ async function setStaffAccess(db, userId, active) {
     "UPDATE user_roles SET is_active = $2 WHERE user_id = $1",
     [String(authId), Boolean(active)],
   );
+  // Keep the profile flag in step. The staff list shows "Deactivated" when EITHER flag is false, and
+  // the removal path used to set only the profile flag: the list said deactivated while the server
+  // (which reads user_roles) still let the person sign in, and Restore could not clear the profile
+  // flag again. One function now writes both, so the screen and the server cannot disagree.
+  for (const profile of await jsonTable("profiles")) {
+    if (String(profile.user_id) === String(authId) && (profile.is_active !== false) !== Boolean(active)) {
+      await jsonUpsert("profiles", { ...profile, is_active: Boolean(active), updated_at: new Date().toISOString() });
+    }
+  }
   return { authId, changed: Number(result.rowCount || 0) };
 }
 
