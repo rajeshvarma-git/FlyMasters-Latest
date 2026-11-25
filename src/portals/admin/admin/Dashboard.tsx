@@ -95,7 +95,7 @@
 // //                   <div>
 // //                     <p className="text-sm font-medium">{displayName(counselor.first_name, counselor.last_name, counselor.email)}</p>
 // //                     <p className="text-xs text-slate-500">
-// //                       {assigned.length} students · {(counselor.specializations || []).join(", ") || "General"}
+// //                       {assigned.length} {assigned.length === 1 ? "student" : "students"} · {(counselor.specializations || []).join(", ") || "General"}
 // //                     </p>
 // //                   </div>
 // //                   <Badge value={onShift ? "assigned" : "cold"} />
@@ -206,7 +206,7 @@
 //                   <div>
 //                     <p className="text-sm font-medium">{displayName(counselor.first_name, counselor.last_name, counselor.email)}</p>
 //                     <p className="text-xs text-slate-500">
-//                       {assigned.length} students · {(counselor.specializations || []).join(", ") || "General"}
+//                       {assigned.length} {assigned.length === 1 ? "student" : "students"} · {(counselor.specializations || []).join(", ") || "General"}
 //                     </p>
 //                   </div>
 //                   <Badge value={onShift ? "assigned" : "cold"} />
@@ -315,9 +315,15 @@ export default function Dashboard() {
         </Card>
 
         <Card className="p-5">
-          <h2 className="font-semibold">{HR_ENABLED ? "Counselors on shift today" : "Counselors"}</h2>
-          {HR_ENABLED && <p className="mt-1 text-sm text-slate-500">{clockedIn.length} clocked in</p>}
-          <div className="mt-4 space-y-3">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="font-semibold">{HR_ENABLED ? "Counselors on shift today" : "Counselors"}</h2>
+            <Link to="/students" className="-my-1 py-1 text-sm text-sky-600">View all</Link>
+          </div>
+          <p className="-mt-2 mb-3 text-xs text-slate-500">
+            {store.counselors.length} {store.counselors.length === 1 ? "counselor" : "counselors"}
+            {HR_ENABLED ? ` · ${clockedIn.length} clocked in` : ""}
+          </p>
+          <div className="space-y-3">
             {store.counselors.slice(0, 8).map((counselor) => {
               const assigned = store.leads.filter(
                 (lead) => isConvertedStudent(lead) && counselorOwns(counselor, lead.assigned_counselor_id),
@@ -326,7 +332,7 @@ export default function Dashboard() {
                 <div key={counselor.id} className="rounded-xl border px-3 py-2">
                   <p className="text-sm font-medium">{displayName(counselor.first_name, counselor.last_name, counselor.email)}</p>
                   <p className="text-xs text-slate-500">
-                    {assigned.length} students · {(counselor.specializations || []).join(", ") || "General"}
+                    {assigned.length} {assigned.length === 1 ? "student" : "students"} · {(counselor.specializations || []).join(", ") || "General"}
                   </p>
                 </div>
               );
