@@ -212,7 +212,8 @@ export default function Branches() {
                 <tr><td colSpan={7} className="px-5 py-8 text-center text-slate-500">No branches yet. Add the first one above.</td></tr>
               )}
               {sorted.map((branch) => {
-                const place = [titleCase(branch.area), titleCase(branch.city)].filter(Boolean).join(", ");
+                // The City column already shows the city, so only the area goes under the name.
+                const place = titleCase(branch.area);
                 return (
                   <tr key={branch.id} className={`align-middle transition hover:bg-slate-50/70 ${branch.is_active ? "" : "bg-slate-50/50"}`}>
                     <td className="px-5 py-3.5">
