@@ -1,5 +1,5 @@
 // // import { Link } from "react-router-dom";
-// // import { BookOpen, FileText, Flame, GraduationCap, Phone, PhoneCall, Target, Users, Wallet } from "lucide-react";
+// // import { BookOpen, FileText, GraduationCap, Phone, PhoneCall, Target, Users, Wallet } from "lucide-react";
 // // import { format } from "date-fns";
 // // import { useAdminStore } from "@admin/lib/store";
 // // import { counselorLabel, displayName, isConvertedStudent, telecallerLabel } from "@admin/lib/utils";
@@ -111,7 +111,7 @@
 // // }
 
 // import { Link } from "react-router-dom";
-// import { BookOpen, FileText, Flame, GraduationCap, Phone, PhoneCall, Target, Users } from "lucide-react";
+// import { BookOpen, FileText, GraduationCap, Phone, PhoneCall, Target, Users } from "lucide-react";
 // import { format } from "date-fns";
 // import { useAdminStore } from "@admin/lib/store";
 // import { counselorLabel, counselorOwns, displayName, isConvertedStudent, telecallerLabel } from "@admin/lib/utils";
@@ -222,7 +222,7 @@
 // }
 
 import { Link } from "react-router-dom";
-import { BookOpen, FileText, Flame, GraduationCap, LayoutDashboard, PhoneCall, Target, Users } from "lucide-react";
+import { BookOpen, FileText, GraduationCap, LayoutDashboard, PhoneCall, Target, Users } from "lucide-react";
 import { format } from "date-fns";
 import { useAdminStore } from "@admin/lib/store";
 import { counselorLabel, counselorOwns, displayName, isConvertedStudent, openLeadNeedsOwner, telecallerLabel } from "@admin/lib/utils";
@@ -235,7 +235,6 @@ export default function Dashboard() {
   // Admin sees the whole pipeline. Leads are read-only here — only a telecaller can
   // convert one, and only an admin can attach a counselor after that.
   const leads = store.leads.filter((lead) => !isConvertedStudent(lead));
-  const hot = leads.filter((lead) => lead.lead_status === "hot");
   const students = store.leads.filter((lead) => isConvertedStudent(lead));
   const unassignedCounselor = students.filter((lead) => !lead.assigned_counselor_id);
   const stranded = store.leads.filter((lead) => openLeadNeedsOwner(lead));
@@ -249,12 +248,10 @@ export default function Dashboard() {
   const today = format(new Date(), "yyyy-MM-dd");
   const clockedIn = store.attendance.filter((row) => row.date === today && row.clock_in && !row.clock_out);
 
-  // Every tile opens a view that shows the records it counted. "Leads" and "Hot leads" used to go to
-  // the same unfiltered page, so clicking the 4 hot leads gave you the full list of 5 and no sign of
-  // which were hot - the number you clicked was nowhere on the page you landed on.
+  // Every tile opens a view that shows the records it counted. "Hot leads" was removed: it was a subset
+  // of "Leads" (the same list, one filter apart), so it read as a duplicate tile.
   const stats = [
     { label: "Leads", value: leads.length, icon: PhoneCall, to: "/leads?owner=all" },
-    { label: "Hot leads", value: hot.length, icon: Flame, to: "/leads?owner=all&status=hot" },
     { label: "Students", value: students.length, icon: GraduationCap, to: "/students" },
     { label: "Need counselor", value: unassignedCounselor.length, icon: Target, to: "/students?view=assign" },
     { label: "With a counselor", value: withCounselor, icon: Users, to: "/students?counselor=assigned" },

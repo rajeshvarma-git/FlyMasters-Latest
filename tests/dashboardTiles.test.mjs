@@ -22,7 +22,7 @@ function tiles() {
   const block = src.slice(start, src.indexOf("];", start));
   const found = [...block.matchAll(/\{\s*label:\s*"([^"]+)",\s*value:\s*([^,]+),[^}]*to:\s*"([^"]+)"/g)]
     .map(([, label, value, to]) => ({ label, value: value.trim(), to }));
-  assert.ok(found.length >= 8, `only ${found.length} tiles parsed`);
+  assert.ok(found.length >= 7, `only ${found.length} tiles parsed`);
   return found;
 }
 
@@ -40,18 +40,13 @@ test("no two tiles counting different things lead to the same place", () => {
   }
 });
 
-test("the lead tiles open the lead list narrowed to what they counted", () => {
+test("the Leads tile opens the full lead list, and there is no separate Hot leads tile", () => {
   const all = tiles();
   const leads = all.find((t) => t.label === "Leads");
-  const hot = all.find((t) => t.label === "Hot leads");
-  assert.ok(leads && hot, "the Leads and Hot leads tiles are gone");
-
-  // Both count open leads regardless of who holds them, so both need the owner filter widened;
-  // the default tab shows only leads with no counselor.
+  assert.ok(leads, "the Leads tile is gone");
+  // Hot leads is a filter of the same list, so a second tile for it read as a duplicate (reported 26 Nov 2026).
+  assert.equal(all.find((t) => t.label === "Hot leads"), undefined, "a Hot leads tile is back beside Leads");
   assert.match(leads.to, /owner=all/, "the Leads tile opens a tab that hides leads it counted");
-  assert.match(hot.to, /owner=all/, "the Hot leads tile opens a tab that hides leads it counted");
-  assert.match(hot.to, /status=hot/, "the Hot leads tile does not ask for hot leads");
-  assert.notEqual(leads.to, hot.to);
 });
 
 test("the student tiles open the student list narrowed to what they counted", () => {
