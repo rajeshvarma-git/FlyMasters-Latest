@@ -284,10 +284,53 @@ export function createWhatsAppService(deps) {
     return matches.length;
   }
 
+  /** True when saving this conversation for this lead would change nothing, so the write can be skipped. */
+  function conversationAlreadyCurrent(conversation, lead) {
+    const staff = resolveStaffForLead(lead);
+    const phoneNumber = normalizePhone(conversation.phone_number || lead.whatsapp_number || lead.phone);
+    return (
+      String(conversation.lead_id || "") === String(lead.id) &&
+      String(conversation.user_id || "") === String(lead.user_id ? lead.user_id : conversation.user_id || "") &&
+      String(conversation.phone_number || "") === String(phoneNumber || "") &&
+      String(conversation.assigned_staff_id || "") === String(staff?.staffId || "") &&
+      String(conversation.staff_role || "") === String(staff?.staffRole || "")
+    );
+  }
+
+  /**
+   * Keep each lead's WhatsApp thread pointing at the right staff member.
+   *
+   * This runs on every poll of a telecaller's screen. It used to re-read the whole conversations table and
+   * re-save a row for EVERY lead on every poll (hundreds of queries; 6 to 10 seconds on Railway). Now the
+   * table is read once and a row is written only when it actually differs, so a quiet poll costs one read.
+   */
   async function syncConversationsForLeads(leads) {
+    const list = (leads || []).filter(Boolean);
+    if (!list.length) return 0;
+    const conversations = await jsonTable("whatsapp_conversations");
     let updated = 0;
-    for (const lead of leads || []) {
-      updated += await syncConversationForLead(lead);
+    for (const lead of list) {
+      const phoneNumber = normalizePhone(lead.whatsapp_number || lead.phone);
+      const matches = conversations.filter(
+        (row) =>
+          String(row.lead_id) === String(lead.id) ||
+          (phoneNumber && phonesMatch(row.phone_number, phoneNumber)),
+      );
+      if (!matches.length) {
+        if (!phoneNumber) continue;
+        const created = await getOrCreateConversation(lead, phoneNumber);
+        if (created) conversations.push(created);
+        updated += 1;
+        continue;
+      }
+      for (const conv of matches) {
+        const candidate = { ...conv, lead_id: String(lead.id) };
+        if (conversationAlreadyCurrent(candidate, lead) && String(conv.lead_id || "") === String(lead.id)) continue;
+        const saved = await syncConversationStaff(candidate, lead);
+        const at = conversations.indexOf(conv);
+        if (at >= 0 && saved) conversations[at] = saved;
+      }
+      updated += matches.length;
     }
     return updated;
   }
