@@ -67,3 +67,27 @@ test("a read slower than the ttl is still shared and reused right after it finis
   t += 1000;
   assert.equal((await cache.get("a")).n, 2, "and it must expire the ttl after it finished");
 });
+
+import { createThrottledJob } from "../server/lib/stateCache.mjs";
+
+test("a throttled job runs in the background at most once per window, and never makes a read wait", async () => {
+  let runs = 0; let t = 0; let release;
+  const gate = new Promise((r) => { release = r; });
+  const trigger = createThrottledJob(async () => { runs += 1; await gate; }, { everyMs: 1000, now: () => t });
+  await trigger();                       // returns at once even though the job is still running
+  await trigger(); await trigger();
+  assert.equal(runs, 1, "must not start again while running or inside the window");
+  release(); await tick();
+  t = 500; await trigger();
+  assert.equal(runs, 1, "still inside the window");
+  t = 1500; await trigger(); await tick();
+  assert.equal(runs, 2, "runs again once the window has passed");
+});
+
+test("a throttled job with everyMs 0 runs inline every time, and a failure never reaches the caller", async () => {
+  let runs = 0; const errors = [];
+  const trigger = createThrottledJob(async () => { runs += 1; throw new Error("boom"); }, { everyMs: 0, onError: (e) => errors.push(e.message) });
+  await trigger(); await trigger();
+  assert.equal(runs, 2);
+  assert.deepEqual(errors, ["boom", "boom"]);
+});

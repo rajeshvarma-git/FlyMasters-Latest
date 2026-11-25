@@ -38,7 +38,7 @@ import { assignRole, setAccountBranches, createAccount, discardAccount, AccountW
 import { hrEnabled, hrOff, telecallerHrEnabled } from "../lib/hrSwitch.mjs";
 import { decideAccountAction } from "../lib/accessPolicy.mjs";
 import { loadAccountTarget } from "../lib/accountTargets.mjs";
-import { createStateCache, scopeKey } from "../lib/stateCache.mjs";
+import { createStateCache, createThrottledJob, scopeKey } from "../lib/stateCache.mjs";
 import { allow, branchInScope, checkLeadInScope, checkRecipientInScope, checkStaffInScope, managerSeesConversation, requireGlobalScope, checkRowInScope, checkLeaveInScope, staffAuthId } from "../lib/scopeGuards.mjs";
 import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
 import { rotateRefreshToken, revokeFamily, revokeAllForUser, RefreshRejected } from "../lib/refreshTokens.mjs";
@@ -676,10 +676,18 @@ async function syncPortalCounselors() {
   }
 }
 
+// Repairs counselor_users rows that never got a login. Off the request path when deployed (see
+// createThrottledJob); inline in tests and local development so they stay exact.
+const COUNSELOR_SYNC_MS = Number(
+  process.env.COUNSELOR_SYNC_MS ?? (process.env.RAILWAY_GIT_COMMIT_SHA || process.env.NODE_ENV === "production" ? 600000 : 0),
+);
+const syncCounselorsSometimes = createThrottledJob(syncPortalCounselors, {
+  everyMs: COUNSELOR_SYNC_MS,
+  onError: (error) => console.warn("Counselor sync failed:", error.message),
+});
+
 async function loadCounselors() {
-  await syncPortalCounselors().catch((error) => {
-    console.warn("Counselor sync failed:", error.message);
-  });
+  await syncCounselorsSometimes();
   const [sqlUsers, jsonCounselors, roles, profiles, authUsers] = await Promise.all([
     pool.query("SELECT id, email, first_name, last_name, phone, bio, specializations, created_at FROM counselor_users ORDER BY created_at DESC"),
     jsonTable("counselors"),

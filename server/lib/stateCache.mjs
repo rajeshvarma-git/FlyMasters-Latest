@@ -62,3 +62,31 @@ export function scopeKey(scope) {
     partner: scope.partnerId ? String(scope.partnerId) : null,
   });
 }
+
+/**
+ * Run a slow repair job at most once per `everyMs`, in the background, never inside a request.
+ *
+ * Why: loadCounselors() re-published every counselor (about six queries each, including two whole-table
+ * scans, plus rewrites that touched updated_at) on EVERY read of the state. Measured on Railway on
+ * 2026-11-25 this single step took 5.7 s of a 6.4 s read (everything else finished in under 0.7 s).
+ * Counselors created or edited through the API are already published at that moment; this job only
+ * repairs rows that reached counselor_users some other way, so it does not need to run on every poll.
+ *
+ * everyMs <= 0 keeps the old behaviour: run it and wait for it, every time (tests, local development).
+ */
+export function createThrottledJob(job, { everyMs, onError = () => {}, now = () => Date.now() }) {
+  let lastStart = -Infinity;
+  let running = null;
+  return async function trigger() {
+    if (!(everyMs > 0)) {
+      try { await job(); } catch (error) { onError(error); }
+      return;
+    }
+    if (running || now() - lastStart < everyMs) return;
+    lastStart = now();
+    running = Promise.resolve()
+      .then(job)
+      .catch(onError)
+      .finally(() => { running = null; });
+  };
+}
