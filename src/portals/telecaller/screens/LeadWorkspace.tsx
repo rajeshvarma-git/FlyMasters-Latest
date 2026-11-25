@@ -26,6 +26,9 @@ export default function LeadWorkspace() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [saved, setSaved] = useState("");
+  // Conversion is confirmed on the page (a second click), not with a browser pop-up: the pop-up froze
+  // the screen for automated acceptance runs and hid the action from anyone reviewing a recording.
+  const [confirmingConvert, setConfirmingConvert] = useState(false);
   const [outcome, setOutcome] = useState<string>("connected");
 
   const lead = store.leads.find((row) => row.id === id) || null;
@@ -113,7 +116,7 @@ export default function LeadWorkspace() {
   };
 
   const convert = async () => {
-    if (!window.confirm(`Convert ${displayName(lead.first_name, lead.last_name, lead.email)} to a student?`)) return;
+    setConfirmingConvert(false);
     setBusy(true);
     setError("");
     try {
@@ -176,10 +179,21 @@ export default function LeadWorkspace() {
                 </Button>
               </Link>
             )}
-            {!converted && (
-              <Button disabled={busy || missing.length > 0} onClick={() => void convert()}>
+            {!converted && !confirmingConvert && (
+              <Button disabled={busy || missing.length > 0} onClick={() => setConfirmingConvert(true)}>
                 <UserCheck className="h-4 w-4" /> Convert to student
               </Button>
+            )}
+            {!converted && confirmingConvert && (
+              <div role="group" aria-label="Confirm conversion" className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-medium">
+                  Convert {displayName(lead.first_name, lead.last_name, lead.email)} to a student?
+                </span>
+                <Button disabled={busy} onClick={() => void convert()}>
+                  <UserCheck className="h-4 w-4" /> Yes, convert
+                </Button>
+                <Button variant="secondary" disabled={busy} onClick={() => setConfirmingConvert(false)}>Cancel</Button>
+              </div>
             )}
           </div>
         </div>

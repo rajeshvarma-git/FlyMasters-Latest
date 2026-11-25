@@ -855,7 +855,11 @@ function loadTelecallers(users, counselors = []) {
       phone: user.phone,
       is_active: user.is_active !== false,
       created_at: user.created_at || null,
+      // Which branches they work in, so a lead's picker can offer only people from the lead's branch.
+      // The server still refuses a cross-branch assignment; this keeps the list honest.
+      branch_ids: user.branch_ids || [],
     }));
+  const branchesOf = (id) => users.find((user) => String(user.id) === String(id))?.branch_ids || [];
   // A counsellor can be given telecalling work too (the client does this
   // when short of telecallers). They are offered in the telecaller list as
   // "Counsellor · can telecall", keyed by their LOGIN id so the leads show
@@ -875,6 +879,7 @@ function loadTelecallers(users, counselors = []) {
       created_at: c.created_at || null,
       can_telecall: true,
       role: "counselor",
+      branch_ids: branchesOf(id),
     });
   }
   return telecallers;

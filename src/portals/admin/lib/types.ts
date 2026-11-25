@@ -68,6 +68,8 @@ export interface Telecaller {
   created_at: string | null;
   /** A counsellor who may also be given telecaller work. */
   can_telecall?: boolean;
+  /** Branches this person works in (sent by the server; empty for older records). */
+  branch_ids?: string[];
   role?: string;
 }
 

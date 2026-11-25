@@ -21,8 +21,8 @@ g.fetch = async () => {
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 const store = await import("../src/portals/admin/lib/store.ts");
 
-test("five callers at once share one request", async () => {
-  const pending = [1, 2, 3, 4, 5].map(() => store.refreshStore());
+test("five polls or opening screens at once share one request", async () => {
+  const pending = [1, 2, 3, 4, 5].map(() => store.sharedRefresh());
   await settle();
   assert.equal(calls, 1, "a second request started while the first was still running");
   assert.equal(store.pollingState().inFlight, true);
@@ -37,6 +37,18 @@ test("the next refresh after one finishes does go to the server", async () => {
   assert.equal(calls, 2);
   release();
   await next;
+});
+
+test("a refresh after a save never returns a request that started before it", async () => {
+  const poll = store.sharedRefresh();          // a poll is running...
+  await settle();
+  assert.equal(calls, 3);
+  const afterSave = [1, 2, 3].map(() => store.refreshStore()); // ...when the user saves something
+  await settle();
+  assert.equal(calls, 3, "must wait for the running poll, not start a parallel request");
+  release(); await poll; await settle();
+  assert.equal(calls, 4, "the saves must get ONE new request that started after them");
+  release(); await Promise.all(afterSave);
 });
 
 test("the store has one shared timer, not one per component", () => {
