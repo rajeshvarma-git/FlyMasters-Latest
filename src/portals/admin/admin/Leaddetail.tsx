@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { telecallerChoices } from "@admin/lib/telecallerChoices";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import DeleteButton from "@admin/components/DeleteButton";
 import { format } from "date-fns";
@@ -110,6 +111,8 @@ export default function LeadDetail() {
   // Branches are not in the store, so fetch them once; the Super Admin picker needs their names.
   const [branches, setBranches] = useState<Branch[]>([]);
   const [saving, setSaving] = useState("");
+  // Shown on the page instead of a browser pop-up, which blocks the screen and cannot be read by testers.
+  const [saveError, setSaveError] = useState<{ where: "telecaller" | "branch"; text: string } | null>(null);
   useEffect(() => {
     void api<{ branches: Branch[] }>("/branches")
       .then((data) => setBranches((data.branches || []).filter((b) => b.is_active !== false)))
@@ -120,11 +123,12 @@ export default function LeadDetail() {
   const assignTelecaller = async (telecallerId: string) => {
     if (!id) return;
     setSaving("telecaller");
+    setSaveError(null);
     try {
       await api(`/leads/${id}`, { method: "PATCH", body: { assigned_telecaller_id: telecallerId } });
       await refreshStore();
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Could not reassign this lead");
+      setSaveError({ where: "telecaller", text: error instanceof Error ? error.message : "Could not reassign this lead" });
     } finally {
       setSaving("");
     }
@@ -134,11 +138,12 @@ export default function LeadDetail() {
   const assignBranch = async (branchId: string) => {
     if (!id || !branchId) return;
     setSaving("branch");
+    setSaveError(null);
     try {
       await api(`/leads/${id}/branch`, { method: "POST", body: { branchId } });
       await refreshStore();
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : "Could not move this record");
+      setSaveError({ where: "branch", text: error instanceof Error ? error.message : "Could not move this record" });
     } finally {
       setSaving("");
     }
@@ -237,7 +242,7 @@ export default function LeadDetail() {
                 {/* Counselors are offered on purpose - the client gives them telecalling work when
                     short of telecallers, and the lead then shows in their My Leads - but they must
                     be labelled as such, as Lead Alerts does, or a counselor reads as a telecaller. */}
-                {store.telecallers.map((row) => (
+                {telecallerChoices(store.telecallers, lead).map((row) => (
                   <option key={row.id} value={row.id}>
                     {displayName(row.first_name, row.last_name, row.email)}
                     {row.can_telecall ? " · Counsellor (can telecall)" : ""}
@@ -248,6 +253,9 @@ export default function LeadDetail() {
                 <span className="text-xs text-slate-500">assigned {formatWhen(lead.assigned_telecaller_at)}</span>
               )}
               {saving === "telecaller" && <span className="text-xs text-slate-500">Saving…</span>}
+              {saveError?.where === "telecaller" && (
+                <p role="alert" className="basis-full text-xs font-medium text-red-700">{saveError.text}</p>
+              )}
             </div>
           </dd>
           <dt className="text-slate-500">Branch</dt>
@@ -273,6 +281,9 @@ export default function LeadDetail() {
                   </span>
                 )}
                 {saving === "branch" && <span className="text-xs text-slate-500">Saving…</span>}
+                {saveError?.where === "branch" && (
+                  <p role="alert" className="basis-full text-xs font-medium text-red-700">{saveError.text}</p>
+                )}
               </div>
             ) : (
               <>

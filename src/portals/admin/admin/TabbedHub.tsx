@@ -4,7 +4,11 @@ import { useSearchParams } from "react-router-dom";
 export interface HubTab {
   key: string;
   label: string;
+  /** How many records the view lists. Always a total, so the badge matches the list underneath it. */
   count?: number;
+  /** Optional: how many of those need action. Shown separately so it is never mistaken for the total. */
+  attention?: number;
+  attentionLabel?: string;
   element: ReactNode;
 }
 
@@ -34,7 +38,12 @@ export default function TabbedHub({ tabs, param = "view" }: { tabs: HubTab[]; pa
           >
             {tab.label}
             {typeof tab.count === "number" && (
-              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">{tab.count}</span>
+              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600" title={`${tab.count} in total`}>{tab.count}</span>
+            )}
+            {typeof tab.attention === "number" && tab.attention > 0 && (
+              <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
+                {tab.attention} {tab.attentionLabel || "need action"}
+              </span>
             )}
           </button>
         ))}

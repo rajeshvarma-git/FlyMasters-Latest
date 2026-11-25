@@ -12,7 +12,10 @@ export default function PipelineHub() {
     <TabbedHub
       tabs={[
         { key: "leads", label: "Leads", count: store.leads.filter((lead) => !isConvertedStudent(lead)).length, element: <Leads /> },
-        { key: "applications", label: "Applications", count: pending, element: <Applications /> },
+        // The badge used to show only applications awaiting counselor review, so it read 0 beside a list
+        // of 9 (seen on the live Super Admin screen, 25 Nov 2026). It now shows the total, like Leads,
+        // and the ones to review are shown beside it.
+        { key: "applications", label: "Applications", count: store.applications.length, attention: pending, attentionLabel: "to review", element: <Applications /> },
       ]}
     />
   );

@@ -1,10 +1,10 @@
+import { counselingStudents, telecallingConversionRate, telecallingLeads } from "@counselor/lib/workload";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { BookOpen, GraduationCap, LogIn, LogOut, Phone, Target, Timer, TrendingUp, Users } from "lucide-react";
 import { format } from "date-fns";
 import { useAuth } from "@counselor/context/AuthContext";
 import { addAttendance, updateAttendance, useLocalStore } from "@counselor/lib/store";
-import { isConvertedStudent, isOpenLead } from "@counselor/lib/utils";
 import { Badge } from "@counselor/components/ui/Badge";
 import { Button } from "@counselor/components/ui/Button";
 import { Card } from "@counselor/components/ui/Card";
@@ -16,9 +16,9 @@ export default function CounselorHome() {
   const [elapsed, setElapsed] = useState("");
   const [busy, setBusy] = useState(false);
 
-  const leads = store.leads.filter(
-    (lead) => lead.assigned_counselor_id === user?.id || lead.assigned_telecaller_id === user?.id,
-  );
+  // Two kinds of work, counted exactly as their own screens list them (see lib/workload.ts).
+  const students = counselingStudents(store.leads, user?.id);
+  const openLeads = telecallingLeads(store.leads, user?.id);
   const today = format(new Date(), "yyyy-MM-dd");
   const todayAttendance = store.attendance.find((row) => row.counselor_id === user?.id && row.date === today) || null;
 
@@ -69,9 +69,9 @@ export default function CounselorHome() {
     setBusy(false);
   };
 
-  const students = leads.filter((lead) => isConvertedStudent(lead));
-  const openLeads = leads.filter((lead) => isOpenLead(lead));
-  const mine = (userId: string) => leads.some((lead) => lead.user_id === userId || lead.id === userId);
+  const leads = [...students, ...openLeads];
+  // Applications and shortlists belong to the students this person counsels, not to leads they only called.
+  const mine = (userId: string) => students.some((lead) => lead.user_id === userId || lead.id === userId);
   const myApplications = store.applications.filter((row) => mine(row.user_id));
   const pendingApplications = myApplications.filter((row) => row.status === "pending_counselor" || row.status === "submitted");
   const myShortlists = store.shortlists.filter((row) => mine(row.student_id));
@@ -80,7 +80,7 @@ export default function CounselorHome() {
     return lead ? `${lead.first_name || ""} ${lead.last_name || ""}`.trim() || lead.email : "Student";
   };
   const followUps = openLeads.filter((lead) => lead.next_follow_up_date?.slice(0, 10) === today);
-  const rate = leads.length ? Math.round((students.length / leads.length) * 100) : 0;
+  const rate = telecallingConversionRate(store.leads, user?.id);
 
   const stats = useMemo(() => [
     { label: "Assigned leads", value: openLeads.length, icon: Phone },

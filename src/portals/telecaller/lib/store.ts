@@ -1,3 +1,4 @@
+import { createFreshLoader } from "../../../shared/freshLoader";
 import { useEffect, useState } from "react";
 import { api } from "@telecaller/lib/api";
 import type { TelecallerState, WhatsAppConversation, WhatsAppMessage } from "@telecaller/lib/types";
@@ -15,7 +16,6 @@ const empty: TelecallerState = {
 const listeners = new Set<() => void>();
 let cache: TelecallerState = empty;
 let lastError = "";
-let inFlight: Promise<void> | null = null;
 
 function emit() {
   listeners.forEach((fn) => fn());
@@ -82,10 +82,8 @@ async function loadWhatsAppInbox() {
   }
 }
 
-/** Coalesces concurrent refreshes so several mounted components cause one request. */
-export async function refreshStore() {
-  if (inFlight) return inFlight;
-  inFlight = (async () => {
+async function loadState(): Promise<void> {
+  await (async () => {
     try {
       const state = await api<TelecallerState>("/telecaller/state");
       const inbox = await loadWhatsAppInbox();
@@ -102,11 +100,19 @@ export async function refreshStore() {
     } catch (error) {
       lastError = error instanceof Error ? error.message : "Could not load your leads";
     } finally {
-      inFlight = null;
       emit();
     }
   })();
-  return inFlight;
+}
+
+const loader = createFreshLoader(loadState);
+
+/**
+ * Reload after the user changed something: always from a request that starts after this call, so the
+ * change is in what comes back. Concurrent calls still share one request.
+ */
+export function refreshStore(): Promise<void> {
+  return loader.fresh();
 }
 
 export function markNotificationsReadLocal(ids: string[] | "all") {
@@ -125,7 +131,7 @@ let poll: number | null = null;
 function startPolling() {
   if (poll !== null) return;
   poll = window.setInterval(() => {
-    if (document.visibilityState === "visible") void refreshStore();
+    if (document.visibilityState === "visible") void loader.shared();
   }, 8000);
 }
 
@@ -145,7 +151,7 @@ export function useStore() {
     };
     listeners.add(fn);
     startPolling();
-    void refreshStore();
+    void loader.shared();
     return () => {
       listeners.delete(fn);
       stopPolling();

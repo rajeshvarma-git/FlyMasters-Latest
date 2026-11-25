@@ -1,3 +1,4 @@
+import { createFreshLoader } from "../../../shared/freshLoader";
 import { useEffect, useState } from "react";
 import { api, readStoredUser } from "@admin/lib/api";
 import type { AdminState } from "@admin/lib/types";
@@ -66,14 +67,12 @@ export function getStoreError() {
 // the data is already fresh; and nothing polls while the tab is hidden.
 
 const POLL_MS = 5000;
-let inFlight: Promise<void> | null = null;
 let fetchedAt = 0;
 let subscribers = 0;
 let poller: number | null = null;
 
-export function refreshStore(): Promise<void> {
-  if (inFlight) return inFlight;
-  inFlight = (async () => {
+async function loadAdminState(): Promise<void> {
+  {
     try {
       // Accountants get the finance slice; everyone else gets the full admin
       // state. The server decides what each role may read — this only picks the
@@ -86,22 +85,35 @@ export function refreshStore(): Promise<void> {
     } catch (error) {
       lastError = error instanceof Error ? error.message : "Could not load admin data";
       emit();
-    } finally {
-      inFlight = null;
     }
-  })();
-  return inFlight;
+  }
+}
+
+const loader = createFreshLoader(loadAdminState);
+
+/** For polls and screens that just opened: joins a request already running, so one is ever in flight. */
+export function sharedRefresh(): Promise<void> {
+  return loader.shared();
+}
+
+/**
+ * After the user changed something: the data comes from a request that starts after this call, so the
+ * change is in it. (Joining a poll already running returned data from before the save.) Concurrent
+ * calls share one follow-up request.
+ */
+export function refreshStore(): Promise<void> {
+  return loader.fresh();
 }
 
 /** For tests: how many timers are running and whether a request is in flight. */
 export function pollingState() {
-  return { subscribers, polling: poller !== null, inFlight: inFlight !== null };
+  return { subscribers, polling: poller !== null, inFlight: loader.isRunning() };
 }
 
 function tick() {
   // A hidden tab has nobody looking at it; it catches up when it is shown again.
   if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
-  void refreshStore();
+  void sharedRefresh();
 }
 
 function startPolling() {
@@ -122,7 +134,7 @@ export function useAdminStore() {
   const [error, setError] = useState(getStoreError);
   useEffect(() => {
     // Fresh enough already? Then this mount does not need its own request.
-    if (Date.now() - fetchedAt > POLL_MS) void refreshStore();
+    if (Date.now() - fetchedAt > POLL_MS) void sharedRefresh();
     const unsub = subscribeStore(() => {
       setData({ ...getStore() });
       setError(getStoreError());

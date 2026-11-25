@@ -1,3 +1,4 @@
+import { counselingStudents } from "@counselor/lib/workload";
 import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { format } from "date-fns";
@@ -16,7 +17,7 @@ import {
 } from "lucide-react";
 import { useAuth } from "@counselor/context/AuthContext";
 import { ensureConversation, fetchCountryDocumentsApproval, fetchDocumentUploadAuthorization, fetchStudentChecklist, requestStudentDocuments, setCountryDocumentsApproval, setDocumentUploadAuthorization, useLocalStore, type DocumentUploadAuthorization } from "@counselor/lib/store";
-import { displayName, initials, isConvertedStudent } from "@counselor/lib/utils";
+import { displayName, initials } from "@counselor/lib/utils";
 import { Badge } from "@counselor/components/ui/Badge";
 import { Button } from "@counselor/components/ui/Button";
 import { Card } from "@counselor/components/ui/Card";
@@ -56,18 +57,8 @@ export default function MyStudents() {
   const [pickedTypes, setPickedTypes] = useState<string[]>([]);
   const [savingUploadAuth, setSavingUploadAuth] = useState(false);
 
-  const students = useMemo(() => {
-    const seen = new Set<string>();
-    return store.leads.filter((lead) => {
-      if (lead.assigned_counselor_id !== user?.id || !isConvertedStudent(lead)) return false;
-      const key = lead.user_id
-        ? `u:${lead.user_id}`
-        : `e:${(lead.email || "").trim().toLowerCase()}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }, [store.leads, user?.id]);
+  // Same rule as the dashboard's "My students" (lib/workload.ts), so the number and the list agree.
+  const students = useMemo(() => counselingStudents(store.leads, user?.id), [store.leads, user?.id]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
