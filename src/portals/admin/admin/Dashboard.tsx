@@ -111,7 +111,7 @@
 // // }
 
 // import { Link } from "react-router-dom";
-// import { BookOpen, FileText, GraduationCap, Phone, PhoneCall, Target, Users } from "lucide-react";
+// import { BookOpen, FileText, GraduationCap, Phone, PhoneCall, Target } from "lucide-react";
 // import { format } from "date-fns";
 // import { useAdminStore } from "@admin/lib/store";
 // import { counselorLabel, counselorOwns, displayName, isConvertedStudent, telecallerLabel } from "@admin/lib/utils";
@@ -222,7 +222,7 @@
 // }
 
 import { Link } from "react-router-dom";
-import { BookOpen, FileText, GraduationCap, LayoutDashboard, PhoneCall, Target, Users } from "lucide-react";
+import { BookOpen, FileText, GraduationCap, LayoutDashboard, PhoneCall, Target } from "lucide-react";
 import { format } from "date-fns";
 import { useAdminStore } from "@admin/lib/store";
 import { counselorLabel, counselorOwns, displayName, isConvertedStudent, openLeadNeedsOwner, telecallerLabel } from "@admin/lib/utils";
@@ -240,7 +240,6 @@ export default function Dashboard() {
   const stranded = store.leads.filter((lead) => openLeadNeedsOwner(lead));
   const pendingDocs = store.documents.filter((item) => !item.archived && (item.status === "uploaded" || item.status === "pending"));
   const pendingApps = store.applications.filter((item) => item.status === "pending_counselor" || item.status === "submitted");
-  const withCounselor = students.filter((lead) => lead.assigned_counselor_id).length;
   const monthKey = new Date().toISOString().slice(0, 7);
   const convertedThisMonth = students.filter(
     (lead) => String(lead.conversion_date || "").slice(0, 7) === monthKey,
@@ -254,7 +253,6 @@ export default function Dashboard() {
     { label: "Leads", value: leads.length, icon: PhoneCall, to: "/leads?owner=all" },
     { label: "Students", value: students.length, icon: GraduationCap, to: "/students" },
     { label: "Need counselor", value: unassignedCounselor.length, icon: Target, to: "/students?view=assign" },
-    { label: "With a counselor", value: withCounselor, icon: Users, to: "/students?counselor=assigned" },
     { label: "Converted this month", value: convertedThisMonth, icon: GraduationCap, to: "/students?converted=month" },
     { label: "Docs to review", value: pendingDocs.length, icon: FileText, to: "/documents" },
     { label: "Applications", value: pendingApps.length, icon: BookOpen, to: "/applications" },

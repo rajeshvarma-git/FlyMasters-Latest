@@ -22,7 +22,7 @@ function tiles() {
   const block = src.slice(start, src.indexOf("];", start));
   const found = [...block.matchAll(/\{\s*label:\s*"([^"]+)",\s*value:\s*([^,]+),[^}]*to:\s*"([^"]+)"/g)]
     .map(([, label, value, to]) => ({ label, value: value.trim(), to }));
-  assert.ok(found.length >= 7, `only ${found.length} tiles parsed`);
+  assert.ok(found.length >= 6, `only ${found.length} tiles parsed`);
   return found;
 }
 
@@ -51,10 +51,8 @@ test("the Leads tile opens the full lead list, and there is no separate Hot lead
 
 test("the student tiles open the student list narrowed to what they counted", () => {
   const all = tiles();
-  const withCounselor = all.find((t) => t.label === "With a counselor");
   const converted = all.find((t) => t.label === "Converted this month");
   const needs = all.find((t) => t.label === "Need counselor");
-  assert.match(withCounselor.to, /counselor=assigned/);
   assert.match(converted.to, /converted=month/);
   assert.match(needs.to, /view=assign/, "the long-standing assign view link was lost");
 });
