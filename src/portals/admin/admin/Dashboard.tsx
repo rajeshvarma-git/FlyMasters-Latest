@@ -258,6 +258,29 @@ export default function Dashboard() {
     { label: "Applications", value: pendingApps.length, icon: BookOpen, to: "/applications" },
   ];
 
+  // One list for the whole team: counselors by the students they hold, telecallers by the open leads they hold.
+  // A counselor who can also telecall is listed once, as a counselor.
+  const workload = [
+    ...store.counselors.map((row) => ({
+      id: row.id,
+      name: displayName(row.first_name, row.last_name, row.email),
+      role: "Counselor",
+      note: (row.specializations || []).join(", ") || "General",
+      count: store.leads.filter((lead) => isConvertedStudent(lead) && counselorOwns(row, lead.assigned_counselor_id)).length,
+      unit: "student",
+    })),
+    ...store.telecallers
+      .filter((row) => !row.can_telecall)
+      .map((row) => ({
+        id: row.id,
+        name: displayName(row.first_name, row.last_name, row.email),
+        role: "Telecaller",
+        note: "",
+        count: leads.filter((lead) => lead.assigned_telecaller_id === row.id).length,
+        unit: "lead",
+      })),
+  ];
+
   const recent = [...store.leads]
     .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))
     .slice(0, 8);
@@ -316,28 +339,26 @@ export default function Dashboard() {
 
         <Card className="p-5">
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="font-semibold">{HR_ENABLED ? "Counselors on shift today" : "Counselor workload"}</h2>
-            <Link to="/students" className="-my-1 py-1 text-sm text-sky-600">View all</Link>
+            <h2 className="font-semibold">Employees workload</h2>
+            <Link to="/team-status" className="-my-1 py-1 text-sm text-sky-600">View all</Link>
           </div>
           <p className="-mt-2 mb-3 text-xs text-slate-500">
-            Students assigned to each counselor · {store.counselors.length} {store.counselors.length === 1 ? "counselor" : "counselors"}
+            Students per counselor and open leads per telecaller · {workload.length} {workload.length === 1 ? "employee" : "employees"}
             {HR_ENABLED ? ` · ${clockedIn.length} clocked in` : ""}
           </p>
           <div className="space-y-3">
-            {store.counselors.slice(0, 8).map((counselor) => {
-              const assigned = store.leads.filter(
-                (lead) => isConvertedStudent(lead) && counselorOwns(counselor, lead.assigned_counselor_id),
-              );
-              return (
-                <div key={counselor.id} className="rounded-xl border px-3 py-2">
-                  <p className="text-sm font-medium">{displayName(counselor.first_name, counselor.last_name, counselor.email)}</p>
-                  <p className="text-xs text-slate-500">
-                    {assigned.length} {assigned.length === 1 ? "student" : "students"} · {(counselor.specializations || []).join(", ") || "General"}
-                  </p>
+            {workload.slice(0, 10).map((row) => (
+              <div key={`${row.role}-${row.id}`} className="flex items-center justify-between gap-3 rounded-xl border px-3 py-2">
+                <div className="min-w-0">
+                  <p className="truncate text-sm font-medium">{row.name}</p>
+                  <p className="text-xs text-slate-500">{row.role}{row.note ? ` · ${row.note}` : ""}</p>
                 </div>
-              );
-            })}
-            {store.counselors.length === 0 && <p className="text-sm text-slate-500">No counselors yet.</p>}
+                <p className="shrink-0 text-right text-sm font-semibold text-navy-900">
+                  {row.count} <span className="text-xs font-normal text-slate-500">{row.unit}{row.count === 1 ? "" : "s"}</span>
+                </p>
+              </div>
+            ))}
+            {workload.length === 0 && <p className="text-sm text-slate-500">No employees yet.</p>}
           </div>
         </Card>
       </div>
