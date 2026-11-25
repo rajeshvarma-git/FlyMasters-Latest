@@ -3612,6 +3612,41 @@ router.get("/api/transfer-work/:id/items", staffMoveAuth, async (req, res) => {
   res.json({ person: { id: person.id, name: person.name, role: person.role, isActive: person.isActive, branchIds: person.branchIds }, kind, items });
 });
 
+// Who can receive this person's work: active colleagues who share a branch with them, inside the
+// caller's branches. Students go to Counselors only; leads to a Telecaller or a Counselor.
+router.get("/api/transfer-work/:id/receivers", staffMoveAuth, async (req, res) => {
+  if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;
+  const person = await transferPerson(req.params.id);
+  if (!person) return res.status(404).json({ error: "That employee could not be found." });
+  const kind = req.query.kind === "counseling" ? "counseling" : "telecalling";
+  const theirBranches = new Set(person.branchIds);
+  const leads = await jsonTable("student_leads");
+  const converted = (l) => l.entity_type === "student" || l.lead_status === "converted";
+  const counselors = await loadCounselors();
+  const receivers = (await loadUsers())
+    .filter((u) => String(u.id) !== person.id && u.is_active !== false)
+    .filter((u) => (kind === "counseling" ? u.role === "counselor" : ["telecaller", "counselor"].includes(u.role)))
+    .filter((u) => (u.branch_ids || []).map(String).some((b) => theirBranches.has(b) && branchInScope(req.scope, b)))
+    .map((u) => {
+      const c = u.role === "counselor"
+        ? counselors.find((row) => String(row.auth_user_id || "") === String(u.id) || String(row.id) === String(u.id))
+        : null;
+      const keys = new Set(c ? counselorKeyIds(c) : []);
+      keys.add(String(u.id));
+      return {
+        id: String(u.id),
+        counselorRowId: c ? String(c.id) : null,
+        name: [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email,
+        role: u.role,
+        load: kind === "counseling"
+          ? leads.filter((l) => converted(l) && keys.has(String(l.assigned_counselor_id || ""))).length
+          : leads.filter((l) => !converted(l) && keys.has(String(l.assigned_telecaller_id || ""))).length,
+      };
+    })
+    .sort((a, b) => a.load - b.load || a.name.localeCompare(b.name));
+  res.json({ person: { id: person.id, name: person.name, branchIds: person.branchIds }, kind, receivers });
+});
+
 router.post("/api/transfer-work/:id", staffMoveAuth, async (req, res) => {
   try {
     const toUserId = String(req.body.toUserId || "");

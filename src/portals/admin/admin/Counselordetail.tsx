@@ -1,16 +1,16 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { format } from "date-fns";
-import { ArrowLeft, ArrowRightLeft, FileText, MessageCircle, MessageSquare, PhoneCall, Trash2, Users } from "lucide-react";
+import { ArrowLeft, FileText, MessageCircle, MessageSquare, PhoneCall, Trash2, Users } from "lucide-react";
 import { api } from "@admin/lib/api";
 import { useAuth } from "@admin/context/AuthContext";
 import { refreshStore, useAdminStore } from "@admin/lib/store";
 import { counselorOwns, displayName, initials, isConvertedStudent, studentOwns, telecallerLabel } from "@admin/lib/utils";
 import DeleteButton from "@admin/components/DeleteButton";
+import { TransferWorkPanel } from "@admin/components/TransferWorkPanel";
 import { Badge } from "@admin/components/ui/Badge";
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
-import { Select } from "@admin/components/ui/Field";
 import ChatInboxPanel, { type InboxMessage, type InboxThread } from "@admin/components/ChatInboxPanel";
 import WhatsAppThreads, { whatsAppThreadIdForLead } from "@admin/components/WhatsAppThreads";
 import type { DocumentRow, Lead } from "@admin/lib/types";
@@ -101,6 +101,7 @@ export default function CounselorDetail() {
   const [busyDocId, setBusyDocId] = useState<string | null>(null);
   const [busyAction, setBusyAction] = useState<"transfer" | "remove" | null>(null);
   const [transferTargetId, setTransferTargetId] = useState("");
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [error, setError] = useState("");
 
   const counselor = store.counselors.find((row) => row.id === id || row.auth_user_id === id) || null;
@@ -311,48 +312,8 @@ export default function CounselorDetail() {
     }
   };
 
-  const otherCounselors = store.counselors.filter(
-    (row) => row.is_active !== false && row.id !== counselor.id && row.auth_user_id !== counselor.auth_user_id,
-  );
-
-  const transferStudents = async () => {
-    if (!transferTargetId) {
-      setError("Choose a counselor to transfer students to.");
-      return;
-    }
-    setBusyAction("transfer");
-    setError("");
-    try {
-      const result = await api<{ count: number }>(`/counselors/${counselor.id}/transfer`, {
-        method: "POST",
-        body: { targetCounselorId: transferTargetId },
-      });
-      setTransferTargetId("");
-      await refreshStore();
-      if (result.count === 0) {
-        setError("No students were assigned to this counselor.");
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not transfer students.");
-    } finally {
-      setBusyAction(null);
-    }
-  };
-
   const removeCounselor = async () => {
-    if ((students.length > 0 || leads.length > 0) && !transferTargetId) {
-      setError(
-        `This counselor still has ${students.length} student(s) and ${leads.length} lead(s). Pick someone to transfer them to before removing.`,
-      );
-      return;
-    }
-    const total = students.length + leads.length;
-    const message =
-      total > 0
-        ? `Transfer ${students.length} student(s) and ${leads.length} lead(s) to the selected counselor and remove ${displayName(counselor.first_name, counselor.last_name, counselor.email)}?`
-        : `Remove ${displayName(counselor.first_name, counselor.last_name, counselor.email)} from the counselor list?`;
-    if (!window.confirm(message)) return;
-
+    setConfirmingRemove(false);
     setBusyAction("remove");
     setError("");
     try {
@@ -451,43 +412,49 @@ export default function CounselorDetail() {
           <div>
             <p className="text-sm font-semibold text-slate-800">Transfer or remove counselor</p>
             <p className="mt-1 max-w-xl text-xs text-slate-500">
-              Transfer moves all students, conversations, and shortlists to another counselor so they keep full history.
-              Remove deactivates this counselor — if students are assigned, you must pick someone to transfer them to first.
+              Transfer moves this counselor's students, or the leads they are calling, to a colleague in the same
+              branch, with conversations, shortlists and history. Remove deactivates this counselor; choose a
+              colleague first if work is still assigned.
             </p>
           </div>
         </div>
-        <div className="mt-4 flex flex-wrap items-end gap-2">
-          <div className="min-w-[260px]">
-            <p className="mb-1.5 text-sm font-medium text-slate-700">Transfer students to</p>
-            <Select value={transferTargetId} onChange={(e) => setTransferTargetId(e.target.value)}>
-              <option value="">Choose counselor</option>
-              {otherCounselors.map((row) => (
-                <option key={row.id} value={row.id}>
-                  {displayName(row.first_name, row.last_name, row.email)}
-                  {row.specializations?.length ? ` · ${row.specializations.join(", ")}` : ""}
-                </option>
-              ))}
-            </Select>
-          </div>
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={busyAction !== null || !transferTargetId || students.length === 0}
-            onClick={() => void transferStudents()}
-          >
-            <ArrowRightLeft className="h-4 w-4" />
-            {busyAction === "transfer" ? "Transferring..." : "Transfer data"}
-          </Button>
-          {isSuperAdmin && (
+        <TransferWorkPanel
+          personId={String(counselor.auth_user_id || counselor.id)}
+          personName={displayName(counselor.first_name, counselor.last_name, counselor.email)}
+          isCounselor
+          onReceiverChange={(r) => setTransferTargetId(r ? r.counselorRowId || r.id : "")}
+        />
+        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-4">
+          {isSuperAdmin && !confirmingRemove && (
             <Button
               size="sm"
               variant="danger"
               disabled={busyAction !== null}
-              onClick={() => void removeCounselor()}
+              onClick={() => {
+                if ((students.length > 0 || leads.length > 0) && !transferTargetId) {
+                  setError(`This counselor still has ${students.length} student(s) and ${leads.length} lead(s). Choose a colleague above to receive them before removing.`);
+                  return;
+                }
+                setError("");
+                setConfirmingRemove(true);
+              }}
             >
               <Trash2 className="h-4 w-4" />
-              {busyAction === "remove" ? "Removing..." : "Remove counselor"}
+              Remove counselor
             </Button>
+          )}
+          {isSuperAdmin && confirmingRemove && (
+            <div role="group" aria-label="Confirm removal" className="flex flex-wrap items-center gap-2 rounded-xl bg-rose-50 px-3 py-2">
+              <span className="text-sm text-rose-900">
+                {students.length + leads.length > 0
+                  ? `Move all ${students.length} student(s) and ${leads.length} lead(s) to the chosen colleague and remove ${displayName(counselor.first_name, counselor.last_name, counselor.email)}?`
+                  : `Remove ${displayName(counselor.first_name, counselor.last_name, counselor.email)} from the counselor list?`}
+              </span>
+              <Button size="sm" variant="danger" disabled={busyAction !== null} onClick={() => void removeCounselor()}>
+                {busyAction === "remove" ? "Removing..." : "Yes, remove"}
+              </Button>
+              <Button size="sm" variant="secondary" disabled={busyAction !== null} onClick={() => setConfirmingRemove(false)}>Cancel</Button>
+            </div>
           )}
           <DeleteButton
               kind="staff"
@@ -497,18 +464,6 @@ export default function CounselorDetail() {
               onDeleted={() => navigate("/students")}
             />
         </div>
-        {(students.length > 0 || leads.length > 0) && (
-          <p className="mt-3 text-xs text-slate-500">
-            {students.length} student{students.length === 1 ? "" : "s"} and {leads.length} lead
-            {leads.length === 1 ? "" : "s"} will move with their chat history when you transfer or remove.
-          </p>
-        )}
-        {students.length === 0 && (
-          <p className="mt-3 text-xs text-amber-700">
-            Transfer data is off because this counselor has no students to move. It turns on as soon as a student is
-            assigned to them and you choose who to transfer to.
-          </p>
-        )}
       </Card>
 
       {error && <Card className="mt-4 border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}</Card>}

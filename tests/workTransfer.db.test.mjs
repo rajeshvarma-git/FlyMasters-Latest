@@ -41,6 +41,8 @@ if (!skip) {
     transfer: last("/api/transfer-work/:id", "post"),
     items: last("/api/transfer-work/:id/items", "get"),
     people: last("/api/transfer-work/people", "get"),
+    receivers: last("/api/transfer-work/:id/receivers", "get"),
+    suspend: last("/api/users/:id/suspend", "post"),
     oldTelecallerTransfer: last("/api/telecallers/:id/transfer", "post"),
   };
   B1 = (await pool.query("INSERT INTO branches (name, code) VALUES ('Ameerpet', 'AMP') RETURNING id")).rows[0].id;
@@ -175,4 +177,28 @@ test("even a Super Admin cannot move a record into a branch the new owner does n
   assert.deepEqual(r.body.movedIds, ["Y-1"]);
   assert.deepEqual(r.body.skipped.map((s) => [s.id, s.reason]), [["Y-2", "other_branch"]]);
   assert.equal((await leadRow("Y-2")).assigned_telecaller_id, leaver.id);
+});
+
+test("the page's receiver list offers only active colleagues from the same branch, with the right role", { skip }, async () => {
+  const leaver = await makeStaff("counselor", B1);
+  const sameBranchCounselor = await makeStaff("counselor", B1);
+  const sameBranchTelecaller = await makeStaff("telecaller", B1);
+  const suspended = await makeStaff("counselor", B1);
+  const elsewhere = await makeStaff("counselor", B2);
+  const off = await run(h.suspend, { actor: SUPER, params: { id: suspended.id }, body: { reason: "left" } });
+  assert.equal(off.code, 200, JSON.stringify(off.body));
+
+  const students = await run(h.receivers, { actor: branchAdmin(), params: { id: leaver.id }, query: { kind: "counseling" } });
+  assert.equal(students.code, 200, JSON.stringify(students.body));
+  const ids = students.body.receivers.map((r) => r.id);
+  assert.ok(ids.includes(sameBranchCounselor.id), "a same-branch counselor was not offered");
+  assert.ok(!ids.includes(sameBranchTelecaller.id), "a telecaller was offered students");
+  assert.ok(!ids.includes(suspended.id), "a suspended counselor was offered");
+  assert.ok(!ids.includes(elsewhere.id), "a counselor from another branch was offered");
+  assert.ok(!ids.includes(leaver.id), "the person was offered their own work");
+
+  const leads = await run(h.receivers, { actor: branchAdmin(), params: { id: leaver.id }, query: { kind: "telecalling" } });
+  const leadIds = leads.body.receivers.map((r) => r.id);
+  assert.ok(leadIds.includes(sameBranchTelecaller.id) && leadIds.includes(sameBranchCounselor.id));
+  assert.ok(!leadIds.includes(elsewhere.id));
 });
