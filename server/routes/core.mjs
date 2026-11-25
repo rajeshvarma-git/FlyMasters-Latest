@@ -39,6 +39,7 @@ import { hrEnabled, hrOff, telecallerHrEnabled } from "../lib/hrSwitch.mjs";
 import { decideAccountAction } from "../lib/accessPolicy.mjs";
 import { loadAccountTarget } from "../lib/accountTargets.mjs";
 import { createStateCache, createThrottledJob, scopeKey } from "../lib/stateCache.mjs";
+import { planWorkTransfer, SKIP_REASONS } from "../lib/workTransfer.mjs";
 import { allow, branchInScope, checkLeadInScope, checkRecipientInScope, checkStaffInScope, managerSeesConversation, requireGlobalScope, checkRowInScope, checkLeaveInScope, staffAuthId } from "../lib/scopeGuards.mjs";
 import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
 import { rotateRefreshToken, revokeFamily, revokeAllForUser, RefreshRejected } from "../lib/refreshTokens.mjs";
@@ -3531,6 +3532,161 @@ router.post("/api/users", auth, safely(async (req, res) => {
 // Admin and Super Admin only; a Branch Head cannot (permission-matrix.md, rule 6).
 const staffMoveAuth = [session, requireRole(ADMIN_ROLES, "Admin"), branchScope];
 
+// ---- Transfer work between colleagues in ONE branch (CRM brief 2.4.1, 3.2) -----------------------
+//
+// One screen for both kinds of work: a telecalling person's open leads, and a counselor's students.
+// The rules live in server/lib/workTransfer.mjs: same branch only, active receiver, right role,
+// reason required, only records the person owns. Each record is moved through the normal assignment
+// path, so its chat thread, alerts and history move exactly as for a single reassignment.
+
+/** One employee as the transfer rules see them: login id, every id their records may carry, branches. */
+async function transferPerson(id) {
+  const users = await loadUsers();
+  const user = users.find((row) => String(row.id) === String(id));
+  if (!user || !["telecaller", "counselor"].includes(user.role)) return null;
+  const counselor = user.role === "counselor"
+    ? (await loadCounselors()).find((row) => String(row.auth_user_id || "") === String(user.id) || String(row.id) === String(user.id))
+    : null;
+  return {
+    id: String(user.id),
+    keys: counselor ? counselorKeyIds(counselor) : [String(user.id)],
+    counselorRowId: counselor ? String(counselor.id) : null,
+    role: user.role,
+    isActive: user.is_active !== false,
+    branchIds: (user.branch_ids || []).map(String),
+    name: [user.first_name, user.last_name].filter(Boolean).join(" ") || user.email || "",
+  };
+}
+
+const leadLabel = (lead) => ({
+  id: String(lead.id),
+  name: [lead.first_name, lead.last_name].filter(Boolean).join(" ") || lead.email || lead.phone || "Unnamed",
+  status: lead.lead_status || lead.status || "",
+  branchId: lead.branch_id ? String(lead.branch_id) : null,
+  stage: lead.lead_stage || "",
+});
+
+router.get("/api/transfer-work/people", staffMoveAuth, async (req, res) => {
+  const branchId = String(req.query.branchId || "");
+  if (!branchId) return res.status(400).json({ error: "Choose a branch." });
+  if (!branchInScope(req.scope, branchId)) {
+    return res.status(403).json({ error: "That branch is not one you manage.", code: "OUT_OF_SCOPE" });
+  }
+  const users = (await loadUsers()).filter(
+    (u) => ["telecaller", "counselor"].includes(u.role) && (u.branch_ids || []).map(String).includes(branchId),
+  );
+  const leads = await jsonTable("student_leads");
+  const counselors = await loadCounselors();
+  const people = users.map((u) => {
+    const c = u.role === "counselor"
+      ? counselors.find((row) => String(row.auth_user_id || "") === String(u.id) || String(row.id) === String(u.id))
+      : null;
+    const keys = new Set(c ? counselorKeyIds(c) : [String(u.id)]);
+    keys.add(String(u.id));
+    const converted = (l) => l.entity_type === "student" || l.lead_status === "converted";
+    return {
+      id: String(u.id),
+      name: [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email,
+      role: u.role,
+      isActive: u.is_active !== false,
+      telecalling: leads.filter((l) => !converted(l) && keys.has(String(l.assigned_telecaller_id || ""))).length,
+      counseling: leads.filter((l) => converted(l) && keys.has(String(l.assigned_counselor_id || ""))).length,
+    };
+  });
+  res.json({ people });
+});
+
+router.get("/api/transfer-work/:id/items", staffMoveAuth, async (req, res) => {
+  if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;
+  const person = await transferPerson(req.params.id);
+  if (!person) return res.status(404).json({ error: "That employee could not be found." });
+  const kind = req.query.kind === "counseling" ? "counseling" : "telecalling";
+  const keys = new Set(person.keys.concat(person.id));
+  const converted = (l) => l.entity_type === "student" || l.lead_status === "converted";
+  const items = (await jsonTable("student_leads"))
+    .filter((l) => (kind === "counseling"
+      ? converted(l) && keys.has(String(l.assigned_counselor_id || ""))
+      : !converted(l) && keys.has(String(l.assigned_telecaller_id || ""))))
+    .filter((l) => !l.branch_id || branchInScope(req.scope, l.branch_id))
+    .map(leadLabel);
+  res.json({ person: { id: person.id, name: person.name, role: person.role, isActive: person.isActive, branchIds: person.branchIds }, kind, items });
+});
+
+router.post("/api/transfer-work/:id", staffMoveAuth, async (req, res) => {
+  try {
+    const toUserId = String(req.body.toUserId || "");
+    if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;
+    if (toUserId && !(await allow(res, checkStaffInScope(pool, req.scope, toUserId)))) return;
+    const from = await transferPerson(req.params.id);
+    const to = toUserId ? await transferPerson(toUserId) : null;
+    const leads = (await jsonTable("student_leads")).filter((l) => !l.branch_id || branchInScope(req.scope, l.branch_id));
+    const plan = planWorkTransfer({
+      kind: req.body.kind,
+      from,
+      to,
+      leads,
+      leadIds: Array.isArray(req.body.leadIds) ? req.body.leadIds : null,
+      reason: req.body.reason,
+    });
+    if (!plan.ok) return res.status(plan.status).json({ error: plan.error, code: plan.code });
+
+    // Counseling ownership is stored against the counselor's record; telecalling against their login.
+    const field = plan.kind === "counseling" ? "assigned_counselor_id" : "assigned_telecaller_id";
+    const value = plan.kind === "counseling" ? (to.counselorRowId || to.id) : to.id;
+    const moved = [];
+    for (const lead of plan.move) {
+      const before = { ...lead };
+      const updated = await applyLeadPatch(lead.id, { [field]: value, status: "assigned" });
+      await syncOwnershipOnAssignment(before, updated);
+      await audit(req, "lead.transfer", "student_leads", lead.id, {
+        kind: plan.kind, from: from.id, to: to.id, reason: plan.reason, branchId: lead.branch_id || null,
+      });
+      moved.push(String(lead.id));
+    }
+    await audit(req, "staff.transfer_work", "auth_users", from.id, {
+      kind: plan.kind, from: from.id, to: to.id, moved: moved.length, skipped: plan.skipped.length, reason: plan.reason,
+    });
+    if (moved.length) {
+      await notify(
+        to.id,
+        plan.kind === "counseling" ? "Students transferred to you" : "Leads transferred to you",
+        `${moved.length} ${plan.kind === "counseling" ? "student(s)" : "lead(s)"} from ${from.name} were transferred to you, with their history. Reason: ${plan.reason}`,
+        "info",
+        plan.kind === "counseling" ? "/counselor/students" : "/telecaller/queue",
+      );
+    }
+    res.json({
+      ok: true,
+      moved: moved.length,
+      movedIds: moved,
+      skipped: plan.skipped.map((row) => ({ ...row, label: SKIP_REASONS[row.reason] || row.reason })),
+    });
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Could not transfer this work." });
+  }
+});
+
+/** Older one-click transfers: refuse when the two people do not share a branch. */
+async function refuseCrossBranchTransfer(res, fromId, toId) {
+  const users = await loadUsers();
+  const branchesOf = (id) => (users.find((u) => String(u.id) === String(id))?.branch_ids || []).map(String);
+  const counselors = await loadCounselors();
+  const loginOf = (id) => {
+    const c = counselors.find((row) => String(row.id) === String(id) || String(row.auth_user_id || "") === String(id));
+    return c?.auth_user_id ? String(c.auth_user_id) : String(id);
+  };
+  const a = branchesOf(loginOf(fromId));
+  const b = new Set(branchesOf(loginOf(toId)));
+  if (a.length && b.size && !a.some((x) => b.has(x))) {
+    res.status(403).json({
+      error: "These two people do not work in the same branch. Work can only move between colleagues in one branch.",
+      code: "CROSS_BRANCH",
+    });
+    return true;
+  }
+  return false;
+}
+
 router.post("/api/counselors/:id/transfer", staffMoveAuth, async (req, res) => {
   try {
     const targetCounselorId = String(req.body.targetCounselorId || "");
@@ -3539,6 +3695,7 @@ router.post("/api/counselors/:id/transfer", staffMoveAuth, async (req, res) => {
     }
     if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;
     if (!(await allow(res, checkStaffInScope(pool, req.scope, targetCounselorId)))) return;
+    if (await refuseCrossBranchTransfer(res, req.params.id, targetCounselorId)) return;
     const count = await transferCounselorStudents(req.params.id, targetCounselorId);
     if (count > 0) {
       await notify(
@@ -3563,6 +3720,7 @@ router.post("/api/telecallers/:id/transfer", staffMoveAuth, async (req, res) => 
     }
     if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;
     if (!(await allow(res, checkStaffInScope(pool, req.scope, targetTelecallerId)))) return;
+    if (await refuseCrossBranchTransfer(res, req.params.id, targetTelecallerId)) return;
     const count = await transferTelecallerLeads(req.params.id, targetTelecallerId);
     if (count > 0) {
       await notify(
@@ -3584,6 +3742,7 @@ router.post("/api/telecallers/:id/remove", staffMoveAuth, async (req, res) => {
     const targetTelecallerId = req.body.targetTelecallerId ? String(req.body.targetTelecallerId) : "";
     if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;
     if (targetTelecallerId && !(await allow(res, checkStaffInScope(pool, req.scope, targetTelecallerId)))) return;
+    if (targetTelecallerId && (await refuseCrossBranchTransfer(res, req.params.id, targetTelecallerId))) return;
     const users = await loadUsers();
     const telecaller = users.find((row) => row.id === req.params.id && row.role === "telecaller");
     if (!telecaller) return res.status(404).json({ error: "Telecaller not found." });
@@ -3690,6 +3849,7 @@ router.post("/api/counselors/:id/remove", staffMoveAuth, async (req, res) => {
     const targetCounselorId = req.body.targetCounselorId ? String(req.body.targetCounselorId) : "";
     if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;
     if (targetCounselorId && !(await allow(res, checkStaffInScope(pool, req.scope, targetCounselorId)))) return;
+    if (targetCounselorId && (await refuseCrossBranchTransfer(res, req.params.id, targetCounselorId))) return;
     const counselors = await loadCounselors();
     const counselor = counselors.find((row) => row.id === req.params.id || row.auth_user_id === req.params.id);
     if (!counselor) return res.status(404).json({ error: "Counselor not found." });

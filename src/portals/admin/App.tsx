@@ -10,6 +10,7 @@ import AdminLayout from "@admin/admin/AdminLayout";
 import Dashboard from "@admin/admin/Dashboard";
 import LeadAlerts from "@admin/admin/Leadalerts";
 import PipelineHub from "@admin/admin/PipelineHub";
+import TransferWork from "@admin/admin/TransferWork";
 import PeopleHub from "@admin/admin/PeopleHub";
 import TeamStatus from "@admin/admin/TeamStatus";
 
@@ -133,6 +134,7 @@ export default function App() {
               <Route path="change-history" element={<ChangeHistory />} />
               <Route path="notifications" element={<Notifications />} />
               <Route path="team-status" element={<TeamStatus />} />
+              <Route path="transfer-work" element={<TransferWork />} />
               <Route path="telecallers" element={<Telecallers />} />
               <Route path="telecallers/:id" element={<TelecallerDetail />} />
               <Route path="help" element={<Help />} />

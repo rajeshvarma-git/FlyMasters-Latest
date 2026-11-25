@@ -1,5 +1,6 @@
 import { NavLink, Outlet } from "react-router-dom";
 import {
+  ArrowRightLeft,
   BookOpen,
   Bell,
   BellRing,
@@ -70,6 +71,7 @@ const groups = [
       { to: "/telecallers", label: "Telecallers", icon: Phone, end: false },
       { to: "/students", label: "Students & Counselors", icon: GraduationCap, end: false },
       { to: "/team-status", label: "Team status", icon: Activity, end: false },
+      { to: "/transfer-work", label: "Transfer work", icon: ArrowRightLeft, end: false, roles: ADMIN_ONLY },
     ],
   },
   {
