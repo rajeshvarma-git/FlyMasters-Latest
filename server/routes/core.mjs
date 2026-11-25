@@ -1364,6 +1364,21 @@ function withReferral(lead, referralMap) {
   };
 }
 
+// How long each of the reads below took, last time. Sent as a Server-Timing header on /api/state so a
+// slow screen can be traced to the one read that causes it (browser devtools, Network, Timing).
+const STATE_PARTS = ["leads_sql", "leads_json", "docs_sql", "docs_json", "apps", "app_events", "short_sql", "short_json", "conv_sql", "conv_json", "msg_sql", "msg_json", "leave", "attendance", "salary", "notes_json", "notes_sql", "unis", "program_count", "checklists", "chat", "chat_msgs", "tc_conv", "tc_msg", "wa_conv", "wa_msg", "directory", "counselors", "users"];
+let lastStateTimings = [];
+async function timedAll(names, promises) {
+  const started = Date.now();
+  const marks = new Array(promises.length).fill(null);
+  const out = await Promise.all(promises.map((p, i) => Promise.resolve(p).then((v) => { marks[i] = Date.now() - started; return v; })));
+  lastStateTimings = names.map((n, i) => ({ name: n, ms: marks[i] }));
+  return out;
+}
+function stateTimingHeader() {
+  return lastStateTimings.filter((t) => t.ms != null).map((t) => `${t.name};dur=${t.ms}`).join(", ");
+}
+
 async function loadStateUncached(scope = null) {
   const [
     sqlLeads,
@@ -1395,7 +1410,7 @@ async function loadStateUncached(scope = null) {
     directory,
     counselors,
     users,
-  ] = await Promise.all([
+  ] = await timedAll(STATE_PARTS, [
     scopedRows("student_leads", "created_at DESC", scope),
     jsonTable("student_leads", { scope }),
     scopedRows("documents", "created_at DESC", scope),
@@ -2814,8 +2829,10 @@ router.post("/api/system/alerts/run", auth, async (req, res) => {
 
 router.get("/api/state", auth, async (req, res) => {
   try {
+    const started = Date.now();
     const state = await loadState(req.scope);
     state.notifications = state.notifications.filter((row) => String(row.user_id) === String(req.user.id));
+    if (typeof res.set === "function") res.set("Server-Timing", [`total;dur=${Date.now() - started}`, stateTimingHeader()].filter(Boolean).join(", "));
     res.json(state);
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not load admin data" });

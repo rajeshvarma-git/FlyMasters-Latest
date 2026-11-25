@@ -25,14 +25,19 @@ export function createStateCache({ ttlMs, compute, now = () => Date.now() }) {
   async function get(key, ...args) {
     if (!(ttlMs > 0)) return compute(...args);
 
+    // A read still in flight is always shared; a finished one is reused until `ttlMs` after it FINISHED.
+    // (Counting from the start made a slow read "expired" the moment it ended, so nothing was ever reused.)
     const hit = entries.get(key);
-    if (hit && hit.epoch === epoch && now() - hit.at < ttlMs) return clone(await hit.promise);
+    if (hit && hit.epoch === epoch && (!hit.settled || now() - hit.at < ttlMs)) return clone(await hit.promise);
 
-    const entry = { epoch, at: now(), promise: null };
+    const entry = { epoch, at: 0, settled: false, promise: null };
     entry.promise = compute(...args);
     entries.set(key, entry);
     try {
-      return clone(await entry.promise);
+      const value = await entry.promise;
+      entry.settled = true;
+      entry.at = now();
+      return clone(value);
     } catch (error) {
       if (entries.get(key) === entry) entries.delete(key);
       throw error;
