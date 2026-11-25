@@ -221,6 +221,7 @@
 //   );
 // }
 
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { BookOpen, FileText, GraduationCap, LayoutDashboard, PhoneCall, Target } from "lucide-react";
 import { format } from "date-fns";
@@ -232,6 +233,7 @@ import { HR_ENABLED } from "@shared/lib/features";
 
 export default function Dashboard() {
   const store = useAdminStore();
+  const [workTab, setWorkTab] = useState<"counselors" | "telecallers">("counselors");
   // Admin sees the whole pipeline. Leads are read-only here — only a telecaller can
   // convert one, and only an admin can attach a counselor after that.
   const leads = store.leads.filter((lead) => !isConvertedStudent(lead));
@@ -258,28 +260,22 @@ export default function Dashboard() {
     { label: "Applications", value: pendingApps.length, icon: BookOpen, to: "/applications" },
   ];
 
-  // One list for the whole team: counselors by the students they hold, telecallers by the open leads they hold.
-  // A counselor who can also telecall is listed once, as a counselor.
-  const workload = [
-    ...store.counselors.map((row) => ({
-      id: row.id,
-      name: displayName(row.first_name, row.last_name, row.email),
-      role: "Counselor",
-      note: (row.specializations || []).join(", ") || "General",
-      count: store.leads.filter((lead) => isConvertedStudent(lead) && counselorOwns(row, lead.assigned_counselor_id)).length,
-      unit: "student",
-    })),
-    ...store.telecallers
-      .filter((row) => !row.can_telecall)
-      .map((row) => ({
-        id: row.id,
-        name: displayName(row.first_name, row.last_name, row.email),
-        role: "Telecaller",
-        note: "",
-        count: leads.filter((lead) => lead.assigned_telecaller_id === row.id).length,
-        unit: "lead",
-      })),
-  ];
+  // Two lists, shown as tabs: counselors by the students they hold, telecallers by the open leads they hold.
+  const counselorRows = store.counselors.map((row) => ({
+    id: row.id,
+    name: displayName(row.first_name, row.last_name, row.email),
+    note: (row.specializations || []).join(", ") || "General",
+    count: store.leads.filter((lead) => isConvertedStudent(lead) && counselorOwns(row, lead.assigned_counselor_id)).length,
+    unit: "student",
+  }));
+  const telecallerRows = store.telecallers.map((row) => ({
+    id: row.id,
+    name: displayName(row.first_name, row.last_name, row.email),
+    note: row.can_telecall ? "Counselor who also telecalls" : "Telecaller",
+    count: leads.filter((lead) => lead.assigned_telecaller_id === row.id).length,
+    unit: "lead",
+  }));
+  const workload = workTab === "counselors" ? counselorRows : telecallerRows;
 
   const recent = [...store.leads]
     .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")))
@@ -342,23 +338,36 @@ export default function Dashboard() {
             <h2 className="font-semibold">Employees workload</h2>
             <Link to="/team-status" className="-my-1 py-1 text-sm text-sky-600">View all</Link>
           </div>
-          <p className="-mt-2 mb-3 text-xs text-slate-500">
-            Students per counselor and open leads per telecaller · {workload.length} {workload.length === 1 ? "employee" : "employees"}
+          <div className="mb-3 flex gap-2" role="tablist" aria-label="Employees workload">
+            {([
+              ["counselors", `Counselors (${counselorRows.length})`],
+              ["telecallers", `Telecallers (${telecallerRows.length})`],
+            ] as const).map(([key, label]) => (
+              <button
+                key={key} type="button" role="tab" aria-selected={workTab === key} onClick={() => setWorkTab(key)}
+                className={`rounded-lg px-3 py-1.5 text-sm font-medium ${workTab === key ? "bg-navy-900 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="mb-3 text-xs text-slate-500">
+            {workTab === "counselors" ? "Students each counselor holds" : "Open leads each telecaller holds"}
             {HR_ENABLED ? ` · ${clockedIn.length} clocked in` : ""}
           </p>
           <div className="space-y-3">
             {workload.slice(0, 10).map((row) => (
-              <div key={`${row.role}-${row.id}`} className="flex items-center justify-between gap-3 rounded-xl border px-3 py-2">
+              <div key={row.id} className="flex items-center justify-between gap-3 rounded-xl border px-3 py-2">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-medium">{row.name}</p>
-                  <p className="text-xs text-slate-500">{row.role}{row.note ? ` · ${row.note}` : ""}</p>
+                  <p className="truncate text-xs text-slate-500">{row.note}</p>
                 </div>
                 <p className="shrink-0 text-right text-sm font-semibold text-navy-900">
                   {row.count} <span className="text-xs font-normal text-slate-500">{row.unit}{row.count === 1 ? "" : "s"}</span>
                 </p>
               </div>
             ))}
-            {workload.length === 0 && <p className="text-sm text-slate-500">No employees yet.</p>}
+            {workload.length === 0 && <p className="text-sm text-slate-500">{workTab === "counselors" ? "No counselors yet." : "No telecallers yet."}</p>}
           </div>
         </Card>
       </div>
