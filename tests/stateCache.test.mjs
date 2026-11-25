@@ -54,3 +54,16 @@ test("errors are not cached, and a ttl of 0 turns the cache off", async () => {
   await disabled.get("a"); await disabled.get("a");
   assert.equal(off, 2);
 });
+
+test("a read slower than the ttl is still shared and reused right after it finishes", async () => {
+  let calls = 0; let t = 0;
+  const cache = createStateCache({
+    ttlMs: 100, now: () => t,
+    compute: async () => { calls += 1; t += 12000; return { n: calls }; }, // a 12 s read, as seen on Railway
+  });
+  assert.equal((await cache.get("a")).n, 1);
+  assert.equal((await cache.get("a")).n, 1, "a read that took longer than the ttl was thrown away the moment it finished");
+  assert.equal(calls, 1);
+  t += 1000;
+  assert.equal((await cache.get("a")).n, 2, "and it must expire the ttl after it finished");
+});
