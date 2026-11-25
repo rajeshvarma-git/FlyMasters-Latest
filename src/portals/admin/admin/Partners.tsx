@@ -67,6 +67,9 @@ export default function Partners() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [activating, setActivating] = useState<Partner | null>(null);
+  // Errors inside the two dialogs are shown in the dialog, not as browser pop-ups.
+  const [dialogError, setDialogError] = useState("");
+  const [created, setCreated] = useState("");
 
   const load = () => api<{ partners: Partner[] }>("/partners").then((d) => setRows(d.partners));
   useAutoRefresh(load);
@@ -82,7 +85,7 @@ export default function Partners() {
     event.preventDefault();
     const formEl = event.currentTarget;
     const form = new FormData(event.currentTarget);
-    setError(""); setBusy(true);
+    setError(""); setCreated(""); setBusy(true);
     try {
       await api("/partners", {
         method: "POST",
@@ -98,6 +101,7 @@ export default function Partners() {
         },
       });
       formEl.reset();
+      setCreated(`${String(form.get("fullName"))} was added. Copy their referral link from the list below.`);
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not create partner");
@@ -110,6 +114,7 @@ export default function Partners() {
     event.preventDefault();
     if (!activating) return;
     const form = new FormData(event.currentTarget);
+    setDialogError("");
     setBusy(true);
     try {
       await api(`/partners/${activating.id}/login`, {
@@ -123,142 +128,198 @@ export default function Partners() {
       setActivating(null);
       await load();
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : "Could not activate login");
+      setDialogError(err instanceof Error ? err.message : "Could not activate login");
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex items-center gap-2">
-        <Handshake className="h-5 w-5 text-sky-600" />
-        <h1 className="text-xl font-semibold text-navy-900">Agents &amp; Freelancers</h1>
-      </div>
+    <div className="mx-auto max-w-6xl space-y-6">
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="flex items-center gap-2 text-2xl font-bold text-navy-900">
+            <Handshake className="h-6 w-6 text-sky-600" /> Agents &amp; Freelancers
+          </h1>
+          <p className="mt-1 max-w-2xl text-sm text-slate-600">
+            Partners who refer students. Each gets a referral link straight away; a login is separate and only a
+            Super Admin can issue one.
+          </p>
+        </div>
+        {rows.length > 0 && (
+          <dl className="flex flex-wrap gap-2 text-sm">
+            <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+              <dt className="text-xs text-slate-500">Partners</dt>
+              <dd className="font-semibold tabular-nums text-navy-900">{rows.length}</dd>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+              <dt className="text-xs text-slate-500">Students referred</dt>
+              <dd className="font-semibold tabular-nums text-navy-900">{rows.reduce((n, p) => n + (p.referred_count || 0), 0)}</dd>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+              <dt className="text-xs text-slate-500">With a login</dt>
+              <dd className="font-semibold tabular-nums text-navy-900">{rows.filter((p) => p.login_enabled).length}</dd>
+            </div>
+          </dl>
+        )}
+      </header>
 
-      <Card>
-        <h2 className="mb-1 text-sm font-semibold text-navy-900">Add a partner</h2>
-        <p className="mb-4 text-xs text-slate-600">
-          A referral code is generated automatically. The partner can start referring straight away —
-          a login is separate, and only a Super Admin can issue one.
-        </p>
-        <form onSubmit={create} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <div><Label>Full name</Label><Input name="fullName" required placeholder="Rajesh Kumar" /></div>
-          <div><Label>Business name</Label><Input name="businessName" placeholder="optional" /></div>
-          <div>
-            <Label>Type</Label>
-            <Select name="type" defaultValue="agent">
-              <option value="agent">Agent</option>
-              <option value="freelancer">Freelancer</option>
-            </Select>
-          </div>
-          <div>
-            <Label>Branch</Label>
-            <Select name="branchId">
-              <option value="">— select —</option>
-              {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
-            </Select>
-          </div>
-          <div><Label>Email</Label><Input name="email" type="email" /></div>
-          <div><Label>Phone</Label><Input name="phone" /></div>
-          <div>
-            <Label>Commission basis</Label>
-            <Select name="commissionBasis" defaultValue="per_enrollment">
-              <option value="per_enrollment">Flat, per enrolment</option>
-              <option value="per_lead">Flat, per lead</option>
-              <option value="percent_of_fee">Percentage of fee</option>
-            </Select>
-          </div>
-          <div>
-            <Label>Rate</Label>
-            <Input name="commissionRate" type="number" step="0.01" min="0" defaultValue="0" />
-            <p className="mt-1 text-xs text-slate-500">₹ for flat, % for percentage</p>
-          </div>
-          <div className="sm:col-span-2 lg:col-span-4">
-            <Button type="submit" disabled={busy}>{busy ? "Saving…" : "Add partner"}</Button>
+      <Card className="p-5 sm:p-6">
+        <div className="mb-5">
+          <h2 className="text-base font-semibold text-navy-900">Add a partner</h2>
+          <p className="mt-0.5 text-sm text-slate-500">A referral code is created automatically when you add them.</p>
+        </div>
+        <form onSubmit={create} className="space-y-6">
+          <fieldset className="grid gap-x-4 gap-y-5 sm:grid-cols-2 lg:grid-cols-4">
+            <legend className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Who they are</legend>
+            <div className="min-w-0"><Label>Full name</Label><Input name="fullName" required placeholder="Rajesh Kumar" /></div>
+            <div className="min-w-0"><Label>Business name (optional)</Label><Input name="businessName" placeholder="Kumar Overseas" /></div>
+            <div className="min-w-0">
+              <Label>Type</Label>
+              <Select name="type" defaultValue="agent">
+                <option value="agent">Agent</option>
+                <option value="freelancer">Freelancer</option>
+              </Select>
+            </div>
+            <div className="min-w-0">
+              <Label>Branch</Label>
+              <Select name="branchId" defaultValue="">
+                <option value="">Choose a branch</option>
+                {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </Select>
+            </div>
+            <div className="min-w-0"><Label>Email</Label><Input name="email" type="email" placeholder="name@example.com" /></div>
+            <div className="min-w-0"><Label>Phone</Label><Input name="phone" inputMode="tel" placeholder="98765 43210" /></div>
+          </fieldset>
+          <fieldset className="grid gap-x-4 gap-y-5 border-t border-slate-100 pt-5 sm:grid-cols-2 lg:grid-cols-4">
+            <legend className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Commission</legend>
+            <div className="min-w-0">
+              <Label>Commission basis</Label>
+              <Select name="commissionBasis" defaultValue="per_enrollment">
+                <option value="per_enrollment">Flat, per enrolment</option>
+                <option value="per_lead">Flat, per lead</option>
+                <option value="percent_of_fee">Percentage of fee</option>
+              </Select>
+            </div>
+            <div className="min-w-0">
+              <Label>Rate</Label>
+              <Input name="commissionRate" type="number" step="0.01" min="0" defaultValue="0" />
+              <p className="mt-1.5 text-xs text-slate-500">Rupees for a flat amount, percent for a percentage.</p>
+            </div>
+          </fieldset>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button type="submit" disabled={busy}>{busy ? "Adding…" : "Add partner"}</Button>
+            {error && <p role="alert" className="text-sm font-medium text-rose-700">{error}</p>}
+            {created && !error && <p role="status" className="text-sm font-medium text-emerald-700">{created}</p>}
           </div>
         </form>
-        {error ? <p className="mt-3 text-sm text-red-700">{error}</p> : null}
       </Card>
 
-      <Card>
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-500">
-              <th className="pb-2">Partner</th>
-              <th className="pb-2">Code</th>
-              <th className="pb-2">Branch</th>
-              <th className="pb-2">Commission</th>
-              <th className="pb-2 text-right">Referred</th>
-              <th className="pb-2 text-right">Login</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((p) => (
-              <tr key={p.id} className="border-b border-slate-100 last:border-0">
-                <td className="py-3">
-                  <span className="font-medium text-navy-900">{p.business_name || p.full_name}</span>
-                  <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] capitalize text-slate-600">
-                    {p.type}
-                  </span>
-                  {p.email ? <p className="text-xs text-slate-500">{p.email}</p> : null}
-                </td>
-                <td className="py-3 font-mono text-xs text-slate-700">
-                  {p.referral_code}
-                  <button
-                    type="button"
-                    onClick={() => void copy(`${window.location.origin}/r/${p.referral_code}`, p.id)}
-                    className="ml-2 rounded border border-slate-200 px-1.5 py-0.5 font-sans text-[11px] text-sky-700 hover:bg-sky-50"
-                  >
-                    {copyState.id === p.id && copyState.state === "copied" ? "✓ Link copied" : copyState.id === p.id && copyState.state === "failed" ? "Copy failed" : "Copy link"}
-                  </button>
-                </td>
-                <td className="py-3 text-slate-600">{p.branch_name || "—"}</td>
-                <td className="py-3 text-slate-600">
-                  {p.commission_basis === "percent_of_fee"
-                    ? `${Number(p.commission_rate)}%`
-                    : `₹${Number(p.commission_rate).toLocaleString("en-IN")}`}
-                  <span className="ml-1 text-xs text-slate-400">{BASIS_LABEL[p.commission_basis]}</span>
-                </td>
-                <td className="py-3 text-right text-slate-600">
-                  {p.referred_count}
-                  {p.pending_commissions > 0 ? (
-                    <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-800">
-                      {p.pending_commissions} pending
-                    </span>
-                  ) : null}
-                </td>
-                <td className="py-3 text-right">
-                  {p.login_enabled && isSuperAdmin ? (
-                    <button
-                      onClick={() => setVisibilityFor(p)}
-                      className="mr-2 inline-flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-1 text-xs text-navy-900"
-                      title="Choose what this agent sees about their students"
-                    >
-                      <Eye className="h-3 w-3" /> Visibility
-                    </button>
-                  ) : null}
-                  {isSuperAdmin ? <span className="mr-2"><DeleteButton kind="partner" id={p.id} name={p.business_name || p.full_name} onDeleted={() => void load()} /></span> : null}
-                  {p.login_enabled ? (
-                    <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs text-emerald-700">Active</span>
-                  ) : isSuperAdmin ? (
-                    <button
-                      onClick={() => setActivating(p)}
-                      className="flex items-center gap-1 rounded-lg border border-slate-300 px-2 py-1 text-xs text-navy-900"
-                    >
-                      <KeyRound className="h-3 w-3" /> Give login
-                    </button>
-                  ) : (
-                    <span className="text-xs text-slate-400">Super Admin only</span>
-                  )}
-                </td>
+      <Card className="overflow-hidden p-0">
+        <div className="border-b border-slate-100 px-5 py-4">
+          <h2 className="text-base font-semibold text-navy-900">All partners</h2>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[860px] text-sm">
+            <thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+              <tr>
+                <th scope="col" className="px-5 py-3">Partner</th>
+                <th scope="col" className="px-5 py-3">Referral code</th>
+                <th scope="col" className="px-5 py-3">Branch</th>
+                <th scope="col" className="px-5 py-3">Commission</th>
+                <th scope="col" className="px-5 py-3 text-right">Referred</th>
+                <th scope="col" className="px-5 py-3">Login</th>
+                {isSuperAdmin && <th scope="col" className="px-5 py-3 text-right"><span className="sr-only">Actions</span></th>}
               </tr>
-            ))}
-            {rows.length === 0 ? (
-              <tr><td colSpan={6} className="py-6 text-center text-slate-500">No partners yet.</td></tr>
-            ) : null}
-          </tbody>
-        </table>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+              {rows.map((p) => (
+                <tr key={p.id} className="align-middle transition hover:bg-slate-50/70">
+                  <td className="px-5 py-3.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-semibold text-navy-900">{p.business_name || p.full_name}</span>
+                      <span className={`rounded-md px-1.5 py-0.5 text-[11px] font-medium capitalize ${p.type === "agent" ? "bg-sky-50 text-sky-700" : "bg-violet-50 text-violet-700"}`}>
+                        {p.type}
+                      </span>
+                    </div>
+                    {p.business_name && p.full_name && p.business_name !== p.full_name ? (
+                      <p className="mt-0.5 text-xs text-slate-500">{p.full_name}</p>
+                    ) : null}
+                    {p.email ? <p className="mt-0.5 text-xs text-slate-500">{p.email}</p> : null}
+                  </td>
+                  <td className="px-5 py-3.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="rounded-md bg-slate-100 px-2 py-1 font-mono text-xs text-slate-700">{p.referral_code}</span>
+                      <button
+                        type="button"
+                        onClick={() => void copy(`${window.location.origin}/r/${p.referral_code}`, p.id)}
+                        className="rounded-md border border-slate-200 px-2 py-1 text-xs font-medium text-sky-700 hover:bg-sky-50"
+                      >
+                        {copyState.id === p.id && copyState.state === "copied" ? "Link copied" : copyState.id === p.id && copyState.state === "failed" ? "Copy failed" : "Copy link"}
+                      </button>
+                    </div>
+                  </td>
+                  <td className="px-5 py-3.5 text-slate-700">{p.branch_name || <span className="text-slate-400">No branch</span>}</td>
+                  <td className="px-5 py-3.5 text-slate-700">
+                    <span className="font-medium tabular-nums">
+                      {p.commission_basis === "percent_of_fee"
+                        ? `${Number(p.commission_rate)}%`
+                        : `₹${Number(p.commission_rate).toLocaleString("en-IN")}`}
+                    </span>
+                    <span className="ml-1 text-xs text-slate-500">{BASIS_LABEL[p.commission_basis]}</span>
+                  </td>
+                  <td className="px-5 py-3.5 text-right tabular-nums text-slate-700">
+                    <span className="font-medium">{p.referred_count}</span>
+                    {p.pending_commissions > 0 ? (
+                      <span className="ml-2 rounded-md bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-800">
+                        {p.pending_commissions} pending
+                      </span>
+                    ) : null}
+                  </td>
+                  <td className="px-5 py-3.5">
+                    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium ${
+                      p.login_enabled ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"
+                    }`}>
+                      <span className={`h-1.5 w-1.5 rounded-full ${p.login_enabled ? "bg-emerald-500" : "bg-slate-400"}`} />
+                      {p.login_enabled ? "Login active" : "No login"}
+                    </span>
+                  </td>
+                  {isSuperAdmin && (
+                    <td className="px-5 py-3.5">
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        {p.login_enabled ? (
+                          <button
+                            type="button"
+                            onClick={() => { setDialogError(""); setVisibilityFor(p); }}
+                            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-navy-900 hover:bg-slate-50"
+                            title="Choose what this partner sees about their students"
+                          >
+                            <Eye className="h-3.5 w-3.5" /> Visibility
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => { setDialogError(""); setActivating(p); }}
+                            className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs font-medium text-navy-900 hover:bg-slate-50"
+                          >
+                            <KeyRound className="h-3.5 w-3.5" /> Give login
+                          </button>
+                        )}
+                        <DeleteButton kind="partner" id={p.id} name={p.business_name || p.full_name} onDeleted={() => void load()} />
+                      </div>
+                    </td>
+                  )}
+                </tr>
+              ))}
+              {rows.length === 0 ? (
+                <tr><td colSpan={7} className="px-5 py-8 text-center text-slate-500">No partners yet. Add the first one above.</td></tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+        {!isSuperAdmin && rows.length > 0 && (
+          <p className="border-t border-slate-100 px-5 py-3 text-xs text-slate-500">Only a Super Admin can give a partner a login or change what they see.</p>
+        )}
       </Card>
 
       {visibilityFor ? (
@@ -288,6 +349,7 @@ export default function Partners() {
                 </label>
               ))}
             </div>
+            {dialogError && <p role="alert" className="mt-4 text-sm font-medium text-rose-700">{dialogError}</p>}
             <div className="mt-5 flex justify-end gap-2">
               <Button variant="ghost" onClick={() => setVisibilityFor(null)}>Cancel</Button>
               <Button
@@ -305,7 +367,7 @@ export default function Partners() {
                     setVisibilityFor(null);
                     await load();
                   } catch (err) {
-                    window.alert(err instanceof Error ? err.message : "Could not save what this partner can see.");
+                    setDialogError(err instanceof Error ? err.message : "Could not save what this partner can see.");
                   }
                 }}
               >
@@ -318,7 +380,7 @@ export default function Partners() {
 
       {activating ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-navy-950/50 p-4">
-          <Card className="w-full max-w-md">
+          <Card className="w-full max-w-md p-5 sm:p-6">
             <h2 className="mb-1 font-semibold text-navy-900">
               Give {activating.business_name || activating.full_name} a login
             </h2>
@@ -332,6 +394,7 @@ export default function Partners() {
                 <input type="checkbox" name="canViewStatus" className="h-4 w-4" />
                 Let them see each student&apos;s progress
               </label>
+              {dialogError && <p role="alert" className="text-sm font-medium text-rose-700">{dialogError}</p>}
               <div className="flex gap-2 pt-2">
                 <Button type="submit" disabled={busy}>{busy ? "Activating…" : "Activate"}</Button>
                 <button type="button" onClick={() => setActivating(null)} className="px-3 text-sm text-slate-600">
