@@ -197,7 +197,7 @@ export default function Finance() {
       ))}
 
       {rows.length === 0 ? (
-        <Card><p className="py-8 text-center text-sm text-slate-500">No commissions yet.</p></Card>
+        <Card className="p-5"><p className="py-6 text-center text-sm text-slate-500">No commissions yet.</p></Card>
       ) : null}
     </div>
   );
