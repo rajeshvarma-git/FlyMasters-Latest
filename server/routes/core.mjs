@@ -38,6 +38,7 @@ import { assignRole, setAccountBranches, createAccount, discardAccount, AccountW
 import { hrEnabled, hrOff, telecallerHrEnabled } from "../lib/hrSwitch.mjs";
 import { decideAccountAction } from "../lib/accessPolicy.mjs";
 import { loadAccountTarget } from "../lib/accountTargets.mjs";
+import { createStateCache, scopeKey } from "../lib/stateCache.mjs";
 import { allow, branchInScope, checkLeadInScope, checkRecipientInScope, checkStaffInScope, managerSeesConversation, requireGlobalScope, checkRowInScope, checkLeaveInScope, staffAuthId } from "../lib/scopeGuards.mjs";
 import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
 import { rotateRefreshToken, revokeFamily, revokeAllForUser, RefreshRejected } from "../lib/refreshTokens.mjs";
@@ -1363,7 +1364,7 @@ function withReferral(lead, referralMap) {
   };
 }
 
-async function loadState(scope = null) {
+async function loadStateUncached(scope = null) {
   const [
     sqlLeads,
     jsonLeads,
@@ -1600,6 +1601,16 @@ async function loadState(scope = null) {
   };
 }
 
+// One shared, short-lived copy of the read below (see server/lib/stateCache.mjs for the reasoning).
+// Off by default outside a deployed environment so tests that write straight to the database stay exact.
+const STATE_CACHE_MS = Number(
+  process.env.STATE_CACHE_MS ?? (process.env.RAILWAY_GIT_COMMIT_SHA || process.env.NODE_ENV === "production" ? 4000 : 0),
+);
+const stateCache = createStateCache({ ttlMs: STATE_CACHE_MS, compute: (scope) => loadStateUncached(scope) });
+async function loadState(scope = null) {
+  return stateCache.get(scopeKey(scope), scope);
+}
+
 async function notify(userId, title, message, type = "info", actionUrl = "") {
   if (!userId) return;
   const now = new Date().toISOString();
@@ -1645,6 +1656,15 @@ const whatsapp = createWhatsAppService({
 });
 
 const router = express.Router();
+
+// Any write through this router drops the shared read cache, so the person who just changed something
+// sees it on their next read instead of after the cache's few seconds.
+router.use((req, res, next) => {
+  if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "OPTIONS") {
+    res.on("finish", () => stateCache.invalidate());
+  }
+  next();
+});
 const ALLOWED_ORIGINS = String(process.env.ALLOWED_ORIGINS || "")
   .split(",")
   .map((item) => item.trim())
