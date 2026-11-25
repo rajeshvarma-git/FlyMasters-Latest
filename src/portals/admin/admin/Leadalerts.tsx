@@ -1191,34 +1191,10 @@ export default function LeadAlerts() {
         </div>
       </div>
 
-      <Card className="mb-4 flex flex-wrap items-center justify-between gap-4 p-4">
-        <div>
-          <p className="text-2xl font-bold text-slate-900">{waiting.length}</p>
-          <p className="text-sm text-slate-500">
-            {waiting.length === 1 ? "lead waiting" : "leads waiting"}
-            {waiting.length > 0 && oldestHours >= 1 && (
-              <> · oldest {ageLabel(oldestHours)}</>
-            )}
-          </p>
-        </div>
-        <div className="text-right text-sm text-slate-500">
-          <p>Last check: {status ? clockTime(status.lastRunAt) : "—"} · Next: {status ? countdown(status.nextRunAt) : "—"}</p>
-        </div>
-        <Button variant="secondary" size="sm" disabled={busy} onClick={() => void runNow()}>
-          <Play className={`h-4 w-4 ${busy ? "animate-pulse" : ""}`} /> Run check now
-        </Button>
-      </Card>
-
       {error && <Card className="mb-4 border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}</Card>}
       {status?.lastError && (
         <Card className="mb-4 border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
           Last check failed: {status.lastError}
-        </Card>
-      )}
-      {waiting.length > 0 && oldestHours >= ESCALATE_HOURS && (
-        <Card className="mb-4 border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
-          <strong>{waiting.length} lead{waiting.length === 1 ? "" : "s"} waiting over {ESCALATE_HOURS} hours.</strong>{" "}
-          Assign someone below.
         </Card>
       )}
 
