@@ -456,10 +456,19 @@ import { Card } from "@admin/components/ui/Card";
 import { Input, Select } from "@admin/components/ui/Field";
 
 const STATUSES = ["cold", "warm", "hot"];
-type OwnerFilter = "telecaller" | "counselor";
+// "all" exists so a link can land on the whole set of open leads. The dashboard counts every open
+// lead, and without this the tile for 5 leads opened a tab showing only the ones with no counselor.
+type OwnerFilter = "all" | "telecaller" | "counselor";
 
 function parseOwner(value: string | null): OwnerFilter {
-  return value === "counselor" ? "counselor" : "telecaller";
+  if (value === "counselor") return "counselor";
+  if (value === "all") return "all";
+  return "telecaller";
+}
+
+/** Both filters live in the URL so a link can open an exact view, and the back button works. */
+function parseStatus(value: string | null): string {
+  return value && STATUSES.includes(value) ? value : "all";
 }
 
 function isOpenLead(lead: { entity_type?: string; lead_status?: string }) {
@@ -470,11 +479,12 @@ export default function Leads() {
   const store = useAdminStore();
   const [searchParams, setSearchParams] = useSearchParams();
   const [query, setQuery] = useState("");
-  const [status, setStatus] = useState("all");
+  const [status, setStatus] = useState(() => parseStatus(searchParams.get("status")));
   const [owner, setOwner] = useState<OwnerFilter>(() => parseOwner(searchParams.get("owner")));
 
   useEffect(() => {
     setOwner(parseOwner(searchParams.get("owner")));
+    setStatus(parseStatus(searchParams.get("status")));
   }, [searchParams]);
 
   const openLeads = useMemo(
@@ -492,6 +502,15 @@ export default function Leads() {
     [openLeads],
   );
 
+  /** Keeps the status in the URL as well, so a filtered view can be linked to and shared. */
+  const selectStatus = (next: string) => {
+    setStatus(next);
+    const params = new URLSearchParams(searchParams);
+    if (next === "all") params.delete("status");
+    else params.set("status", next);
+    setSearchParams(params, { replace: true });
+  };
+
   const selectOwner = (next: OwnerFilter) => {
     setOwner(next);
     const params = new URLSearchParams(searchParams);
@@ -502,14 +521,14 @@ export default function Leads() {
 
   const leads = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const pool = owner === "counselor" ? counselorLeads : telecallerLeads;
+    const pool = owner === "all" ? openLeads : owner === "counselor" ? counselorLeads : telecallerLeads;
     return pool
       .filter((lead) => status === "all" || lead.lead_status === status)
       .filter((lead) =>
         `${lead.first_name} ${lead.last_name} ${lead.email} ${lead.phone} ${lead.field_of_interest}`.toLowerCase().includes(q),
       )
       .sort((a, b) => String(b.created_at || "").localeCompare(String(a.created_at || "")));
-  }, [counselorLeads, owner, query, status, telecallerLeads]);
+  }, [counselorLeads, openLeads, owner, query, status, telecallerLeads]);
 
   return (
     <div>
@@ -528,6 +547,22 @@ export default function Leads() {
 
       <div className="mb-4 flex flex-wrap items-center gap-3">
         <div className="inline-flex rounded-xl border border-slate-200 bg-slate-100 p-1">
+          <button
+            type="button"
+            onClick={() => selectOwner("all")}
+            className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition ${
+              owner === "all" ? "bg-white text-navy-900 shadow-sm" : "text-slate-600 hover:text-navy-900"
+            }`}
+          >
+            All
+            <span
+              className={`rounded-full px-2 py-0.5 text-[11px] font-bold ${
+                owner === "all" ? "bg-sky-100 text-sky-800" : "bg-slate-200 text-slate-600"
+              }`}
+            >
+              {openLeads.length}
+            </span>
+          </button>
           <button
             type="button"
             onClick={() => selectOwner("telecaller")}
@@ -564,7 +599,7 @@ export default function Leads() {
           </button>
         </div>
         <Input className="max-w-sm" placeholder="Search name, email, phone..." value={query} onChange={(e) => setQuery(e.target.value)} />
-        <Select className="w-40" value={status} onChange={(e) => setStatus(e.target.value)}>
+        <Select className="w-40" value={status} onChange={(e) => selectStatus(e.target.value)}>
           <option value="all">All statuses</option>
           {STATUSES.map((item) => <option key={item} value={item}>{item}</option>)}
         </Select>

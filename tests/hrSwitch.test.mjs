@@ -37,6 +37,28 @@ async function call(handler) {
   return { res, sql, threw };
 }
 
+/**
+ * Runs `body` with every HR switch forced to a known state, then restores them.
+ *
+ * All three matter, not just HR_ENABLED: TELECALLER_HR_ENABLED and COUNSELOR_HR_ENABLED override it
+ * per portal, and a developer with one of those in their .env would otherwise see "HR is off" tests
+ * fail while the same tests passed everywhere else. The switches are the thing under test, so the
+ * test must not inherit them from whoever is running it.
+ */
+async function withHrSwitches({ hr, telecaller, counselor }, body) {
+  const names = ["HR_ENABLED", "TELECALLER_HR_ENABLED", "COUNSELOR_HR_ENABLED"];
+  const saved = names.map((name) => [name, process.env[name]]);
+  const set = (name, value) => { if (value === undefined) delete process.env[name]; else process.env[name] = value; };
+  set("HR_ENABLED", hr);
+  set("TELECALLER_HR_ENABLED", telecaller);
+  set("COUNSELOR_HR_ENABLED", counselor);
+  try {
+    return await body();
+  } finally {
+    for (const [name, value] of saved) set(name, value);
+  }
+}
+
 test("hrEnabled is true only for the word true, in any case", () => {
   const was = process.env.HR_ENABLED;
   try {
@@ -51,28 +73,22 @@ test("hrEnabled is true only for the word true, in any case", () => {
 
 for (const [router, method, path] of HR_ROUTES) {
   test(`${method.toUpperCase()} ${path}: refused with HR_DISABLED, and no statement reaches the database, while HR is off`, async () => {
-    const was = process.env.HR_ENABLED;
-    delete process.env.HR_ENABLED;
-    try {
+    await withHrSwitches({}, async () => {
       const { res, sql, threw } = await call(handlerOf(router, method, path));
       assert.equal(threw, false);
       assert.equal(res.code, 403);
       assert.equal(res.body.code, "HR_DISABLED");
       assert.deepEqual(sql, []);
-    } finally {
-      if (was !== undefined) process.env.HR_ENABLED = was;
-    }
+    });
   });
 
   test(`${method.toUpperCase()} ${path}: HR_ENABLED=true lets the request reach its normal handler`, async () => {
-    const was = process.env.HR_ENABLED;
-    process.env.HR_ENABLED = "true";
-    try {
+    // The per-portal switches are cleared too: with COUNSELOR_HR_ENABLED=false in someone's .env this
+    // would otherwise fail for the counselor routes while passing everywhere else.
+    await withHrSwitches({ hr: "true" }, async () => {
       const { res } = await call(handlerOf(router, method, path));
       assert.notEqual(res.body?.code, "HR_DISABLED");
-    } finally {
-      if (was === undefined) delete process.env.HR_ENABLED; else process.env.HR_ENABLED = was;
-    }
+    });
   });
 }
 

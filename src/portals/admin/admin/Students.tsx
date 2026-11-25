@@ -149,7 +149,7 @@
 // }
 
 import { useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { ChevronRight, GraduationCap } from "lucide-react";
 import { useAdminStore } from "@admin/lib/store";
 import { counselorLabel, displayName, initials, isConvertedStudent, ownsShortlist, studentOwns } from "@admin/lib/utils";
@@ -169,16 +169,34 @@ function daysSince(value?: string | null) {
 
 export default function Students() {
   const store = useAdminStore();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [query, setQuery] = useState("");
+  // Narrowed from the URL so a dashboard tile can open the exact set it counted. Without this,
+  // "With a counselor" and "Converted this month" both landed on the full student list and the
+  // number you had just clicked was nowhere to be seen.
+  const counselorFilter = searchParams.get("counselor") === "assigned" ? "assigned" : "all";
+  const convertedFilter = searchParams.get("converted") === "month" ? "month" : "all";
+  const thisMonth = new Date().toISOString().slice(0, 7);
+
+  const clearFilters = () => {
+    const params = new URLSearchParams(searchParams);
+    params.delete("counselor");
+    params.delete("converted");
+    setSearchParams(params, { replace: true });
+  };
 
   const students = useMemo(() => {
     const q = query.trim().toLowerCase();
     return store.leads
       .filter((lead) => isConvertedStudent(lead))
+      .filter((lead) => counselorFilter === "all" || Boolean(lead.assigned_counselor_id))
+      .filter((lead) => convertedFilter === "all" || String(lead.conversion_date || "").slice(0, 7) === thisMonth)
       .filter((lead) =>
         `${lead.first_name} ${lead.last_name} ${lead.email} ${lead.field_of_interest}`.toLowerCase().includes(q),
       );
-  }, [store.leads, query]);
+  }, [store.leads, query, counselorFilter, convertedFilter, thisMonth]);
+
+  const narrowed = counselorFilter !== "all" || convertedFilter !== "all";
 
   const summarise = (student: Lead) => {
     const docs = store.documents.filter((doc) => !doc.archived && studentOwns(student, doc.user_id));
@@ -211,12 +229,27 @@ export default function Students() {
         </div>
       </div>
 
-      <Input
-        className="mb-4 max-w-sm"
-        placeholder="Search students..."
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-      />
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <Input
+          className="max-w-sm"
+          placeholder="Search students..."
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        {/* Says what is being hidden, and offers the way out. A filtered list that looks like the
+            whole list is how someone concludes their students have disappeared. */}
+        {narrowed && (
+          <div className="flex items-center gap-2 text-sm">
+            <span className="rounded-full bg-sky-100 px-3 py-1 font-semibold text-sky-800">
+              {counselorFilter === "assigned" ? "With a counselor" : "Converted this month"}
+              {counselorFilter === "assigned" && convertedFilter === "month" ? " · converted this month" : ""}
+            </span>
+            <button type="button" onClick={clearFilters} className="font-semibold text-sky-600 hover:underline">
+              Show all students
+            </button>
+          </div>
+        )}
+      </div>
 
       <Card className="overflow-hidden">
         {students.map((student) => {

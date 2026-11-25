@@ -249,13 +249,16 @@ export default function Dashboard() {
   const today = format(new Date(), "yyyy-MM-dd");
   const clockedIn = store.attendance.filter((row) => row.date === today && row.clock_in && !row.clock_out);
 
+  // Every tile opens a view that shows the records it counted. "Leads" and "Hot leads" used to go to
+  // the same unfiltered page, so clicking the 4 hot leads gave you the full list of 5 and no sign of
+  // which were hot - the number you clicked was nowhere on the page you landed on.
   const stats = [
-    { label: "Leads", value: leads.length, icon: PhoneCall, to: "/leads" },
-    { label: "Hot leads", value: hot.length, icon: Flame, to: "/leads" },
+    { label: "Leads", value: leads.length, icon: PhoneCall, to: "/leads?owner=all" },
+    { label: "Hot leads", value: hot.length, icon: Flame, to: "/leads?owner=all&status=hot" },
     { label: "Students", value: students.length, icon: GraduationCap, to: "/students" },
     { label: "Need counselor", value: unassignedCounselor.length, icon: Target, to: "/students?view=assign" },
-    { label: "With a counselor", value: withCounselor, icon: Users, to: "/students" },
-    { label: "Converted this month", value: convertedThisMonth, icon: GraduationCap, to: "/students" },
+    { label: "With a counselor", value: withCounselor, icon: Users, to: "/students?counselor=assigned" },
+    { label: "Converted this month", value: convertedThisMonth, icon: GraduationCap, to: "/students?converted=month" },
     { label: "Docs to review", value: pendingDocs.length, icon: FileText, to: "/documents" },
     { label: "Applications", value: pendingApps.length, icon: BookOpen, to: "/applications" },
   ];
