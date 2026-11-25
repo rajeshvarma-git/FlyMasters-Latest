@@ -316,11 +316,11 @@ export default function Dashboard() {
 
         <Card className="p-5">
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="font-semibold">{HR_ENABLED ? "Counselors on shift today" : "Counselors"}</h2>
+            <h2 className="font-semibold">{HR_ENABLED ? "Counselors on shift today" : "Counselor workload"}</h2>
             <Link to="/students" className="-my-1 py-1 text-sm text-sky-600">View all</Link>
           </div>
           <p className="-mt-2 mb-3 text-xs text-slate-500">
-            {store.counselors.length} {store.counselors.length === 1 ? "counselor" : "counselors"}
+            Students assigned to each counselor · {store.counselors.length} {store.counselors.length === 1 ? "counselor" : "counselors"}
             {HR_ENABLED ? ` · ${clockedIn.length} clocked in` : ""}
           </p>
           <div className="space-y-3">
