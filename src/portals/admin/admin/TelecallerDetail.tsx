@@ -1,15 +1,15 @@
 import { useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { ArrowLeft, ArrowRightLeft, CheckCircle2, MessageCircle, MessageSquare, PhoneCall, Trash2 } from "lucide-react";
+import { ArrowLeft, CheckCircle2, MessageCircle, MessageSquare, PhoneCall, Trash2 } from "lucide-react";
 import { api } from "@admin/lib/api";
 import { useAuth } from "@admin/context/AuthContext";
 import { refreshStore, useAdminStore } from "@admin/lib/store";
 import { counselorLabel, displayName, initials, isConvertedStudent, studentOwns } from "@admin/lib/utils";
 import DeleteButton from "@admin/components/DeleteButton";
+import { TransferWorkPanel } from "@admin/components/TransferWorkPanel";
 import { Badge } from "@admin/components/ui/Badge";
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
-import { Select } from "@admin/components/ui/Field";
 import ChatInboxPanel, { type InboxMessage, type InboxThread } from "@admin/components/ChatInboxPanel";
 import WhatsAppThreads, { whatsAppThreadIdForLead } from "@admin/components/WhatsAppThreads";
 import type { Lead } from "@admin/lib/types";
@@ -95,6 +95,7 @@ export default function TelecallerDetail() {
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [selectedWhatsAppId, setSelectedWhatsAppId] = useState<string | null>(null);
   const [transferTargetId, setTransferTargetId] = useState("");
+  const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [busyAction, setBusyAction] = useState<"transfer" | "remove" | null>(null);
   const [error, setError] = useState("");
 
@@ -193,49 +194,9 @@ export default function TelecallerDetail() {
 
   const activeChatThread = chatThreads.find((row) => row.conv.id === selectedChatId) || chatThreads[0] || null;
 
-  const otherTelecallers = store.telecallers.filter(
-    (row) => row.is_active !== false && row.id !== telecaller?.id,
-  );
-
-  const transferLeads = async () => {
-    if (!telecaller) return;
-    if (!transferTargetId) {
-      setError("Choose a telecaller to transfer leads to.");
-      return;
-    }
-    setBusyAction("transfer");
-    setError("");
-    try {
-      const result = await api<{ count: number }>(`/telecallers/${telecaller.id}/transfer`, {
-        method: "POST",
-        body: { targetTelecallerId: transferTargetId },
-      });
-      setTransferTargetId("");
-      await refreshStore();
-      if (result.count === 0) {
-        setError("No open leads were assigned to this telecaller.");
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not transfer leads.");
-    } finally {
-      setBusyAction(null);
-    }
-  };
-
   const removeTelecaller = async () => {
     if (!telecaller) return;
-    if (open.length > 0 && !transferTargetId) {
-      setError(
-        `This telecaller still has ${open.length} open lead(s). Pick someone to transfer them to before removing.`,
-      );
-      return;
-    }
-    const message =
-      open.length > 0
-        ? `Transfer ${open.length} open lead(s) to the selected telecaller and remove ${displayName(telecaller.first_name, telecaller.last_name, telecaller.email)}?`
-        : `Remove ${displayName(telecaller.first_name, telecaller.last_name, telecaller.email)} from the telecaller list?`;
-    if (!window.confirm(message)) return;
-
+    setConfirmingRemove(false);
     setBusyAction("remove");
     setError("");
     try {
@@ -305,44 +266,50 @@ export default function TelecallerDetail() {
           <div>
             <p className="text-sm font-semibold text-slate-800">Transfer or remove telecaller</p>
             <p className="mt-1 max-w-xl text-xs text-slate-500">
-              Transfer moves all open leads, call notes, in-app chats, and WhatsApp threads to another telecaller so
-              they keep full history. Remove deactivates this telecaller — if open leads are assigned, pick someone to
-              transfer them to first.
+              Transfer moves this telecaller's open leads to a colleague in the same branch, with call notes, chats,
+              WhatsApp threads and history. Remove deactivates this telecaller; choose a colleague first if leads are
+              still assigned.
             </p>
           </div>
         </div>
-        <div className="mt-4 flex flex-wrap items-end gap-2">
-          <div className="min-w-[260px]">
-            <p className="mb-1.5 text-sm font-medium text-slate-700">Transfer open leads to</p>
-            <Select value={transferTargetId} onChange={(e) => setTransferTargetId(e.target.value)}>
-              <option value="">Choose telecaller</option>
-              {otherTelecallers.map((row) => (
-                <option key={row.id} value={row.id}>
-                  {displayName(row.first_name, row.last_name, row.email)}
-                  {row.phone ? ` · ${row.phone}` : ""}
-                </option>
-              ))}
-            </Select>
-          </div>
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={busyAction !== null || !transferTargetId || open.length === 0}
-            onClick={() => void transferLeads()}
-          >
-            <ArrowRightLeft className="h-4 w-4" />
-            {busyAction === "transfer" ? "Transferring..." : "Transfer data"}
-          </Button>
-          {isSuperAdmin && (
+        <TransferWorkPanel
+          personId={telecaller.id}
+          personName={displayName(telecaller.first_name, telecaller.last_name, telecaller.email)}
+          isCounselor={false}
+          // Remove hands the remaining leads to a Telecaller; a Counselor can still receive them through Transfer data.
+          onReceiverChange={(r) => setTransferTargetId(r && r.role === "telecaller" ? r.id : "")}
+        />
+        <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-4">
+          {isSuperAdmin && !confirmingRemove && (
             <Button
               size="sm"
               variant="danger"
               disabled={busyAction !== null}
-              onClick={() => void removeTelecaller()}
+              onClick={() => {
+                if (open.length > 0 && !transferTargetId) {
+                  setError(`This telecaller still has ${open.length} open lead(s). Choose a telecaller above to receive them, or transfer them first, before removing.`);
+                  return;
+                }
+                setError("");
+                setConfirmingRemove(true);
+              }}
             >
               <Trash2 className="h-4 w-4" />
-              {busyAction === "remove" ? "Removing..." : "Remove telecaller"}
+              Remove telecaller
             </Button>
+          )}
+          {isSuperAdmin && confirmingRemove && (
+            <div role="group" aria-label="Confirm removal" className="flex flex-wrap items-center gap-2 rounded-xl bg-rose-50 px-3 py-2">
+              <span className="text-sm text-rose-900">
+                {open.length > 0
+                  ? `Move all ${open.length} open lead(s) to the chosen telecaller and remove ${displayName(telecaller.first_name, telecaller.last_name, telecaller.email)}?`
+                  : `Remove ${displayName(telecaller.first_name, telecaller.last_name, telecaller.email)} from the telecaller list?`}
+              </span>
+              <Button size="sm" variant="danger" disabled={busyAction !== null} onClick={() => void removeTelecaller()}>
+                {busyAction === "remove" ? "Removing..." : "Yes, remove"}
+              </Button>
+              <Button size="sm" variant="secondary" disabled={busyAction !== null} onClick={() => setConfirmingRemove(false)}>Cancel</Button>
+            </div>
           )}
           <DeleteButton
               kind="staff"
@@ -352,18 +319,7 @@ export default function TelecallerDetail() {
               onDeleted={() => navigate("/telecallers")}
             />
         </div>
-        {open.length > 0 && (
-          <p className="mt-3 text-xs text-slate-500">
-            {open.length} open lead{open.length === 1 ? "" : "s"} will move with chat and WhatsApp history when you
-            transfer or remove. Converted students stay linked for reporting only.
-          </p>
-        )}
-        {open.length === 0 && (
-          <p className="mt-3 text-xs text-amber-700">
-            Transfer data is off because this telecaller has no open leads to move. It turns on as soon as a lead is
-            assigned to them and you choose who to transfer to. Converted students stay linked for reporting only.
-          </p>
-        )}
+        <p className="mt-2 text-xs text-slate-500">Converted students stay linked to this telecaller for reporting only.</p>
       </Card>
 
       {error && <Card className="mt-4 border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">{error}</Card>}
