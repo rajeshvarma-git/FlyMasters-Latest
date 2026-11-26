@@ -1,4 +1,5 @@
 import { useState } from "react";
+import WhatsAppCodeStep, { type WhatsAppChallenge } from "./components/WhatsAppCodeStep";
 import { HOME_FOR_ROLE, setSession, setStoredUser, type PortalRole } from "./lib/session";
 
 /**
@@ -24,6 +25,7 @@ export default function StaffSignIn() {
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [challenge, setChallenge] = useState<WhatsAppChallenge | null>(null);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -36,34 +38,62 @@ export default function StaffSignIn() {
         body: JSON.stringify({ email: email.trim(), password }),
       });
       const data = await res.json().catch(() => ({}));
+      if (res.ok && data.mfaRequired) {
+        setChallenge({ challengeId: data.challengeId, masked: data.masked });
+        setBusy(false);
+        return;
+      }
       if (!res.ok || !data.token) {
         throw new Error(data.error || "Wrong email or password.");
       }
-
-      const role = String(data.user?.role || "") as PortalRole;
-
-      // A student account has no staff portal. Say so plainly instead of
-      // silently landing on the homepage (which looked like a failed sign-in).
-      if (role === "student") {
-        throw new Error(
-          "This is a student account, not a staff account. Students sign in on the homepage. If this person should be an admin, a super admin must give them a role in Admin → Users.",
-        );
-      }
-      if (NOT_BUILT_YET[role]) {
-        throw new Error(NOT_BUILT_YET[role]);
-      }
-      const home = STAFF_ROLES.includes(role) ? HOME_FOR_ROLE[role] : undefined;
-      if (!home) {
-        throw new Error("This account has no staff role assigned. Ask an admin.");
-      }
-
-      setSession(data);
-      setStoredUser(data.user);
-      window.location.href = home;
+      finish(data);
     } catch (err: any) {
       setError(err?.message || "Could not sign in.");
       setBusy(false);
     }
+  }
+
+  /** Sends the person to their portal once a session exists. Throws a plain message if they cannot use one. */
+  function finish(data: any) {
+    const role = String(data.user?.role || "") as PortalRole;
+    // A student account has no staff portal. Say so plainly instead of
+    // silently landing on the homepage (which looked like a failed sign-in).
+    if (role === "student") {
+      throw new Error(
+        "This is a student account, not a staff account. Students sign in on the homepage. If this person should be an admin, a super admin must give them a role in Admin → Users.",
+      );
+    }
+    if (NOT_BUILT_YET[role]) {
+      throw new Error(NOT_BUILT_YET[role]);
+    }
+    const home = STAFF_ROLES.includes(role) ? HOME_FOR_ROLE[role] : undefined;
+    if (!home) {
+      throw new Error("This account has no staff role assigned. Ask an admin.");
+    }
+    setSession(data);
+    setStoredUser(data.user);
+    window.location.href = home;
+  }
+
+  async function verifyCode(code: string) {
+    const res = await fetch("/api/auth/mfa/verify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ challengeId: challenge?.challengeId, code }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.token) throw new Error(data.error || "That code did not work.");
+    try { finish(data); } catch (err: any) { setChallenge(null); setError(err?.message || "Could not sign in."); }
+  }
+
+  async function resendCode() {
+    const res = await fetch("/api/auth/mfa/resend", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ challengeId: challenge?.challengeId }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "Could not send a new code.");
   }
 
   return (
@@ -74,6 +104,11 @@ export default function StaffSignIn() {
           <p className="mt-1 text-sm text-slate-400">Sign in</p>
         </div>
 
+        {challenge ? (
+          <div className="rounded-2xl bg-white p-6 shadow-card">
+            <WhatsAppCodeStep masked={challenge.masked} onVerify={verifyCode} onResend={resendCode} onBack={() => { setChallenge(null); setBusy(false); }} />
+          </div>
+        ) : (
         <form
           onSubmit={submit}
           className="rounded-2xl bg-white p-6 shadow-card"
@@ -123,6 +158,7 @@ export default function StaffSignIn() {
             You are taken to your own portal automatically.
           </p>
         </form>
+        )}
 
         <p className="mt-6 text-center text-xs text-slate-500">
           Looking for the student portal?{" "}

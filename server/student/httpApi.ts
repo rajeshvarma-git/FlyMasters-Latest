@@ -22,13 +22,15 @@ import {
   getSessionByToken,
   readBearerToken,
   signInUser,
+  completeMfaSignIn,
   signUpUser,
   updatePasswordForToken,
   requestPasswordReset,
   resetPasswordWithToken,
 } from "./studentAuth";
 import { chooseBranchForStudent, listChoosableBranches } from "../lib/studentBranchChoice.mjs";
-import { handleWhatsAppRequest, isWhatsAppConfigured, isWhatsAppPath } from "./whatsapp";
+import { handleWhatsAppRequest, isWhatsAppConfigured, isWhatsAppPath, sendWhatsAppOtpTemplate } from "./whatsapp";
+import { checkLoginCode, resendLoginCode } from "../lib/loginMfa.mjs";
 import { rowMatches } from "./postgres";
 import { branchAdminFolders, canUseFile, checkMutation, isBranchAdmin, rowsForFilters, viewerFromRequest, visibleRows, visibleStorageListing } from "./dataPolicy";
 
@@ -206,8 +208,24 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
     if (url === "/__auth" && req.method === "POST") {
       const body = JSON.parse((await readBody(req)) || "{}");
       if (body.action === "signin") {
-        const result = await signInUser(body.email, body.password);
+        const result = await signInUser(body.email, body.password, sendWhatsAppOtpTemplate);
+        if (result.mfa) {
+          sendJson(res, 200, { mfaRequired: true, challengeId: result.mfa.challengeId, masked: result.mfa.masked });
+          return;
+        }
         sendJson(res, result.error ? (result.status || 401) : 200, result.error ? { error: result.error } : { session: result.session });
+        return;
+      }
+      if (body.action === "mfa_verify") {
+        const checked: any = await checkLoginCode({ pool: getPool(), challengeId: String(body.challengeId || ""), code: body.code });
+        if (!checked.ok) { sendJson(res, checked.status || 400, { error: checked.error }); return; }
+        const result = await completeMfaSignIn(checked.userId);
+        sendJson(res, result.error ? (result.status || 400) : 200, result.error ? { error: result.error } : { session: result.session });
+        return;
+      }
+      if (body.action === "mfa_resend") {
+        const result: any = await resendLoginCode({ pool: getPool(), challengeId: String(body.challengeId || ""), send: sendWhatsAppOtpTemplate });
+        sendJson(res, result.error ? (result.status || 400) : 200, result.error ? { error: result.error } : { ok: true, masked: result.masked });
         return;
       }
       if (body.action === "signup") {

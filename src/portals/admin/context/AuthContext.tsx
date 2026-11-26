@@ -2,11 +2,15 @@ import { createContext, useContext, useEffect, useMemo, useState, type ReactNode
 import type { AppUser } from "@admin/lib/types";
 import { api, endSession, readStoredUser, setAuth } from "@admin/lib/api";
 import { refreshStore } from "@admin/lib/store";
+import type { WhatsAppChallenge } from "@shared/components/WhatsAppCodeStep";
 
 interface AuthValue {
   user: AppUser | null;
   loading: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
+  /** Returns a challenge when a WhatsApp code is needed before the session is given. */
+  signIn: (email: string, password: string) => Promise<WhatsAppChallenge | void>;
+  completeMfa: (challengeId: string, code: string) => Promise<void>;
+  resendMfa: (challengeId: string) => Promise<void>;
   signUp: (input: {
     email: string;
     password: string;
@@ -54,14 +58,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       loading,
       signIn: async (email, password) => {
-        const data = await api<{ token: string; refreshToken?: string | null; user: AppUser }>("/auth/signin", {
+        const data = await api<{ token?: string; refreshToken?: string | null; user?: AppUser; mfaRequired?: boolean; challengeId?: string; masked?: string }>("/auth/signin", {
           method: "POST",
           auth: false,
           body: { email, password },
         });
+        if (data.mfaRequired && data.challengeId) return { challengeId: data.challengeId, masked: data.masked || "" };
+        setAuth(data.token as string, data.user as AppUser, data.refreshToken);
+        setUser(data.user as AppUser);
+        await refreshStore();
+      },
+      completeMfa: async (challengeId, code) => {
+        const data = await api<{ token: string; refreshToken?: string | null; user: AppUser }>("/auth/mfa/verify", {
+          method: "POST",
+          auth: false,
+          body: { challengeId, code },
+        });
         setAuth(data.token, data.user, data.refreshToken);
         setUser(data.user);
         await refreshStore();
+      },
+      resendMfa: async (challengeId) => {
+        await api("/auth/mfa/resend", { method: "POST", auth: false, body: { challengeId } });
       },
       signUp: async (input) => {
         if (input.password.length < 6) throw new Error("Password must be at least 6 characters");

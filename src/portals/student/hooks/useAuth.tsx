@@ -15,7 +15,9 @@ interface AuthContextType {
   roleLoading: boolean;
   profileLoading: boolean;
   signUp: (email: string, password: string, firstName: string, lastName: string, referralCode?: string) => Promise<{ error: any }>;
-  signIn: (email: string, password: string) => Promise<{ error: any }>;
+  signIn: (email: string, password: string) => Promise<{ error: any; mfa?: { challengeId: string; masked: string } }>;
+  completeMfa: (challengeId: string, code: string) => Promise<{ error: any }>;
+  resendMfa: (challengeId: string) => Promise<{ error: any }>;
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<{ error: any }>;
   updatePassword: (newPassword: string) => Promise<{ error: any }>;
@@ -36,6 +38,8 @@ const AuthContext = createContext<AuthContextType>({
   profileLoading: false,
   signUp: async () => ({ error: null }),
   signIn: async () => ({ error: null }),
+  completeMfa: async () => ({ error: null }),
+  resendMfa: async () => ({ error: null }),
   signOut: async () => {},
   resetPassword: async () => ({ error: null }),
   updatePassword: async () => ({ error: null }),
@@ -212,12 +216,13 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
 
   const signIn = async (email: string, password: string) => {
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
+      const { data, error, mfa } = (await supabase.auth.signInWithPassword({
         email: email.trim(),
         password,
-      });
+      })) as any;
 
       if (error) throw error;
+      if (mfa) return { error: null, mfa };
       if (data.session?.user?.id) {
         fetchUserRole(data.session.user.id);
         fetchUserProfile(data.session.user.id);
@@ -227,6 +232,18 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
       return { error };
     }
   };
+
+  const completeMfa = async (challengeId: string, code: string) => {
+    const { data, error } = await (supabase.auth as any).verifyLoginCode(challengeId, code);
+    if (error) return { error };
+    if (data.session?.user?.id) {
+      fetchUserRole(data.session.user.id);
+      fetchUserProfile(data.session.user.id);
+    }
+    return { error: null };
+  };
+
+  const resendMfa = async (challengeId: string) => (supabase.auth as any).resendLoginCode(challengeId);
 
   const signOut = async () => {
     try {
@@ -303,6 +320,8 @@ export const AuthProvider = ({ children }: AuthProviderProps) => {
     profileLoading,
     signUp,
     signIn,
+    completeMfa,
+    resendMfa,
     signOut,
     resetPassword,
     updatePassword,

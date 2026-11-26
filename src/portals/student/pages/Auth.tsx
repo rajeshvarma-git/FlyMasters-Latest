@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import WhatsAppCodeStep, { type WhatsAppChallenge } from "@shared/components/WhatsAppCodeStep";
 import { useAuth } from '@student/hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@student/components/ui/button';
@@ -29,7 +30,8 @@ const Auth = () => {
   const [referralCode, setReferralCode] = useState(() => readReferral());
   const [referrerName, setReferrerName] = useState<string | null>(null);
   const [referralBad, setReferralBad] = useState(false);
-  const { signIn, signUp, resetPassword, updatePassword, user, userRole, roleLoading } = useAuth();
+  const { signIn, signUp, resetPassword, updatePassword, user, userRole, roleLoading, completeMfa, resendMfa } = useAuth();
+  const [challenge, setChallenge] = useState<WhatsAppChallenge | null>(null);
 
   // Check if this is a password recovery or email confirmation callback
   useEffect(() => {
@@ -86,8 +88,13 @@ const Auth = () => {
     const email = String(formData.get('email') || '').trim();
     const password = formData.get('password') as string;
 
-    const { error } = await signIn(email, password);
-    
+    const { error, mfa } = await signIn(email, password);
+
+    if (mfa) {
+      setChallenge(mfa);
+      setIsLoading(false);
+      return;
+    }
     if (error) {
       setError(error.message);
       setIsLoading(false);
@@ -299,6 +306,27 @@ const Auth = () => {
               </form>
             </CardContent>
           </Card>
+        </div>
+      </div>
+    );
+  }
+
+  if (challenge) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-50 px-4 py-8">
+        <div className="w-full max-w-md rounded-2xl bg-white p-8 shadow">
+          <WhatsAppCodeStep
+            masked={challenge.masked}
+            onVerify={async (code) => {
+              const { error } = await completeMfa(challenge.challengeId, code);
+              if (error) throw new Error((error as any).message || 'That code did not work.');
+            }}
+            onResend={async () => {
+              const { error } = await resendMfa(challenge.challengeId);
+              if (error) throw new Error((error as any).message || 'Could not send a new code.');
+            }}
+            onBack={() => setChallenge(null)}
+          />
         </div>
       </div>
     );

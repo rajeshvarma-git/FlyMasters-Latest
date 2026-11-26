@@ -5,6 +5,7 @@ import { ensureSchema, getPool } from "./postgres";
 import { upsertUserRole } from "../lib/accountWrites.mjs";
 import { attachReferral } from "../lib/partners.mjs";
 import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
+import { beginLoginMfa } from "../lib/loginMfa.mjs";
 
 const SESSION_DAYS = 30;
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
@@ -120,11 +121,11 @@ export async function getSessionByToken(token: string | null | undefined): Promi
  * path (accountIdentity.mjs): disabled, missing and misconfigured accounts are refused alike,
  * and a failed lookup throws rather than reading as "allowed".
  */
-async function accountAccess(userId: string): Promise<{ ok: true } | { ok: false; code: string }> {
+async function accountAccess(userId: string): Promise<{ ok: true; role: string } | { ok: false; code: string }> {
   const result: any = await resolveAccountIdentity(getPool(), String(userId));
   if (result.ok) {
     noteWarnings(result.identity);
-    return { ok: true };
+    return { ok: true, role: String(result.identity?.role || "student") };
   }
   return { ok: false, code: String(result.code) };
 }
@@ -141,7 +142,13 @@ export async function destroySession(token: string | null | undefined) {
   await getPool().query("DELETE FROM auth_sessions WHERE token = $1", [value]);
 }
 
-export async function signInUser(emailInput: string, password: string): Promise<{ session?: AuthSession; error?: string; status?: number }> {
+export type SendCode = (number: string, code: string) => Promise<unknown>;
+
+export async function signInUser(
+  emailInput: string,
+  password: string,
+  sendCode?: SendCode,
+): Promise<{ session?: AuthSession; mfa?: { challengeId: string; masked: string }; error?: string; status?: number }> {
   await ensureSchema();
   const email = normalizeEmail(emailInput);
   if (!email || !password) return { error: "Email and password are required.", status: 400 };
@@ -165,6 +172,23 @@ export async function signInUser(emailInput: string, password: string): Promise<
     await getPool().query("UPDATE auth_users SET password = $1 WHERE id = $2", [hashPassword(password), user.id]);
   }
   loginAttempts.delete(`login:${email}`);
+  // With WhatsApp sign-in codes on, the session is held back until the code is entered (completeMfaSignIn).
+  if (sendCode) {
+    const mfa: any = await beginLoginMfa({ pool: getPool(), userId: user.id, role: access.role, send: sendCode });
+    if (mfa.error) return { error: mfa.error, status: mfa.status };
+    if (mfa.required) return { mfa: { challengeId: mfa.challengeId, masked: mfa.masked } };
+  }
+  return { session: await createSession(publicUser(user)) };
+}
+
+/** The session for a person who has just entered the right WhatsApp code. Same account checks as a password sign-in. */
+export async function completeMfaSignIn(userId: string): Promise<{ session?: AuthSession; error?: string; status?: number }> {
+  await ensureSchema();
+  const found = await getPool().query("SELECT * FROM auth_users WHERE id = $1", [userId]);
+  const user = found.rows[0];
+  if (!user) return { error: "Wrong or expired code.", status: 400 };
+  const access = await accountAccess(user.id);
+  if (!access.ok) return { error: "This account cannot sign in. Contact Fly Masters.", status: 403 };
   return { session: await createSession(publicUser(user)) };
 }
 

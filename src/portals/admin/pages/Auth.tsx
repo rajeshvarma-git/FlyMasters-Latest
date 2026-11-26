@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
+import WhatsAppCodeStep, { type WhatsAppChallenge } from "@shared/components/WhatsAppCodeStep";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { Shield } from "lucide-react";
 import { Button } from "@admin/components/ui/Button";
@@ -20,7 +21,8 @@ export default function Auth() {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
-  const { user, loading, signIn, signUp } = useAuth();
+  const { user, loading, signIn, signUp, completeMfa, resendMfa } = useAuth();
+  const [challenge, setChallenge] = useState<WhatsAppChallenge | null>(null);
 
   useEffect(() => {
     if (!loading && user) navigate("/", { replace: true });
@@ -70,7 +72,8 @@ export default function Auth() {
     setBusy(true);
     try {
       if (mode === "login") {
-        await signIn(email, password);
+        const needCode = await signIn(email, password);
+        if (needCode) { setChallenge(needCode); setBusy(false); return; }
       } else {
         await signUp({
           email,
@@ -88,6 +91,21 @@ export default function Auth() {
       setBusy(false);
     }
   };
+
+  if (challenge) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-navy-950 px-4 py-8">
+        <div className="w-full max-w-md rounded-2xl bg-white p-8">
+          <WhatsAppCodeStep
+            masked={challenge.masked}
+            onVerify={async (code) => { await completeMfa(challenge.challengeId, code); navigate("/", { replace: true }); }}
+            onResend={() => resendMfa(challenge.challengeId)}
+            onBack={() => { setChallenge(null); setPassword(""); }}
+          />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="relative flex min-h-screen items-center justify-center overflow-hidden bg-navy-950 px-4 py-8">

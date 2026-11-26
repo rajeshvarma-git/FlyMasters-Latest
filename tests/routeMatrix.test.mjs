@@ -77,7 +77,7 @@ test("routes reachable without sign-in are exactly the known public ones", () =>
     // (milestone 1.3, tests/refreshRotation.db.test.mjs). Sign-out answers ok for an unknown token
     // rather than confirming whether one is real.
     "POST /api/auth/refresh", "POST /api/auth/signout",
-    "POST /__auth", "POST /api/auth/signin", "POST /api/auth/signup", "POST /api/auth/telecaller-signup",
+    "POST /__auth", "POST /api/auth/signin", "POST /api/auth/mfa/verify", "POST /api/auth/mfa/resend", "POST /api/auth/signup", "POST /api/auth/telecaller-signup",
     "POST /api/counselor/auth/send-verification-code", "POST /api/counselor/auth/signup",
   ].sort());
 });

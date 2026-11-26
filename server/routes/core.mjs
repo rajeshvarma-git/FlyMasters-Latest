@@ -42,6 +42,8 @@ import { createStateCache, createThrottledJob, scopeKey } from "../lib/stateCach
 import { planWorkTransfer, SKIP_REASONS } from "../lib/workTransfer.mjs";
 import { allow, branchInScope, checkLeadInScope, checkRecipientInScope, checkStaffInScope, managerSeesConversation, requireGlobalScope, checkRowInScope, checkLeaveInScope, staffAuthId } from "../lib/scopeGuards.mjs";
 import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
+import { beginLoginMfa, checkLoginCode, resendLoginCode } from "../lib/loginMfa.mjs";
+import { sendWhatsAppOtpTemplate } from "../student/whatsapp.ts";
 import { rotateRefreshToken, revokeFamily, revokeAllForUser, RefreshRejected } from "../lib/refreshTokens.mjs";
 import { branchExists, listBranches, allocateBranchCode, suggestBranchCode } from "../lib/branches.mjs";
 import {
@@ -1880,21 +1882,71 @@ router.post("/api/auth/signin", async (req, res) => {
       await pool.query("UPDATE auth_users SET password = $2 WHERE id = $1", [row.id, next]);
       row.password = next;
     }
-    // The same decision every later request will get from `session`: no token is issued for an
-    // account that check would refuse. A failed lookup throws and answers 500, never a token.
-    const access = await resolveAccountIdentity(pool, row.id);
-    if (!access.ok) {
-      const error = access.code === "ACCOUNT_DISABLED" ? "This account is disabled. Ask an admin." : access.error;
-      return res.status(access.status).json({ error, code: access.code });
-    }
-    noteWarnings(access.identity);
-    const role = access.identity.role;
-    const profiles = await jsonTable("profiles");
-    const profile = profiles.find((item) => String(item.user_id) === String(row.id));
-    const user = publicUser({ ...row, first_name: profile?.first_name, last_name: profile?.last_name, phone: profile?.phone }, role);
-    res.json({ ...(await issueSession(user)), user });
+    const outcome = await signInOutcome(row);
+    if (outcome.error) return res.status(outcome.status).json({ error: outcome.error, code: outcome.code });
+    if (outcome.mfa) return res.json({ mfaRequired: true, challengeId: outcome.mfa.challengeId, masked: outcome.mfa.masked });
+    res.json(outcome.session);
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not sign in" });
+  }
+});
+
+/**
+ * Everything that happens once the password is right. With WhatsApp sign-in codes on, no session is issued
+ * here: the code step (below) issues it. Both paths run the same account checks.
+ */
+async function signInOutcome(row, { skipMfa = false } = {}) {
+  // The same decision every later request will get from `session`: no token is issued for an
+  // account that check would refuse. A failed lookup throws and answers 500, never a token.
+  const access = await resolveAccountIdentity(pool, row.id);
+  if (!access.ok) {
+    const error = access.code === "ACCOUNT_DISABLED" ? "This account is disabled. Ask an admin." : access.error;
+    return { error, status: access.status, code: access.code };
+  }
+  noteWarnings(access.identity);
+  const role = access.identity.role;
+  const mfa = skipMfa ? { required: false } : await beginLoginMfa({ pool, userId: row.id, role, send: sendWhatsAppOtpTemplate });
+  if (mfa.error) return mfa;
+  if (mfa.required) return { mfa };
+  const profiles = await jsonTable("profiles");
+  const profile = profiles.find((item) => String(item.user_id) === String(row.id));
+  const user = publicUser({ ...row, first_name: profile?.first_name, last_name: profile?.last_name, phone: profile?.phone }, role);
+  return { session: { ...(await issueSession(user)), user } };
+}
+
+const mfaTries = new Map();
+function mfaLimited(req) {
+  const key = req.ip || "?";
+  const hit = mfaTries.get(key);
+  if (!hit || Date.now() - hit.first > SIGNIN_WINDOW_MS) { mfaTries.set(key, { first: Date.now(), count: 1 }); return false; }
+  hit.count += 1;
+  if (mfaTries.size > 5000) mfaTries.delete(mfaTries.keys().next().value);
+  return hit.count > 40;
+}
+
+router.post("/api/auth/mfa/verify", async (req, res) => {
+  try {
+    if (mfaLimited(req)) return res.status(429).json({ error: "Too many attempts. Wait 15 minutes and sign in again." });
+    const result = await checkLoginCode({ pool, challengeId: String(req.body.challengeId || ""), code: req.body.code });
+    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    const found = await pool.query("SELECT * FROM auth_users WHERE id = $1", [result.userId]);
+    if (!found.rows[0]) return res.status(401).json({ error: "Wrong or expired code." });
+    const outcome = await signInOutcome(found.rows[0], { skipMfa: true });
+    if (outcome.error) return res.status(outcome.status).json({ error: outcome.error, code: outcome.code });
+    res.json(outcome.session);
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not sign in" });
+  }
+});
+
+router.post("/api/auth/mfa/resend", async (req, res) => {
+  try {
+    if (mfaLimited(req)) return res.status(429).json({ error: "Too many attempts. Wait 15 minutes and sign in again." });
+    const result = await resendLoginCode({ pool, challengeId: String(req.body.challengeId || ""), send: sendWhatsAppOtpTemplate });
+    if (result.error) return res.status(result.status).json({ error: result.error });
+    res.json({ ok: true, masked: result.masked });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not send the code" });
   }
 });
 
