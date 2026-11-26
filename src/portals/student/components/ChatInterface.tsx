@@ -6,6 +6,7 @@ import EnhancedTypingIndicator from '@student/components/chat/EnhancedTypingIndi
 import UniversityResults from '@student/components/chat/UniversityResults';
 import ExpertHelpSection from '@student/components/chat/ExpertHelpSection';
 import ChatInput from '@student/components/chat/ChatInput';
+import BranchPicker from '@student/components/chat/BranchPicker';
 
 const ChatInterface: React.FC = () => {
   const {
@@ -15,8 +16,11 @@ const ChatInterface: React.FC = () => {
     showResults,
     showExpertHelp,
     chatComplete,
+    currentStepKey,
+    branchOptions,
     messagesEndRef,
     sendMessage,
+    chooseBranch,
   } = useChat();
 
   return (
@@ -41,6 +45,10 @@ const ChatInterface: React.FC = () => {
             ))}
             
             {isLoading && <EnhancedTypingIndicator />}
+
+            {currentStepKey === 'branch' && !chatComplete && (
+              <BranchPicker options={branchOptions} disabled={isLoading} onChoose={(option) => void chooseBranch(option)} />
+            )}
 
             {showResults && universities.length > 0 && (
               <div className="animate-scale-in">

@@ -1,4 +1,5 @@
 import { normalizeCountry } from '@student/lib/universityRecommendations';
+import { isValidIndiaMobile, normalizeIndiaPhoneInput } from '@student/lib/whatsappApi';
 
 export const SUPPORTED_COUNTRIES = [
   'USA',
@@ -111,6 +112,13 @@ export function validateChatStep(
         };
       }
       return { valid: true };
+    }
+
+    case 'whatsapp': {
+      if (!isValidIndiaMobile(trimmed)) {
+        return { valid: false, error: 'Please enter your 10-digit WhatsApp number (for example 9876543210). We need it to continue.' };
+      }
+      return { valid: true, normalized: normalizeIndiaPhoneInput(trimmed) };
     }
 
     default:

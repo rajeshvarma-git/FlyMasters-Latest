@@ -6,7 +6,9 @@ export type ChatStepKey =
   | 'qualification'
   | 'streamOrProgram'
   | 'academicScore'
-  | 'budget';
+  | 'budget'
+  | 'branch'
+  | 'whatsapp';
 
 export interface ChatContext {
   fullName?: string;
@@ -17,6 +19,9 @@ export interface ChatContext {
   streamOrProgram?: string;
   academicScore?: string;
   budget?: string;
+  /** 'chosen' or 'skipped' once the student has answered the branch question. */
+  branch?: string;
+  whatsapp?: string;
 }
 
 export interface ChatStep {
@@ -54,7 +59,21 @@ export const ACADEMIC_STEPS: ChatStep[] = [
   {
     key: 'budget',
     question: 'What is your study budget?',
-    reply: (value) => `Budget noted: ${value}.`,
+    reply: (value) =>
+      `Budget noted: ${value}.\n\nWhich branch is easiest for you to visit? Tap one below, or skip.`,
+  },
+  {
+    key: 'branch',
+    question: 'Which branch is easiest for you to visit?',
+    reply: (value) =>
+      `${value === 'skipped'
+        ? 'No problem. We will start you with Head Office. You can change this later.'
+        : `${value} it is. Your counselor will be from there.`}\n\nLast step: what is your WhatsApp number? We need it to continue.`,
+  },
+  {
+    key: 'whatsapp',
+    question: 'What is your WhatsApp number?',
+    reply: (value) => `WhatsApp number noted: ${value}.`,
     finalReply: () => 'Perfect — I have everything I need. Let me find universities that match your profile.',
   },
 ];
@@ -77,6 +96,8 @@ type UserProfile = {
   tenth_grade_score?: string | null;
   study_budget?: string | null;
   student_notes?: string | null;
+  whatsapp_number?: string | null;
+  branch_choice?: string | null;
 } | null;
 
 /**
@@ -146,6 +167,8 @@ export function buildChatContext(user: AuthUser, profile: UserProfile): ChatCont
     ...(pickStream(profile) ? { streamOrProgram: pickStream(profile)! } : {}),
     ...(pickScore(profile) ? { academicScore: pickScore(profile)! } : {}),
     ...(pickBudget(profile) ? { budget: pickBudget(profile)! } : {}),
+    ...(profile?.branch_choice ? { branch: profile.branch_choice } : {}),
+    ...(profile?.whatsapp_number?.trim() ? { whatsapp: profile.whatsapp_number.trim() } : {}),
   };
 }
 
