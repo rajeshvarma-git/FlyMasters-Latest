@@ -45,6 +45,7 @@ if (!skip) {
     suspend: last("/api/users/:id/suspend", "post"),
     oldTelecallerTransfer: last("/api/telecallers/:id/transfer", "post"),
     undo: last("/api/super/activity/:id/undo", "post"),
+    setPassword: last("/api/users/:id/password", "put"),
     ask: last("/api/transfer-requests", "post"),
     requests: last("/api/super/transfer-requests", "get"),
     decide: last("/api/super/transfer-requests/:id/decide", "post"),
@@ -332,4 +333,17 @@ test("with the approval switch off an Admin's request is refused, and an Admin s
   } finally {
     await run(h.setSwitch, { actor: SUPER, params: { key: "transfer_needs_approval" }, body: { value: true } });
   }
+});
+
+test("an Admin resetting someone's password ends every sign-in that used the old one", { skip }, async () => {
+  const person = await makeStaff("telecaller", B1);
+  const { issueRefreshToken } = await import("../server/lib/refreshTokens.mjs");
+  await issueRefreshToken(pool, { userId: person.id });
+  await pool.query("INSERT INTO auth_sessions (token, user_id, expires_at) VALUES ('tok-old', $1, now() + interval '1 day')", [person.id]);
+  const r = await run(h.setPassword, { actor: SUPER, params: { id: person.id }, body: { password: "brand-new-pass" } });
+  assert.equal(r.code, 200, JSON.stringify(r.body));
+  const live = await pool.query("SELECT count(*)::int AS n FROM auth_refresh_tokens WHERE user_id = $1 AND revoked_at IS NULL", [person.id]);
+  assert.equal(live.rows[0].n, 0, "old refresh tokens still work");
+  const sessions = await pool.query("SELECT count(*)::int AS n FROM auth_sessions WHERE user_id = $1", [person.id]);
+  assert.equal(sessions.rows[0].n, 0, "old sessions still work");
 });

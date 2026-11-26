@@ -6,6 +6,7 @@ import { upsertUserRole } from "../lib/accountWrites.mjs";
 import { attachReferral } from "../lib/partners.mjs";
 import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
 import { beginLoginMfa } from "../lib/loginMfa.mjs";
+import { revokeAllForUser } from "../lib/refreshTokens.mjs";
 
 const SESSION_DAYS = 30;
 const loginAttempts = new Map<string, { count: number; resetAt: number }>();
@@ -397,6 +398,8 @@ export async function resetPasswordWithToken(token: string, password: string): P
     await client.query("UPDATE auth_users SET password = $1 WHERE id = $2", [hashPassword(password), rows[0].user_id]);
     await client.query("DELETE FROM auth_sessions WHERE user_id = $1", [rows[0].user_id]);
     await client.query("COMMIT");
+    // Staff sign-ins (refresh tokens) end too: a reset must lock out whoever had the old password.
+    await revokeAllForUser(getPool(), rows[0].user_id, "password reset").catch(() => null);
     return { ok: true };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => {});
@@ -411,6 +414,9 @@ export async function updatePasswordForToken(token: string, password: string) {
   if (!session) return { error: "Please sign in again.", status: 401 };
   if (!password || password.length < 6) return { error: "Password must be at least 6 characters.", status: 400 };
   await getPool().query("UPDATE auth_users SET password = $1 WHERE id = $2", [hashPassword(password), session.user.id]);
+  // Changing the password signs out every OTHER device, keeping this one.
+  await getPool().query("DELETE FROM auth_sessions WHERE user_id = $1 AND token <> $2", [session.user.id, String(token)]);
+  await revokeAllForUser(getPool(), session.user.id, "password changed").catch(() => null);
   return { user: session.user };
 }
 
