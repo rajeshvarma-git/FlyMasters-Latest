@@ -43,6 +43,7 @@ import CommsLog from "@admin/admin/CommsLog";
 import ChatSupervision from "@admin/admin/ChatSupervision";
 import Escalations from "@admin/admin/Escalations";
 import ChangeHistory from "@admin/admin/ChangeHistory";
+import SuperControls from "@admin/admin/SuperControls";
 import Notifications from "@admin/admin/Notifications";
 import Telecallers from "@admin/admin/Telecallers";
 import TelecallerDetail from "@admin/admin/TelecallerDetail";
@@ -132,6 +133,7 @@ export default function App() {
               <Route path="supervision" element={<ChatSupervision />} />
               <Route path="escalations" element={<Escalations />} />
               <Route path="change-history" element={<ChangeHistory />} />
+              <Route path="controls" element={<SuperControls />} />
               <Route path="notifications" element={<Notifications />} />
               <Route path="team-status" element={<TeamStatus />} />
               <Route path="transfer-work" element={<TransferWork />} />

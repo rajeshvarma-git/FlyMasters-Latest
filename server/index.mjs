@@ -33,6 +33,7 @@ import studentRoutes from "./routes/student.mjs";
 import partnerRoutes from "./routes/partner.mjs";
 import financeRoutes from "./routes/finance.mjs";
 import configRoutes from "./routes/config.mjs";
+import superControlsRoutes from "./routes/superControls.mjs";
 import commsRoutes, { startCommsScheduler } from "./routes/comms.mjs";
 import { startReminderScheduler } from "./lib/reminders.mjs";
 import caseRoutes, { sweepVerifiedMerges } from "./routes/cases.mjs";
@@ -102,6 +103,7 @@ app.use(financeRoutes);
 // config and comms mount before core so their namespaced paths are not caught
 // by core's older catch-all handlers.
 app.use(configRoutes);
+app.use(superControlsRoutes);
 app.use(commsRoutes);
 // One student conversation: AI advisor -> telecaller -> counselor.
 app.use(caseRoutes);

@@ -27,6 +27,7 @@ import {
   Phone,
   PhoneCall,
   Shield,
+  ShieldCheck,
   Users,
   Wallet,
   X,
@@ -122,6 +123,7 @@ const groups = [
     items: [
       { to: "/notifications", label: "Notifications", icon: Bell, end: false },
       { to: "/alert-settings", label: "Alerts", icon: BellRing, end: false },
+      { to: "/controls", label: "Controls & activity", icon: ShieldCheck, end: false, roles: ["super_admin"] },
       { to: "/change-history", label: "Change history", icon: History, end: false, developerOnly: true },
       { to: "/help", label: "Help", icon: HelpCircle, end: false },
     ],

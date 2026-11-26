@@ -43,6 +43,7 @@ import { planWorkTransfer, SKIP_REASONS } from "../lib/workTransfer.mjs";
 import { allow, branchInScope, checkLeadInScope, checkRecipientInScope, checkStaffInScope, managerSeesConversation, requireGlobalScope, checkRowInScope, checkLeaveInScope, staffAuthId } from "../lib/scopeGuards.mjs";
 import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
 import { beginLoginMfa, checkLoginCode, resendLoginCode } from "../lib/loginMfa.mjs";
+import { setSwitch } from "../lib/switches.mjs";
 import { sendWhatsAppOtpTemplate } from "../student/whatsapp.ts";
 import { rotateRefreshToken, revokeFamily, revokeAllForUser, RefreshRejected } from "../lib/refreshTokens.mjs";
 import { branchExists, listBranches, allocateBranchCode, suggestBranchCode } from "../lib/branches.mjs";
@@ -1860,6 +1861,15 @@ function recordFailure(key) {
   if (signinFailures.size > 5000) signinFailures.delete(signinFailures.keys().next().value);
 }
 
+/** One row in the activity log for a sign-in event. Never lets a logging problem stop the sign-in. */
+async function logSignIn(req, action, who, detail = {}) {
+  try {
+    await auditOn(pool, { user: who ? { id: who.id, role: who.role } : null, headers: req.headers, ip: req.ip }, action, "auth_users", who?.id || null, detail);
+  } catch (error) {
+    console.error("sign-in audit failed:", error.message || error);
+  }
+}
+
 router.post("/api/auth/signin", async (req, res) => {
   try {
     const email = String(req.body.email || "").trim().toLowerCase();
@@ -1874,6 +1884,7 @@ router.post("/api/auth/signin", async (req, res) => {
     if (!row || !verifyPassword(password, row.password)) {
       recordFailure(emailKey);
       recordFailure(ipKey);
+      await logSignIn(req, "auth.signin_failed", row ? { id: row.id, role: null } : null, { email, reason: row ? "wrong_password" : "unknown_email" });
       return res.status(401).json({ error: "Wrong email or password." });
     }
     signinFailures.delete(emailKey);
@@ -1883,8 +1894,15 @@ router.post("/api/auth/signin", async (req, res) => {
       row.password = next;
     }
     const outcome = await signInOutcome(row);
-    if (outcome.error) return res.status(outcome.status).json({ error: outcome.error, code: outcome.code });
-    if (outcome.mfa) return res.json({ mfaRequired: true, challengeId: outcome.mfa.challengeId, masked: outcome.mfa.masked });
+    if (outcome.error) {
+      await logSignIn(req, "auth.signin_blocked", { id: row.id, role: null }, { email, reason: outcome.code || outcome.error });
+      return res.status(outcome.status).json({ error: outcome.error, code: outcome.code });
+    }
+    if (outcome.mfa) {
+      await logSignIn(req, "auth.code_sent", { id: row.id, role: outcome.role }, { email, to: outcome.mfa.masked });
+      return res.json({ mfaRequired: true, challengeId: outcome.mfa.challengeId, masked: outcome.mfa.masked });
+    }
+    await logSignIn(req, "auth.signin", { id: row.id, role: outcome.session.user?.role }, { email, withCode: false });
     res.json(outcome.session);
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not sign in" });
@@ -1907,7 +1925,7 @@ async function signInOutcome(row, { skipMfa = false } = {}) {
   const role = access.identity.role;
   const mfa = skipMfa ? { required: false } : await beginLoginMfa({ pool, userId: row.id, role, send: sendWhatsAppOtpTemplate });
   if (mfa.error) return mfa;
-  if (mfa.required) return { mfa };
+  if (mfa.required) return { mfa, role };
   const profiles = await jsonTable("profiles");
   const profile = profiles.find((item) => String(item.user_id) === String(row.id));
   const user = publicUser({ ...row, first_name: profile?.first_name, last_name: profile?.last_name, phone: profile?.phone }, role);
@@ -1928,11 +1946,15 @@ router.post("/api/auth/mfa/verify", async (req, res) => {
   try {
     if (mfaLimited(req)) return res.status(429).json({ error: "Too many attempts. Wait 15 minutes and sign in again." });
     const result = await checkLoginCode({ pool, challengeId: String(req.body.challengeId || ""), code: req.body.code });
-    if (!result.ok) return res.status(result.status).json({ error: result.error });
+    if (!result.ok) {
+      await logSignIn(req, "auth.code_failed", null, { reason: result.error });
+      return res.status(result.status).json({ error: result.error });
+    }
     const found = await pool.query("SELECT * FROM auth_users WHERE id = $1", [result.userId]);
     if (!found.rows[0]) return res.status(401).json({ error: "Wrong or expired code." });
     const outcome = await signInOutcome(found.rows[0], { skipMfa: true });
     if (outcome.error) return res.status(outcome.status).json({ error: outcome.error, code: outcome.code });
+    await logSignIn(req, "auth.signin", { id: found.rows[0].id, role: outcome.session.user?.role }, { email: found.rows[0].email, withCode: true });
     res.json(outcome.session);
   } catch (error) {
     res.status(500).json({ error: error.message || "Could not sign in" });
@@ -3093,6 +3115,7 @@ router.patch("/api/leads/:id", auth, async (req, res) => {
       from: current?.assigned_telecaller_id || null,
       to: patch.assigned_telecaller_id || null,
       branchId: current?.branch_id || null,
+      undo: { kind: "lead_owner", leadId: String(req.params.id), field: "assigned_telecaller_id", value: current?.assigned_telecaller_id || null, expect: patch.assigned_telecaller_id || null },
     });
   }
   if (patch.assigned_telecaller_id) {
@@ -3720,6 +3743,68 @@ router.get("/api/transfer-work/:id/receivers", staffMoveAuth, async (req, res) =
   res.json({ person: { id: person.id, name: person.name, branchIds: person.branchIds }, kind, receivers, allowCrossBranch: Boolean(req.scope.allBranches) });
 });
 
+/**
+ * Undo from the Super Admin's Activity screen. Each reversible audit row carries `detail.undo` saying how.
+ * An undo never overwrites a later change: if the record has moved on since, it is skipped and reported.
+ */
+async function undoLeadOwner(u) {
+  const rows = await jsonTable("student_leads");
+  const lead = rows.find((l) => String(l.id) === String(u.leadId));
+  if (!lead) return "missing";
+  if (String(lead[u.field] || "") !== String(u.expect || "")) return "changed";
+  const before = { ...lead };
+  const updated = await applyLeadPatch(lead.id, {
+    [u.field]: u.value || null,
+    ...(u.branchId ? { branch_id: u.branchId } : {}),
+  });
+  await syncOwnershipOnAssignment(before, updated);
+  return "done";
+}
+
+router.post("/api/super/activity/:id/undo", superAdminAuth, async (req, res) => {
+  try {
+    const found = await pool.query("SELECT id, action, detail FROM audit_log WHERE id = $1", [req.params.id]);
+    const row = found.rows[0];
+    const u = row?.detail?.undo;
+    if (!row || !u) return res.status(400).json({ error: "This cannot be undone." });
+    const already = await pool.query("SELECT 1 FROM audit_log WHERE action = 'undo' AND entity_id = $1 LIMIT 1", [String(row.id)]);
+    if (already.rows.length) return res.status(409).json({ error: "Already undone." });
+
+    let outcome = {};
+    if (u.kind === "switch") {
+      await setSwitch(pool, u.key, u.value, { id: req.user.id, name: "Undo" });
+      outcome = { restored: u.key };
+    } else if (u.kind === "lead_owner") {
+      const r = await undoLeadOwner(u);
+      if (r !== "done") return res.status(409).json({ error: r === "missing" ? "That lead no longer exists." : "It has been changed since, so it was left alone." });
+      outcome = { restored: 1 };
+    } else if (u.kind === "lead_branch") {
+      const lead = (await jsonTable("student_leads")).find((l) => String(l.id) === String(u.leadId));
+      if (!lead || String(lead.branch_id || "") !== String(u.expect || "")) return res.status(409).json({ error: "It has been changed since, so it was left alone." });
+      await applyLeadPatch(lead.id, { branch_id: u.value });
+      outcome = { restored: 1 };
+    } else if (u.kind === "batch") {
+      const items = await pool.query("SELECT entity_id, detail FROM audit_log WHERE action = 'lead.transfer' AND detail->>'batch' = $1", [String(u.batch)]);
+      let restored = 0;
+      let left = 0;
+      for (const item of items.rows) {
+        const d = item.detail;
+        const leadId = item.entity_id;
+        const r = await undoLeadOwner({ leadId, field: d.field, value: d.prev, expect: d.now, ...(d.movedToBranchId && d.branchId ? { branchId: d.branchId } : {}) });
+        if (r === "done") restored += 1; else left += 1;
+      }
+      if (!restored) return res.status(409).json({ error: "Nothing could be restored: those records have changed since." });
+      outcome = { restored, leftAlone: left };
+    } else {
+      return res.status(400).json({ error: "This cannot be undone." });
+    }
+    await audit(req, "undo", "audit_log", row.id, { of: row.action, ...outcome });
+    res.json({ ok: true, ...outcome });
+  } catch (error) {
+    res.status(500).json({ error: error.message || "Could not undo" });
+  }
+});
+
 router.post("/api/transfer-work/:id", staffMoveAuth, async (req, res) => {
   try {
     const toUserId = String(req.body.toUserId || "");
@@ -3743,6 +3828,7 @@ router.post("/api/transfer-work/:id", staffMoveAuth, async (req, res) => {
     const field = plan.kind === "counseling" ? "assigned_counselor_id" : "assigned_telecaller_id";
     const value = plan.kind === "counseling" ? (to.counselorRowId || to.id) : to.id;
     const moved = [];
+    const batch = crypto.randomUUID();
     for (const lead of plan.move) {
       const before = { ...lead };
       const updated = await applyLeadPatch(lead.id, {
@@ -3754,11 +3840,13 @@ router.post("/api/transfer-work/:id", staffMoveAuth, async (req, res) => {
       await audit(req, "lead.transfer", "student_leads", lead.id, {
         kind: plan.kind, from: from.id, to: to.id, reason: plan.reason, branchId: lead.branch_id || null,
         ...(lead.newBranchId ? { movedToBranchId: lead.newBranchId } : {}),
+        batch, field, prev: before[field] ?? null, now: value,
       });
       moved.push(String(lead.id));
     }
     await audit(req, "staff.transfer_work", "auth_users", from.id, {
       kind: plan.kind, from: from.id, to: to.id, moved: moved.length, skipped: plan.skipped.length, reason: plan.reason,
+      batch, ...(moved.length ? { undo: { kind: "batch", batch } } : {}),
     });
     if (moved.length) {
       await notify(
@@ -4904,6 +4992,7 @@ router.post("/api/leads/:id/branch", [session, requireRole([ROLES.SUPER_ADMIN], 
       from,
       to: branchId,
       wasUnplaced: from === null,
+      ...(from ? { undo: { kind: "lead_branch", leadId: String(req.params.id), value: from, expect: branchId } } : {}),
     });
     res.json({ ok: true, from, to: branchId });
   } catch (error) {

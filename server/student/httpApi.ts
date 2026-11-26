@@ -209,6 +209,18 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
       const body = JSON.parse((await readBody(req)) || "{}");
       if (body.action === "signin") {
         const result = await signInUser(body.email, body.password, sendWhatsAppOtpTemplate);
+        const email = String(body.email || "").trim().toLowerCase();
+        const ip = String(req.headers["x-forwarded-for"] || req.socket?.remoteAddress || "").split(",")[0].trim() || null;
+        const log = (action: string, userId: string | null, detail: Record<string, unknown>) =>
+          getPool()
+            .query(
+              `INSERT INTO audit_log (actor_id, actor_role, action, entity, entity_id, detail, ip) VALUES ($1, 'student', $2, 'auth_users', $1, $3::jsonb, $4)`,
+              [userId, action, JSON.stringify(detail), ip],
+            )
+            .catch(() => null);
+        if (result.error) await log("auth.signin_failed", null, { email, reason: result.error });
+        else if (result.mfa) await log("auth.code_sent", null, { email, to: result.mfa.masked });
+        else if (result.session) await log("auth.signin", result.session.user.id, { email, withCode: false });
         if (result.mfa) {
           sendJson(res, 200, { mfaRequired: true, challengeId: result.mfa.challengeId, masked: result.mfa.masked });
           return;
@@ -220,6 +232,11 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
         const checked: any = await checkLoginCode({ pool: getPool(), challengeId: String(body.challengeId || ""), code: body.code });
         if (!checked.ok) { sendJson(res, checked.status || 400, { error: checked.error }); return; }
         const result = await completeMfaSignIn(checked.userId);
+        if (result.session) {
+          await getPool()
+            .query(`INSERT INTO audit_log (actor_id, actor_role, action, entity, entity_id, detail) VALUES ($1, 'student', 'auth.signin', 'auth_users', $1, '{"withCode":true}'::jsonb)`, [checked.userId])
+            .catch(() => null);
+        }
         sendJson(res, result.error ? (result.status || 400) : 200, result.error ? { error: result.error } : { session: result.session });
         return;
       }
