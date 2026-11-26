@@ -159,6 +159,13 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
     if (url === "/__db_health") {
       await ensureSchema();
       const info = await pingPostgres();
+      // Anyone can ask "is it up?". The database name, host, mail settings and a live SMTP test are the
+      // Super Admin's: they help an attacker and cost a connection each time.
+      const viewer = await viewerFromRequest(req).catch(() => null);
+      if (!viewer || viewer.role !== "super_admin") {
+        sendJson(res, 200, { ok: true });
+        return;
+      }
       const state = await readAppState({ table: "document_checklists" });
       const emailConfigured = isEmailConfigured();
       const emailProvider = getEmailProvider();

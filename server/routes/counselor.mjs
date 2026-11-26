@@ -493,7 +493,7 @@ function verifyAuthPassword(password, stored) {
     const prev = Buffer.from(hash, "hex");
     return next.length === prev.length && timingSafeEqual(next, prev);
   }
-  return stored === password;
+  return false; // a password stored as plain text is never accepted
 }
 
 async function verifyPasswordHash(password, stored) {
@@ -909,6 +909,10 @@ router.post("/api/counselor/auth/send-verification-code", async (req, res) => {
 
 
 router.post("/api/counselor/auth/signup", async (req, res) => {
+  // Closed for everyone. The portal does not use it, and it let anyone guess a counselor's password with no
+  // attempt limit (and accepted a plain-text stored password). Accounts are made by an admin.
+  return res.status(403).json({ error: COUNSELOR_SIGNUP_CLOSED });
+  // eslint-disable-next-line no-unreachable
   try {
     const email = String(req.body.email || "").trim().toLowerCase();
     const password = String(req.body.password || "");

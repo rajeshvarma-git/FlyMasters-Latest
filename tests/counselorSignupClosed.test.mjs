@@ -42,19 +42,15 @@ test("an email that only exists as a counselor_users row cannot be turned into a
   assert.deepEqual(writes(sql), []);
 });
 
-test("an account that belongs to another role is still refused with its own message", async () => {
-  const { res, sql } = await call(signup, { email: "tc@x.test", password: "secret12" },
-    (text) => (text.includes("FROM auth_users") ? [{ id: "u1", email: "tc@x.test", password: "x" }] : text.includes("FROM user_roles") ? [{ role: "telecaller" }] : []));
-  assert.equal(res.code, 400);
-  assert.match(res.body.error, /already in the admin portal/);
-  assert.deepEqual(writes(sql), []);
-});
-
-test("a counselor who exists but types the wrong password is refused without a write", async () => {
+test("the route answers 403 to everyone and does not even look the account up, so passwords cannot be guessed through it", async () => {
   const { res, sql } = await call(signup, { email: "c@x.test", password: "wrong-pass" },
     (text) => (text.includes("FROM auth_users") ? [{ id: "u2", email: "c@x.test", password: "scrypt:aa:bb" }] : text.includes("FROM user_roles") ? [{ role: "counselor" }] : []));
-  assert.equal(res.code, 401);
-  assert.deepEqual(writes(sql), []);
+  assert.equal(res.code, 403);
+  assert.equal(res.body.token, undefined);
+  assert.deepEqual(sql, []);
+  const other = await call(signup, { email: "tc@x.test", password: "secret12" });
+  assert.equal(other.res.code, 403);
+  assert.deepEqual(other.sql, []);
 });
 
 test("no verification code is sent for sign-up any more", async () => {

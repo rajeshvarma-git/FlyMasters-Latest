@@ -153,7 +153,9 @@ export async function signInUser(
   await ensureSchema();
   const email = normalizeEmail(emailInput);
   if (!email || !password) return { error: "Email and password are required.", status: 400 };
-  if (!checkRateLimit(`login:${email}`)) {
+  // Counted on the name before the @ as well: sign-in matches on it, so changing only the domain must not
+  // earn a fresh set of tries against the same account.
+  if (!checkRateLimit(`login:${email}`) || !checkRateLimit(`login-name:${emailLocalPart(email)}`, 20)) {
     return { error: "Too many sign-in attempts. Try again in a few minutes.", status: 429 };
   }
   const { user, ambiguous } = await findAuthUser(email);
