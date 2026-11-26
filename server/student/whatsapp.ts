@@ -257,7 +257,7 @@ async function sendWhatsAppText(to: string, text: string) {
   });
 }
 
-async function sendWhatsAppOtpTemplate(to: string, code: string) {
+export async function sendWhatsAppOtpTemplate(to: string, code: string) {
   const phoneNumberId = getPhoneNumberId();
   const includeButton = String(process.env.WHATSAPP_OTP_TEMPLATE_BUTTON || "true").toLowerCase() !== "false";
   const buttonType = normalizeSecret(process.env.WHATSAPP_OTP_BUTTON_TYPE || "url").toLowerCase();

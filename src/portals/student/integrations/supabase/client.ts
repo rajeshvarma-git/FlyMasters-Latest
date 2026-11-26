@@ -468,6 +468,9 @@ export const supabase = {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ action: "signin", email: String(email || "").trim(), password }),
         });
+        if (payload.mfaRequired) {
+          return { data: { user: null, session: null }, error: null, mfa: { challengeId: String(payload.challengeId), masked: String(payload.masked || "") } };
+        }
         const session = payload.session as Session | undefined;
         if (!session?.user) {
           throw new Error(payload.error || "Sign-in failed. The server did not return a session.");
@@ -477,6 +480,35 @@ export const supabase = {
         return { data: { user: session.user, session }, error: null };
       } catch (error: any) {
         return { data: { user: null, session: null }, error: { message: error.message || "Invalid email or password" } };
+      }
+    },
+    /** Second step of sign-in: the 6-digit code sent to the student's WhatsApp. */
+    async verifyLoginCode(challengeId: string, code: string) {
+      try {
+        const payload = await fetchJson(apiUrl("/__auth"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "mfa_verify", challengeId, code }),
+        });
+        const session = payload.session as Session | undefined;
+        if (!session?.user) throw new Error(payload.error || "That code did not work.");
+        await saveSession(session);
+        authListeners.forEach((fn) => fn("SIGNED_IN", session));
+        return { data: { user: session.user, session }, error: null };
+      } catch (error: any) {
+        return { data: { user: null, session: null }, error: { message: error.message || "That code did not work." } };
+      }
+    },
+    async resendLoginCode(challengeId: string) {
+      try {
+        await fetchJson(apiUrl("/__auth"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "mfa_resend", challengeId }),
+        });
+        return { error: null };
+      } catch (error: any) {
+        return { error: { message: error.message || "Could not send a new code." } };
       }
     },
     async signUp({
