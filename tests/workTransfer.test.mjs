@@ -35,6 +35,16 @@ test("refuses a transfer to someone in another branch", () => {
   assert.equal(plan.status, 403);
 });
 
+test("the Super Admin is not limited: leads follow the work into the new owner's branch", () => {
+  const plan = planWorkTransfer({ kind: "telecalling", from: leaver, to: otherBranch, leads, reason, allowCrossBranch: true });
+  assert.equal(plan.ok, true);
+  assert.deepEqual(ids(plan), ["L1", "L2", "L3", "L4"], "nothing should be skipped for the owner");
+  assert.deepEqual(plan.skipped, []);
+  const rebranch = Object.fromEntries(plan.move.map((l) => [l.id, l.newBranchId || null]));
+  assert.deepEqual(rebranch, { L1: KOMPALLY, L2: KOMPALLY, L3: null, L4: KOMPALLY },
+    "records outside the receiver's branch should move into it; one already there stays put");
+});
+
 test("a counselor in the same branch can take telecalling leads; only a counselor can take students", () => {
   assert.deepEqual(ids(planWorkTransfer({ kind: "telecalling", from: leaver, to: counselorSameBranch, leads, reason })), ["L1", "L2"]);
   const counselorLeaver = { id: "c-1", keys: ["c-1", "auth-c-1"], branchIds: [AMEERPET] };

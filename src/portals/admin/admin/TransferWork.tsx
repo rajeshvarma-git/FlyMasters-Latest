@@ -18,6 +18,7 @@ type Kind = "telecalling" | "counseling";
 interface BranchRow { id: string; name: string; code?: string; is_active?: boolean }
 interface Person { id: string; name: string; role: "telecaller" | "counselor"; isActive: boolean; telecalling: number; counseling: number }
 interface Item { id: string; name: string; status: string; branchId: string | null; stage: string }
+interface Receiver { id: string; name: string; role: "telecaller" | "counselor"; load: number; branchIds: string[] }
 interface Result { moved: number; skipped: { id: string; reason: string; label: string }[] }
 
 const roleLabel = (p: Person) => (p.role === "counselor" ? "Counselor" : "Telecaller");
@@ -31,6 +32,8 @@ export default function TransferWork() {
   const [items, setItems] = useState<Item[]>([]);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [toId, setToId] = useState("");
+  const [receivers, setReceivers] = useState<Receiver[]>([]);
+  const [allowCross, setAllowCross] = useState(false);
   const [reason, setReason] = useState("");
   const [reviewing, setReviewing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -64,23 +67,27 @@ export default function TransferWork() {
   }, [from, kind]);
 
   const loadItems = (id: string, k: Kind) =>
-    api<{ items: Item[] }>(`/transfer-work/${encodeURIComponent(id)}/items?kind=${k}`)
-      .then((data) => {
+    Promise.all([
+      api<{ items: Item[]; allowCrossBranch?: boolean }>(`/transfer-work/${encodeURIComponent(id)}/items?kind=${k}`),
+      api<{ receivers: Receiver[] }>(`/transfer-work/${encodeURIComponent(id)}/receivers?kind=${k}`),
+    ])
+      .then(([data, rec]) => {
+        const cross = Boolean(data.allowCrossBranch);
+        setAllowCross(cross);
         setItems(data.items);
-        setPicked(new Set(data.items.filter((i) => i.branchId === branchId).map((i) => i.id)));
+        setReceivers(rec.receivers);
+        // The owner (Super Admin) moves everything; branch Admins start with their branch's records.
+        setPicked(new Set(data.items.filter((i) => cross || i.branchId === branchId).map((i) => i.id)));
       })
       .catch((err) => setError(err instanceof Error ? err.message : "Could not load this person's work."));
 
   useEffect(() => {
-    setItems([]); setPicked(new Set()); setToId(""); setReviewing(false); setResult(null);
+    setItems([]); setReceivers([]); setPicked(new Set()); setToId(""); setReviewing(false); setResult(null);
     if (fromId) void loadItems(fromId, kind);
   }, [fromId, kind]);
 
-  // Receivers: active colleagues in this branch, never the same person. Students go to Counselors only.
-  const receivers = useMemo(
-    () => people.filter((p) => p.id !== fromId && p.isActive && (kind === "telecalling" || p.role === "counselor")),
-    [people, fromId, kind],
-  );
+  // Receivers come from the server: active colleagues in the same branch, or, for the Super Admin, anyone.
+  const branchLabel = (ids: string[]) => ids.map((id) => branches.find((b) => b.id === id)?.name).filter(Boolean).join(", ");
   const to = receivers.find((p) => p.id === toId) || null;
 
   const toggle = (id: string) =>
@@ -208,8 +215,10 @@ export default function TransferWork() {
                     <span className="min-w-0 flex-1 truncate font-medium text-navy-900">{i.name}</span>
                     {i.status && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{i.status}</span>}
                     {i.branchId !== branchId && (
-                      <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-800">
-                        {i.branchId ? "Other branch, will be skipped" : "No branch, will be skipped"}
+                      <span className={`rounded-full px-2 py-0.5 text-xs ${allowCross ? "bg-sky-100 text-sky-800" : "bg-amber-100 text-amber-800"}`}>
+                        {allowCross
+                          ? (i.branchId ? "Other branch, moves with the work" : "No branch, takes the new owner's branch")
+                          : (i.branchId ? "Other branch, will be skipped" : "No branch, will be skipped")}
                       </span>
                     )}
                   </label>
@@ -225,10 +234,10 @@ export default function TransferWork() {
           <div className="space-y-1.5">
             <Label>Move to</Label>
             <Select id="tw-to" value={toId} onChange={(e) => { setToId(e.target.value); setReviewing(false); }}>
-              <option value="">Choose a colleague in this branch</option>
+              <option value="">{allowCross ? "Choose anyone, in any branch" : "Choose a colleague in this branch"}</option>
               {receivers.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.name} · {roleLabel(p)} · {kind === "counseling" ? `${p.counseling} students now` : `${p.telecalling} leads now`}
+                  {p.name} · {p.role === "counselor" ? "Counselor" : "Telecaller"}{allowCross && branchLabel(p.branchIds) ? ` · ${branchLabel(p.branchIds)}` : ""} · {p.load} {word}s now
                 </option>
               ))}
             </Select>

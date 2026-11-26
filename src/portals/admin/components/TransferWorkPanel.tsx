@@ -16,7 +16,7 @@ import { Select } from "@admin/components/ui/Field";
 
 type Kind = "telecalling" | "counseling";
 interface Item { id: string; name: string; status: string; branchId: string | null }
-interface Receiver { id: string; counselorRowId: string | null; name: string; role: "telecaller" | "counselor"; load: number }
+interface Receiver { id: string; counselorRowId: string | null; name: string; role: "telecaller" | "counselor"; load: number; branchIds?: string[] }
 interface Result { moved: number; skipped: { id: string; reason: string; label: string }[] }
 
 export function TransferWorkPanel({
@@ -36,6 +36,7 @@ export function TransferWorkPanel({
   const [counts, setCounts] = useState<{ telecalling: number; counseling: number }>({ telecalling: 0, counseling: 0 });
   const [items, setItems] = useState<Item[]>([]);
   const [branchIds, setBranchIds] = useState<string[]>([]);
+  const [allowCross, setAllowCross] = useState(false);
   const [receivers, setReceivers] = useState<Receiver[]>([]);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [choosing, setChoosing] = useState(false);
@@ -50,7 +51,7 @@ export function TransferWorkPanel({
     setError("");
     try {
       const [own, other, rec] = await Promise.all([
-        api<{ items: Item[]; person: { branchIds: string[] } }>(`/transfer-work/${encodeURIComponent(personId)}/items?kind=${k}`),
+        api<{ items: Item[]; person: { branchIds: string[] }; allowCrossBranch?: boolean }>(`/transfer-work/${encodeURIComponent(personId)}/items?kind=${k}`),
         isCounselor
           ? api<{ items: Item[] }>(`/transfer-work/${encodeURIComponent(personId)}/items?kind=${k === "counseling" ? "telecalling" : "counseling"}`)
           : Promise.resolve({ items: [] as Item[] }),
@@ -59,7 +60,10 @@ export function TransferWorkPanel({
       setItems(own.items);
       setBranchIds(own.person.branchIds || []);
       setReceivers(rec.receivers);
-      setPicked(new Set(own.items.filter((i) => i.branchId && (own.person.branchIds || []).includes(i.branchId)).map((i) => i.id)));
+      const cross = Boolean(own.allowCrossBranch);
+      setAllowCross(cross);
+      // The owner (Super Admin) can move everything; branch Admins start with their branch's records.
+      setPicked(new Set(own.items.filter((i) => cross || (i.branchId && (own.person.branchIds || []).includes(i.branchId))).map((i) => i.id)));
       setCounts(k === "counseling"
         ? { counseling: own.items.length, telecalling: other.items.length }
         : { telecalling: own.items.length, counseling: other.items.length });
@@ -77,7 +81,7 @@ export function TransferWorkPanel({
   useEffect(() => { onReceiverChange?.(receiver); }, [receiver?.id]);
 
   const word = kind === "counseling" ? "student" : "lead";
-  const movable = useMemo(() => items.filter((i) => i.branchId && branchIds.includes(i.branchId)), [items, branchIds]);
+  const movable = useMemo(() => (allowCross ? items : items.filter((i) => i.branchId && branchIds.includes(i.branchId))), [items, branchIds, allowCross]);
   const outside = items.length - movable.length;
   const ready = Boolean(receiver && picked.size > 0 && reason.trim());
 
@@ -124,12 +128,12 @@ export function TransferWorkPanel({
 
       <div className="flex flex-wrap items-end gap-2">
         <div className="min-w-[260px]">
-          <p className="mb-1.5 text-sm font-medium text-slate-700">Transfer {word}s to (same branch)</p>
+          <p className="mb-1.5 text-sm font-medium text-slate-700">{allowCross ? `Transfer ${word}s to (any branch)` : `Transfer ${word}s to (same branch)`}</p>
           <Select value={toId} onChange={(e) => { setToId(e.target.value); setConfirming(false); }}>
-            <option value="">{receivers.length ? "Choose a colleague" : "No active colleague in this branch"}</option>
+            <option value="">{receivers.length ? "Choose a colleague" : (allowCross ? "No active colleague found" : "No active colleague in this branch")}</option>
             {receivers.map((r) => (
               <option key={r.id} value={r.id}>
-                {r.name} · {r.role === "counselor" ? "Counselor" : "Telecaller"} · {r.load} {word}{r.load === 1 ? "" : "s"} now
+                {r.name} · {r.role === "counselor" ? "Counselor" : "Telecaller"}{allowCross && r.branchIds && !r.branchIds.some((b) => branchIds.includes(b)) ? " · other branch" : ""} · {r.load} {word}{r.load === 1 ? "" : "s"} now
               </option>
             ))}
           </Select>
@@ -175,14 +179,14 @@ export function TransferWorkPanel({
       {choosing && items.length > 0 && (
         <ul className="max-h-64 divide-y divide-slate-100 overflow-y-auto rounded-xl border border-slate-200">
           {items.map((i) => {
-            const inBranch = Boolean(i.branchId && branchIds.includes(i.branchId));
+            const inBranch = allowCross || Boolean(i.branchId && branchIds.includes(i.branchId));
             return (
               <li key={i.id}>
                 <label className={`flex items-center gap-3 px-3 py-2 text-sm ${inBranch ? "cursor-pointer hover:bg-slate-50" : "opacity-60"}`}>
                   <input type="checkbox" className="h-4 w-4" disabled={!inBranch} checked={picked.has(i.id)} onChange={() => toggle(i.id)} />
                   <span className="min-w-0 flex-1 truncate">{i.name}</span>
                   {i.status && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">{i.status}</span>}
-                  {!inBranch && <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-800">{i.branchId ? "Other branch" : "No branch"}</span>}
+                  {!inBranch && <span className={`rounded-full px-2 py-0.5 text-xs ${allowCross ? "bg-sky-100 text-sky-800" : "bg-amber-100 text-amber-800"}`}>{i.branchId ? "Other branch" : "No branch"}</span>}
                 </label>
               </li>
             );

@@ -1116,7 +1116,18 @@ async function transferTelecallerThreads(fromTelecallerId, toTelecallerId) {
   }
 }
 
-async function transferTelecallerLeads(fromTelecallerId, toTelecallerId) {
+/**
+ * Super Admin moves across branches: the record follows its new owner into the owner's branch, so it does
+ * not vanish from every queue. Empty list (everyone else, or same branch) changes nothing.
+ */
+function rebranchPatch(lead, receiverBranchIds) {
+  const ids = (receiverBranchIds || []).map(String);
+  if (!ids.length) return {};
+  if (lead.branch_id && ids.includes(String(lead.branch_id))) return {};
+  return { branch_id: ids[0] };
+}
+
+async function transferTelecallerLeads(fromTelecallerId, toTelecallerId, { rebranchTo = [] } = {}) {
   const users = await loadUsers();
   const from = users.find((row) => row.id === fromTelecallerId && row.role === "telecaller");
   const to = users.find((row) => row.id === toTelecallerId && row.role === "telecaller");
@@ -1133,6 +1144,7 @@ async function transferTelecallerLeads(fromTelecallerId, toTelecallerId) {
     const updated = await applyLeadPatch(lead.id, {
       assigned_telecaller_id: to.id,
       status: "assigned",
+      ...rebranchPatch(lead, rebranchTo),
     });
     await syncOwnershipOnAssignment(before, updated);
     count += 1;
@@ -1173,7 +1185,7 @@ async function deactivateTelecaller(telecallerId) {
   return telecaller;
 }
 
-async function transferCounselorStudents(fromCounselorId, toCounselorId) {
+async function transferCounselorStudents(fromCounselorId, toCounselorId, { rebranchTo = [] } = {}) {
   const counselors = await loadCounselors();
   const from = counselors.find((row) => row.id === fromCounselorId || row.auth_user_id === fromCounselorId);
   const to = counselors.find((row) => row.id === toCounselorId || row.auth_user_id === toCounselorId);
@@ -1188,7 +1200,7 @@ async function transferCounselorStudents(fromCounselorId, toCounselorId) {
     const converted = lead.entity_type === "student" || lead.lead_status === "converted";
     if (!converted || !leadOwnedByCounselor(lead, from)) continue;
     const before = { ...lead };
-    const updated = await applyLeadPatch(lead.id, { assigned_counselor_id: targetId, status: "assigned" });
+    const updated = await applyLeadPatch(lead.id, { assigned_counselor_id: targetId, status: "assigned", ...rebranchPatch(lead, rebranchTo) });
     await syncOwnershipOnAssignment(before, updated);
     count += 1;
   }
@@ -2972,16 +2984,21 @@ router.patch("/api/leads/:id", auth, async (req, res) => {
   // would let them put a Vizag telecaller on a Hyderabad lead - the lead would then sit in a queue
   // belonging to a branch that does not own it. The telecaller must work where the lead lives,
   // whoever is doing the assigning.
+  // The Super Admin is the owner and is not limited by branch: the lead follows the telecaller into
+  // their branch. Everyone else must keep the telecaller in the lead's own branch.
   if (patch.assigned_telecaller_id && current?.branch_id) {
     const membership = await pool
       .query("SELECT branch_id FROM user_branches WHERE user_id = $1", [patch.assigned_telecaller_id])
       .catch(() => ({ rows: [] }));
     const telecallerBranchIds = membership.rows.map((row) => String(row.branch_id));
     if (telecallerBranchIds.length && !telecallerBranchIds.includes(String(current.branch_id))) {
-      return res.status(403).json({
-        error: "That telecaller does not work in this record's branch.",
-        code: "CROSS_BRANCH",
-      });
+      if (!req.scope.allBranches) {
+        return res.status(403).json({
+          error: "That telecaller does not work in this record's branch.",
+          code: "CROSS_BRANCH",
+        });
+      }
+      patch.branch_id = telecallerBranchIds[0];
     }
   }
   // A counselor is only ever handed an already-converted student — assigning
@@ -3005,9 +3022,12 @@ router.patch("/api/leads/:id", auth, async (req, res) => {
         .catch(() => ({ rows: [] }));
       const counselorBranchIds = membership.rows.map((row) => String(row.branch_id));
       if (counselorBranchIds.length && !counselorBranchIds.includes(String(current.branch_id))) {
-        return res.status(400).json({
-          error: "That counselor is not assigned to this student's branch.",
-        });
+        if (!req.scope.allBranches) {
+          return res.status(400).json({
+            error: "That counselor is not assigned to this student's branch.",
+          });
+        }
+        patch.branch_id = counselorBranchIds[0];
       }
     }
   }
@@ -3609,7 +3629,7 @@ router.get("/api/transfer-work/:id/items", staffMoveAuth, async (req, res) => {
       : !converted(l) && keys.has(String(l.assigned_telecaller_id || ""))))
     .filter((l) => !l.branch_id || branchInScope(req.scope, l.branch_id))
     .map(leadLabel);
-  res.json({ person: { id: person.id, name: person.name, role: person.role, isActive: person.isActive, branchIds: person.branchIds }, kind, items });
+  res.json({ person: { id: person.id, name: person.name, role: person.role, isActive: person.isActive, branchIds: person.branchIds }, kind, items, allowCrossBranch: Boolean(req.scope.allBranches) });
 });
 
 // Who can receive this person's work: active colleagues who share a branch with them, inside the
@@ -3626,7 +3646,7 @@ router.get("/api/transfer-work/:id/receivers", staffMoveAuth, async (req, res) =
   const receivers = (await loadUsers())
     .filter((u) => String(u.id) !== person.id && u.is_active !== false)
     .filter((u) => (kind === "counseling" ? u.role === "counselor" : ["telecaller", "counselor"].includes(u.role)))
-    .filter((u) => (u.branch_ids || []).map(String).some((b) => theirBranches.has(b) && branchInScope(req.scope, b)))
+    .filter((u) => req.scope.allBranches || (u.branch_ids || []).map(String).some((b) => theirBranches.has(b) && branchInScope(req.scope, b)))
     .map((u) => {
       const c = u.role === "counselor"
         ? counselors.find((row) => String(row.auth_user_id || "") === String(u.id) || String(row.id) === String(u.id))
@@ -3638,13 +3658,14 @@ router.get("/api/transfer-work/:id/receivers", staffMoveAuth, async (req, res) =
         counselorRowId: c ? String(c.id) : null,
         name: [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email,
         role: u.role,
+        branchIds: (u.branch_ids || []).map(String),
         load: kind === "counseling"
           ? leads.filter((l) => converted(l) && keys.has(String(l.assigned_counselor_id || ""))).length
           : leads.filter((l) => !converted(l) && keys.has(String(l.assigned_telecaller_id || ""))).length,
       };
     })
     .sort((a, b) => a.load - b.load || a.name.localeCompare(b.name));
-  res.json({ person: { id: person.id, name: person.name, branchIds: person.branchIds }, kind, receivers });
+  res.json({ person: { id: person.id, name: person.name, branchIds: person.branchIds }, kind, receivers, allowCrossBranch: Boolean(req.scope.allBranches) });
 });
 
 router.post("/api/transfer-work/:id", staffMoveAuth, async (req, res) => {
@@ -3662,6 +3683,7 @@ router.post("/api/transfer-work/:id", staffMoveAuth, async (req, res) => {
       leads,
       leadIds: Array.isArray(req.body.leadIds) ? req.body.leadIds : null,
       reason: req.body.reason,
+      allowCrossBranch: Boolean(req.scope.allBranches),
     });
     if (!plan.ok) return res.status(plan.status).json({ error: plan.error, code: plan.code });
 
@@ -3671,10 +3693,15 @@ router.post("/api/transfer-work/:id", staffMoveAuth, async (req, res) => {
     const moved = [];
     for (const lead of plan.move) {
       const before = { ...lead };
-      const updated = await applyLeadPatch(lead.id, { [field]: value, status: "assigned" });
+      const updated = await applyLeadPatch(lead.id, {
+        [field]: value,
+        status: "assigned",
+        ...(lead.newBranchId ? { branch_id: lead.newBranchId } : {}),
+      });
       await syncOwnershipOnAssignment(before, updated);
       await audit(req, "lead.transfer", "student_leads", lead.id, {
         kind: plan.kind, from: from.id, to: to.id, reason: plan.reason, branchId: lead.branch_id || null,
+        ...(lead.newBranchId ? { movedToBranchId: lead.newBranchId } : {}),
       });
       moved.push(String(lead.id));
     }
@@ -3701,8 +3728,19 @@ router.post("/api/transfer-work/:id", staffMoveAuth, async (req, res) => {
   }
 });
 
-/** Older one-click transfers: refuse when the two people do not share a branch. */
-async function refuseCrossBranchTransfer(res, fromId, toId) {
+/** Older one-click transfers: refuse when the two people do not share a branch, except for the Super Admin. */
+async function receiverBranchesForSuperAdmin(req, toId) {
+  if (!req.scope?.allBranches || !toId) return [];
+  const users = await loadUsers();
+  const counselors = await loadCounselors();
+  const c = counselors.find((row) => String(row.id) === String(toId) || String(row.auth_user_id || "") === String(toId));
+  const login = c?.auth_user_id ? String(c.auth_user_id) : String(toId);
+  return (users.find((u) => String(u.id) === login)?.branch_ids || []).map(String);
+}
+
+async function refuseCrossBranchTransfer(res, fromId, toId, req) {
+  // The Super Admin is the owner: no branch limit. (Everyone else stays inside one branch.)
+  if (req?.scope?.allBranches) return false;
   const users = await loadUsers();
   const branchesOf = (id) => (users.find((u) => String(u.id) === String(id))?.branch_ids || []).map(String);
   const counselors = await loadCounselors();
@@ -3730,8 +3768,8 @@ router.post("/api/counselors/:id/transfer", staffMoveAuth, async (req, res) => {
     }
     if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;
     if (!(await allow(res, checkStaffInScope(pool, req.scope, targetCounselorId)))) return;
-    if (await refuseCrossBranchTransfer(res, req.params.id, targetCounselorId)) return;
-    const count = await transferCounselorStudents(req.params.id, targetCounselorId);
+    if (await refuseCrossBranchTransfer(res, req.params.id, targetCounselorId, req)) return;
+    const count = await transferCounselorStudents(req.params.id, targetCounselorId, { rebranchTo: await receiverBranchesForSuperAdmin(req, targetCounselorId) });
     if (count > 0) {
       await notify(
         targetCounselorId,
@@ -3755,8 +3793,8 @@ router.post("/api/telecallers/:id/transfer", staffMoveAuth, async (req, res) => 
     }
     if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;
     if (!(await allow(res, checkStaffInScope(pool, req.scope, targetTelecallerId)))) return;
-    if (await refuseCrossBranchTransfer(res, req.params.id, targetTelecallerId)) return;
-    const count = await transferTelecallerLeads(req.params.id, targetTelecallerId);
+    if (await refuseCrossBranchTransfer(res, req.params.id, targetTelecallerId, req)) return;
+    const count = await transferTelecallerLeads(req.params.id, targetTelecallerId, { rebranchTo: await receiverBranchesForSuperAdmin(req, targetTelecallerId) });
     if (count > 0) {
       await notify(
         targetTelecallerId,
@@ -3777,7 +3815,7 @@ router.post("/api/telecallers/:id/remove", staffMoveAuth, async (req, res) => {
     const targetTelecallerId = req.body.targetTelecallerId ? String(req.body.targetTelecallerId) : "";
     if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;
     if (targetTelecallerId && !(await allow(res, checkStaffInScope(pool, req.scope, targetTelecallerId)))) return;
-    if (targetTelecallerId && (await refuseCrossBranchTransfer(res, req.params.id, targetTelecallerId))) return;
+    if (targetTelecallerId && (await refuseCrossBranchTransfer(res, req.params.id, targetTelecallerId, req))) return;
     const users = await loadUsers();
     const telecaller = users.find((row) => row.id === req.params.id && row.role === "telecaller");
     if (!telecaller) return res.status(404).json({ error: "Telecaller not found." });
@@ -3793,7 +3831,7 @@ router.post("/api/telecallers/:id/remove", staffMoveAuth, async (req, res) => {
 
     let transferred = 0;
     if (targetTelecallerId && assigned.length > 0) {
-      transferred = await transferTelecallerLeads(req.params.id, targetTelecallerId);
+      transferred = await transferTelecallerLeads(req.params.id, targetTelecallerId, { rebranchTo: await receiverBranchesForSuperAdmin(req, targetTelecallerId) });
       if (transferred > 0) {
         await notify(
           targetTelecallerId,
@@ -3884,7 +3922,7 @@ router.post("/api/counselors/:id/remove", staffMoveAuth, async (req, res) => {
     const targetCounselorId = req.body.targetCounselorId ? String(req.body.targetCounselorId) : "";
     if (!(await allow(res, checkStaffInScope(pool, req.scope, req.params.id)))) return;
     if (targetCounselorId && !(await allow(res, checkStaffInScope(pool, req.scope, targetCounselorId)))) return;
-    if (targetCounselorId && (await refuseCrossBranchTransfer(res, req.params.id, targetCounselorId))) return;
+    if (targetCounselorId && (await refuseCrossBranchTransfer(res, req.params.id, targetCounselorId, req))) return;
     const counselors = await loadCounselors();
     const counselor = counselors.find((row) => row.id === req.params.id || row.auth_user_id === req.params.id);
     if (!counselor) return res.status(404).json({ error: "Counselor not found." });
@@ -3902,7 +3940,7 @@ router.post("/api/counselors/:id/remove", staffMoveAuth, async (req, res) => {
 
     let transferred = 0;
     if (targetCounselorId && assigned.length > 0) {
-      transferred = await transferCounselorStudents(req.params.id, targetCounselorId);
+      transferred = await transferCounselorStudents(req.params.id, targetCounselorId, { rebranchTo: await receiverBranchesForSuperAdmin(req, targetCounselorId) });
       if (transferred > 0) {
         await notify(
           targetCounselorId,

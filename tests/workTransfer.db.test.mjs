@@ -118,21 +118,34 @@ test("a branch admin moves a leaver's leads to a colleague in the same branch, w
   assert.equal((await audits("staff.transfer_work")).length >= 1, true);
 });
 
-test("work never moves to someone in another branch, through either the new or the old screen", { skip }, async () => {
+test("a branch Admin cannot move work to another branch; the Super Admin can, through the new or the old screen", { skip }, async () => {
   const leaver = await makeStaff("telecaller", B1);
   const elsewhere = await makeStaff("telecaller", B2);
   await lead("X-1", { assigned_telecaller_id: leaver.id, branch_id: String(B1) });
+  await lead("X-2", { assigned_telecaller_id: leaver.id, branch_id: String(B1) });
+
+  const adminTry = await run(h.transfer, {
+    actor: branchAdmin(), params: { id: leaver.id },
+    body: { toUserId: elsewhere.id, kind: "telecalling", reason: "Moving" },
+  });
+  assert.equal(adminTry.code, 403, JSON.stringify(adminTry.body));
+  assert.equal((await leadRow("X-1")).assigned_telecaller_id, leaver.id);
 
   const viaNew = await run(h.transfer, {
     actor: SUPER, params: { id: leaver.id },
-    body: { toUserId: elsewhere.id, kind: "telecalling", reason: "Moving" },
+    body: { toUserId: elsewhere.id, kind: "telecalling", leadIds: ["X-1"], reason: "Moving" },
   });
-  assert.equal(viaNew.code, 403, JSON.stringify(viaNew.body));
-  assert.equal(viaNew.body.code, "CROSS_BRANCH");
+  assert.equal(viaNew.code, 200, JSON.stringify(viaNew.body));
+  assert.deepEqual(viaNew.body.movedIds, ["X-1"]);
+  const x1 = await leadRow("X-1");
+  assert.equal(x1.assigned_telecaller_id, elsewhere.id);
+  assert.equal(String(x1.branch_id), String(B2), "the lead should follow its new owner into their branch");
 
   const viaOld = await run(h.oldTelecallerTransfer, { actor: SUPER, params: { id: leaver.id }, body: { targetTelecallerId: elsewhere.id } });
-  assert.equal(viaOld.code, 403, JSON.stringify(viaOld.body));
-  assert.equal((await leadRow("X-1")).assigned_telecaller_id, leaver.id);
+  assert.equal(viaOld.code, 200, JSON.stringify(viaOld.body));
+  const x2 = await leadRow("X-2");
+  assert.equal(x2.assigned_telecaller_id, elsewhere.id);
+  assert.equal(String(x2.branch_id), String(B2));
 });
 
 test("a branch admin cannot open another branch's people", { skip }, async () => {
@@ -167,16 +180,18 @@ test("a counselor's students go only to another counselor in the branch", { skip
   assert.ok([next.id, next.counselorId].includes(moved), `student went to ${moved}`);
 });
 
-test("even a Super Admin cannot move a record into a branch the new owner does not work in", { skip }, async () => {
+test("the Super Admin's transfer takes every record, including ones from other branches or with none", { skip }, async () => {
   const leaver = await makeStaff("telecaller", B1);
   const colleague = await makeStaff("telecaller", B1);
   await lead("Y-1", { assigned_telecaller_id: leaver.id, branch_id: String(B1) });
   await lead("Y-2", { assigned_telecaller_id: leaver.id, branch_id: String(B2) });
   const r = await run(h.transfer, { actor: SUPER, params: { id: leaver.id }, body: { toUserId: colleague.id, kind: "telecalling", reason: "Rebalance" } });
   assert.equal(r.code, 200, JSON.stringify(r.body));
-  assert.deepEqual(r.body.movedIds, ["Y-1"]);
-  assert.deepEqual(r.body.skipped.map((s) => [s.id, s.reason]), [["Y-2", "other_branch"]]);
-  assert.equal((await leadRow("Y-2")).assigned_telecaller_id, leaver.id);
+  assert.deepEqual([...r.body.movedIds].sort(), ["Y-1", "Y-2"]);
+  assert.deepEqual(r.body.skipped, []);
+  assert.equal((await leadRow("Y-2")).assigned_telecaller_id, colleague.id);
+  assert.equal(String((await leadRow("Y-2")).branch_id), String(B1), "the record should land in the receiver's branch");
+  assert.equal(String((await leadRow("Y-1")).branch_id), String(B1));
 });
 
 test("the page's receiver list offers only active colleagues from the same branch, with the right role", { skip }, async () => {
@@ -196,6 +211,10 @@ test("the page's receiver list offers only active colleagues from the same branc
   assert.ok(!ids.includes(suspended.id), "a suspended counselor was offered");
   assert.ok(!ids.includes(elsewhere.id), "a counselor from another branch was offered");
   assert.ok(!ids.includes(leaver.id), "the person was offered their own work");
+
+  const owner = await run(h.receivers, { actor: SUPER, params: { id: leaver.id }, query: { kind: "counseling" } });
+  assert.ok(owner.body.receivers.map((r) => r.id).includes(elsewhere.id), "the Super Admin should be offered a counselor in another branch");
+  assert.equal(owner.body.allowCrossBranch, true);
 
   const leads = await run(h.receivers, { actor: branchAdmin(), params: { id: leaver.id }, query: { kind: "telecalling" } });
   const leadIds = leads.body.receivers.map((r) => r.id);
