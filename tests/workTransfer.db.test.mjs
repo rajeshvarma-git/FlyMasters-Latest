@@ -44,7 +44,13 @@ if (!skip) {
     receivers: last("/api/transfer-work/:id/receivers", "get"),
     suspend: last("/api/users/:id/suspend", "post"),
     oldTelecallerTransfer: last("/api/telecallers/:id/transfer", "post"),
+    undo: last("/api/super/activity/:id/undo", "post"),
   };
+  const controls = (await import("../server/routes/superControls.mjs")).default;
+  const pick = (path, method) => controls.stack.find((l) => l.route?.path === path && l.route.methods[method]).route.stack.at(-1).handle;
+  h.switches = pick("/api/super/switches", "get");
+  h.setSwitch = pick("/api/super/switches/:key", "put");
+  h.activity = pick("/api/super/activity", "get");
   B1 = (await pool.query("INSERT INTO branches (name, code) VALUES ('Ameerpet', 'AMP') RETURNING id")).rows[0].id;
   B2 = (await pool.query("INSERT INTO branches (name, code) VALUES ('Kompally', 'KMP') RETURNING id")).rows[0].id;
 }
@@ -220,4 +226,57 @@ test("the page's receiver list offers only active colleagues from the same branc
   const leadIds = leads.body.receivers.map((r) => r.id);
   assert.ok(leadIds.includes(sameBranchTelecaller.id) && leadIds.includes(sameBranchCounselor.id));
   assert.ok(!leadIds.includes(elsewhere.id));
+});
+
+test("the Super Admin can undo a whole transfer; records changed since are left alone", { skip }, async () => {
+  const leaver = await makeStaff("telecaller", B1);
+  const colleague = await makeStaff("telecaller", B2);
+  await lead("U-1", { assigned_telecaller_id: leaver.id, branch_id: String(B1) });
+  await lead("U-2", { assigned_telecaller_id: leaver.id, branch_id: String(B1) });
+  const moved = await run(h.transfer, { actor: SUPER, params: { id: leaver.id }, body: { toUserId: colleague.id, kind: "telecalling", reason: "Test undo" } });
+  assert.equal(moved.code, 200, JSON.stringify(moved.body));
+  assert.equal(String((await leadRow("U-1")).branch_id), String(B2));
+
+  // U-2 is reassigned by someone else afterwards; undo must not trample that.
+  await db.jsonUpsert("student_leads", { ...(await leadRow("U-2")), assigned_telecaller_id: "someone-else" });
+
+  const list = await run(h.activity, { actor: SUPER, query: {} });
+  const row = list.body.items.find((i) => i.action === "staff.transfer_work" && i.detail.reason === "Test undo");
+  assert.ok(row, "the transfer is in the activity log");
+  assert.equal(row.canUndo, true);
+
+  const undone = await run(h.undo, { actor: SUPER, params: { id: row.id } });
+  assert.equal(undone.code, 200, JSON.stringify(undone.body));
+  assert.equal(undone.body.restored, 1);
+  assert.equal(undone.body.leftAlone, 1);
+  assert.equal((await leadRow("U-1")).assigned_telecaller_id, leaver.id);
+  assert.equal(String((await leadRow("U-1")).branch_id), String(B1), "the branch went back too");
+  assert.equal((await leadRow("U-2")).assigned_telecaller_id, "someone-else");
+
+  const again = await run(h.undo, { actor: SUPER, params: { id: row.id } });
+  assert.equal(again.code, 409, "a second undo is refused");
+  const after = await run(h.activity, { actor: SUPER, query: {} });
+  assert.equal(after.body.items.find((i) => i.id === row.id).undone, true);
+});
+
+test("switches: defaults, a change is logged and undoable, and the owner cannot lock himself out", { skip }, async () => {
+  const start = await run(h.switches, { actor: SUPER });
+  const staff = start.body.switches.find((x) => x.key === "login_code_staff");
+  assert.equal(staff.value, false);
+  assert.equal(start.body.switches.find((x) => x.key === "transfer_needs_approval").value, true);
+
+  const refused = await run(h.setSwitch, { actor: SUPER, params: { key: "login_code_staff" }, body: { value: true } });
+  assert.equal(refused.code, 409, "no WhatsApp number on the owner's profile");
+
+  const off = await run(h.setSwitch, { actor: SUPER, params: { key: "transfer_needs_approval" }, body: { value: false, reason: "testing" } });
+  assert.equal(off.code, 200, JSON.stringify(off.body));
+  assert.equal((await run(h.switches, { actor: SUPER })).body.switches.find((x) => x.key === "transfer_needs_approval").value, false);
+
+  const log = (await run(h.activity, { actor: SUPER, query: { action: "switch." } })).body.items[0];
+  assert.equal(log.detail.from, true);
+  assert.equal(log.detail.to, false);
+  assert.equal(log.canUndo, true);
+  const undone = await run(h.undo, { actor: SUPER, params: { id: log.id } });
+  assert.equal(undone.code, 200, JSON.stringify(undone.body));
+  assert.equal((await run(h.switches, { actor: SUPER })).body.switches.find((x) => x.key === "transfer_needs_approval").value, true);
 });

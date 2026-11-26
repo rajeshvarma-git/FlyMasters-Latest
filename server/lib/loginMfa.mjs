@@ -5,8 +5,8 @@
  * is right the server holds back the session and sends a code; only the code releases it. This is checked
  * on the server for every sign-in path (staff and student), so hiding or skipping the screen does nothing.
  *
- *  - Switch: LOGIN_WHATSAPP_MFA=on turns it on. Anything else leaves sign-in exactly as it was, which is also
- *    the way back in if WhatsApp sending ever fails.
+ *  - Switch: the Super Admin turns it on or off for staff and for students (switches.mjs). Off leaves sign-in exactly
+ *    as it was, which is also the way back in if WhatsApp sending ever fails.
  *  - The number comes from the account's own profile (verified WhatsApp number first, then phone). It is never
  *    taken from the sign-in request, so someone who only has the password cannot point the code at their phone.
  *  - A code lasts 5 minutes, allows 5 tries, works once, and a new one cannot be asked for within 30 seconds.
@@ -15,13 +15,15 @@
  * Challenges live in app_records (table_name = 'login_challenges'), so no new table is needed.
  */
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "crypto";
+import { switchOn } from "./switches.mjs";
 
 const TABLE = "login_challenges";
 export const CODE_TTL_MS = 5 * 60 * 1000;
 export const RESEND_AFTER_MS = 30 * 1000;
 export const MAX_TRIES = 5;
 
-export const mfaEnabled = () => String(process.env.LOGIN_WHATSAPP_MFA || "").trim().toLowerCase() === "on";
+/** Whether the sign-in code is required for this kind of account right now (a Super Admin switch). */
+export const mfaEnabled = (pool, role) => switchOn(pool, role === "student" ? "login_code_students" : "login_code_staff");
 
 const digits = (v) => String(v || "").replace(/\D/g, "");
 const hash = (challengeId, code) => createHash("sha256").update(`${challengeId}:${code}`).digest("hex");
@@ -59,7 +61,7 @@ export async function numberOnFile(pool, userId) {
  * one), staff are stopped, because a staff account must always be tied to a real phone.
  */
 export async function beginLoginMfa({ pool, userId, role, send }) {
-  if (!mfaEnabled()) return { required: false };
+  if (!(await mfaEnabled(pool, role))) return { required: false };
   const number = await numberOnFile(pool, userId);
   if (!number) {
     if (role === "student") return { required: false, noNumber: true };
