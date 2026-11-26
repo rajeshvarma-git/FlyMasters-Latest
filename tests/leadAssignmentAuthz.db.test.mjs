@@ -235,17 +235,16 @@ test("a branch Admin cannot touch a lead that is not in their branch", { skip },
   assert.equal(await telecallerOf(id), null);
 });
 
-test("even a Super Admin cannot put a telecaller on a lead from a branch they do not work in", { skip }, async () => {
-  // Scope is not the whole question: a Super Admin covers every branch, so only this rule stops a
-  // Vizag telecaller ending up with a Hyderabad lead in their queue.
+test("a Super Admin can put a telecaller from another branch on a lead, and the lead follows them there", { skip }, async () => {
+  // The Super Admin is the owner and is not limited by branch (client rule, 26 Nov 2026). The lead moves into
+  // the telecaller's branch so it does not vanish from every queue.
   const outsider = await staff("telecaller", B);
   const id = await lead({ branchId: A });
 
   const r = await call(h.patch, { actor: SUPER, params: { id }, body: { assigned_telecaller_id: outsider } });
 
-  assert.equal(r.code, 403, `a cross-branch assignment was allowed for a Super Admin: ${JSON.stringify(r.body)}`);
-  assert.equal(r.body.code, "CROSS_BRANCH");
-  assert.equal(await telecallerOf(id), null);
+  assert.equal(r.code, 200, JSON.stringify(r.body));
+  assert.equal(await telecallerOf(id), String(outsider));
 });
 
 test("a Super Admin reassigns freely within the lead's own branch", { skip }, async () => {

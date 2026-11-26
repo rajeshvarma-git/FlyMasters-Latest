@@ -104,16 +104,18 @@ test("staff transfer/remove: a person from another branch, or one who also works
   });
 });
 
-test("staff transfer/remove: people entirely inside the caller's branches get past the check; a transfer between branches is refused for everyone", async () => {
+test("staff transfer/remove: people entirely inside the caller's branches get past the check; a branch Admin cannot transfer between branches; the Super Admin can", async () => {
   const accounts = { cA: { branches: [A] }, cA2: { branches: [A] }, cB: { branches: [B] } };
   await withWorld({ accounts }, async () => {
     const ok = await call(H.counselorTransfer, { scope: scoped(A), params: { id: "cA" }, body: { targetCounselorId: "cA2" } });
     assert.equal(ok.code, 200, JSON.stringify(ok.body));
-    // Work moves only between colleagues in one branch (client rule, 26 Nov 2026): even a Super Admin
-    // is refused when the two people share no branch. Scope itself is still not looked up for them.
+    // The Super Admin is the owner and is never limited by branch (client rule, 26 Nov 2026); a branch Admin
+    // still cannot reach a person in another branch.
     const everyone = await call(H.counselorTransfer, { role: "super_admin", scope: everything, params: { id: "cB" }, body: { targetCounselorId: "cA" } });
-    assert.equal(everyone.code, 403, "a transfer between two branches must be refused");
-    assert.equal(everyone.body?.code, "CROSS_BRANCH");
+    assert.notEqual(everyone.body?.code, "CROSS_BRANCH", "the Super Admin must not be blocked by branch");
+    assert.equal(everyone.code, 200, JSON.stringify(everyone.body));
+    const limited = await call(H.counselorTransfer, { scope: scoped(A), params: { id: "cA" }, body: { targetCounselorId: "cB" } });
+    assert.ok(refused(limited), "a branch Admin must not move work into another branch");
   });
 });
 

@@ -7,9 +7,10 @@
  *  - "counseling": converted students the employee counsels. The new owner must be a Counselor.
  *
  * Rules, all enforced here so no screen can skip them:
- *  - the two people must share a branch, and every record moved must belong to a branch the new owner
- *    works in; anything else is skipped with a reason, never moved across branches;
+ *  - for everyone except the Super Admin: the two people must share a branch, and every record moved must
+ *    belong to a branch the new owner works in; anything else is skipped with a reason;
  *  - records with no branch on file are skipped (moving them would decide their branch by accident);
+ *  - the Super Admin (allowCrossBranch) is not limited: records follow the work into the new owner's branch;
  *  - the new owner must be active and must not be the same person;
  *  - a reason is required and kept on every moved record's history;
  *  - only records the employee actually owns can be moved, even if other ids are sent.
@@ -35,8 +36,10 @@ const fail = (status, code, error) => ({ ok: false, status, code, error });
  * @param {object[]} input.leads  all lead records visible to the caller
  * @param {string[]|null} input.leadIds  only these (null or empty = all of this person's work)
  * @param {string} input.reason
+ * @param {boolean} [input.allowCrossBranch]  true only for the Super Admin (the owner): no branch limit. Records that
+ *        are not in the receiver's branch move WITH the work, into the receiver's first branch (`newBranchId`).
  */
-export function planWorkTransfer({ kind, from, to, leads, leadIds, reason }) {
+export function planWorkTransfer({ kind, from, to, leads, leadIds, reason, allowCrossBranch = false }) {
   if (!TRANSFER_KINDS.includes(kind)) return fail(400, "BAD_KIND", "Choose leads or students to transfer.");
   const why = str(reason).trim();
   if (!why) return fail(400, "REASON_REQUIRED", "Say why this work is being transferred.");
@@ -57,7 +60,7 @@ export function planWorkTransfer({ kind, from, to, leads, leadIds, reason }) {
 
   const toBranches = new Set((to.branchIds || []).map(str));
   const shared = (from.branchIds || []).map(str).filter((b) => toBranches.has(b));
-  if (!shared.length) {
+  if (!shared.length && !allowCrossBranch) {
     return fail(403, "CROSS_BRANCH", "These two people do not work in the same branch. Work can only move between colleagues in one branch.");
   }
 
@@ -76,8 +79,15 @@ export function planWorkTransfer({ kind, from, to, leads, leadIds, reason }) {
   }
   for (const lead of theirs) {
     if (wanted && !wanted.has(str(lead.id))) continue;
+    const inReceiverBranch = lead.branch_id && toBranches.has(str(lead.branch_id));
+    if (allowCrossBranch) {
+      // The owner can move anything anywhere; the record follows its new owner so it stays visible.
+      const newBranchId = inReceiverBranch ? null : ((to.branchIds || []).map(str)[0] || null);
+      move.push(newBranchId ? { ...lead, newBranchId } : lead);
+      continue;
+    }
     if (!lead.branch_id) { skipped.push({ id: str(lead.id), reason: "no_branch" }); continue; }
-    if (!toBranches.has(str(lead.branch_id))) { skipped.push({ id: str(lead.id), reason: "other_branch" }); continue; }
+    if (!inReceiverBranch) { skipped.push({ id: str(lead.id), reason: "other_branch" }); continue; }
     move.push(lead);
   }
   return { ok: true, kind, reason: why, move, skipped, sharedBranchIds: shared };
