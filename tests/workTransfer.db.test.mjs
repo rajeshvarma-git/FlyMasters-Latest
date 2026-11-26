@@ -45,6 +45,9 @@ if (!skip) {
     suspend: last("/api/users/:id/suspend", "post"),
     oldTelecallerTransfer: last("/api/telecallers/:id/transfer", "post"),
     undo: last("/api/super/activity/:id/undo", "post"),
+    ask: last("/api/transfer-requests", "post"),
+    requests: last("/api/super/transfer-requests", "get"),
+    decide: last("/api/super/transfer-requests/:id/decide", "post"),
   };
   const controls = (await import("../server/routes/superControls.mjs")).default;
   const pick = (path, method) => controls.stack.find((l) => l.route?.path === path && l.route.methods[method]).route.stack.at(-1).handle;
@@ -279,4 +282,54 @@ test("switches: defaults, a change is logged and undoable, and the owner cannot 
   const undone = await run(h.undo, { actor: SUPER, params: { id: log.id } });
   assert.equal(undone.code, 200, JSON.stringify(undone.body));
   assert.equal((await run(h.switches, { actor: SUPER })).body.switches.find((x) => x.key === "transfer_needs_approval").value, true);
+});
+
+test("an Admin's cross-branch request waits; the Super Admin accepts and it moves (and can be undone), or declines and nothing moves", { skip }, async () => {
+  const leaver = await makeStaff("telecaller", B1);
+  const faraway = await makeStaff("telecaller", B2);
+  await lead("R-1", { assigned_telecaller_id: leaver.id, branch_id: String(B1) });
+  await lead("R-2", { assigned_telecaller_id: leaver.id, branch_id: String(B1) });
+
+  const offered = await run(h.receivers, { actor: branchAdmin(), params: { id: leaver.id }, query: { kind: "telecalling" } });
+  assert.ok(offered.body.approvalReceivers.some((r) => r.id === faraway.id && r.needsApproval), "other-branch colleagues are offered as 'ask the owner'");
+  assert.ok(!offered.body.receivers.some((r) => r.id === faraway.id));
+
+  const asked = await run(h.ask, { actor: branchAdmin(), body: { fromId: leaver.id, toUserId: faraway.id, kind: "telecalling", reason: "Covering Kompally" } });
+  assert.equal(asked.code, 200, JSON.stringify(asked.body));
+  assert.equal((await leadRow("R-1")).assigned_telecaller_id, leaver.id, "asking moves nothing");
+
+  const pending = (await run(h.requests, { actor: SUPER, query: {} })).body.items.find((r) => r.id === asked.body.requestId);
+  assert.equal(pending.status, "pending");
+  assert.equal(pending.count, 2);
+
+  const ok = await run(h.decide, { actor: SUPER, params: { id: pending.id }, body: { accept: true } });
+  assert.equal(ok.code, 200, JSON.stringify(ok.body));
+  assert.equal(ok.body.moved, 2);
+  assert.equal((await leadRow("R-1")).assigned_telecaller_id, faraway.id);
+  assert.equal(String((await leadRow("R-1")).branch_id), String(B2));
+  assert.equal((await run(h.decide, { actor: SUPER, params: { id: pending.id }, body: { accept: true } })).code, 409, "cannot decide twice");
+
+  const log = (await run(h.activity, { actor: SUPER, query: { action: "staff." } })).body.items.find((i) => i.detail.reason?.includes("approved by the owner"));
+  assert.equal(log.canUndo, true);
+
+  await lead("R-3", { assigned_telecaller_id: leaver.id, branch_id: String(B1) });
+  const second = await run(h.ask, { actor: branchAdmin(), body: { fromId: leaver.id, toUserId: faraway.id, kind: "telecalling", reason: "Another" } });
+  const no = await run(h.decide, { actor: SUPER, params: { id: second.body.requestId }, body: { accept: false, note: "Not now" } });
+  assert.equal(no.code, 200);
+  assert.equal((await leadRow("R-3")).assigned_telecaller_id, leaver.id, "a declined request moves nothing");
+});
+
+test("with the approval switch off an Admin's request is refused, and an Admin still cannot move cross-branch directly", { skip }, async () => {
+  const leaver = await makeStaff("telecaller", B1);
+  const faraway = await makeStaff("telecaller", B2);
+  await lead("Q-1", { assigned_telecaller_id: leaver.id, branch_id: String(B1) });
+  await run(h.setSwitch, { actor: SUPER, params: { key: "transfer_needs_approval" }, body: { value: false } });
+  try {
+    const asked = await run(h.ask, { actor: branchAdmin(), body: { fromId: leaver.id, toUserId: faraway.id, kind: "telecalling", reason: "x" } });
+    assert.equal(asked.code, 403);
+    const direct = await run(h.transfer, { actor: branchAdmin(), params: { id: leaver.id }, body: { toUserId: faraway.id, kind: "telecalling", reason: "x" } });
+    assert.equal(direct.code, 403);
+  } finally {
+    await run(h.setSwitch, { actor: SUPER, params: { key: "transfer_needs_approval" }, body: { value: true } });
+  }
 });
