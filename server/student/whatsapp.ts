@@ -7,6 +7,9 @@ import { deliveryStatusPatch, whatsappWindowOpen, latestWhatsAppInbound } from "
 import { sendWhatsAppOutreach, outreachTemplateName } from "../lib/waSend.mjs";
 import { JWT_SECRET, IS_PRODUCTION } from "../lib/env.mjs";
 import { staffOnlyForStudentRef } from "../lib/staffOnlyDocuments.mjs";
+import { resolveAccountIdentity } from "../lib/accountIdentity.mjs";
+import { scopeFor } from "../lib/accessScope.mjs";
+import { managerSeesConversation } from "../lib/scopeGuards.mjs";
 
 const CODE_TTL_MS = 10 * 60 * 1000;
 const MAX_VERIFY_ATTEMPTS = 5;
@@ -165,7 +168,7 @@ async function updateRow(table: string, id: string, payload: Record<string, any>
 
 async function getUserRole(userId: string): Promise<string> {
   const roles = (await loadTable("user_roles")).filter((row) => String(row.user_id) === String(userId));
-  const hierarchy = ["super_admin", "admin", "counselor", "telecaller", "student"];
+  const hierarchy = ["super_admin", "admin", "branch_head", "counselor", "telecaller", "student"];
   for (const role of hierarchy) {
     if (roles.some((row) => row.role === role)) return role;
   }
@@ -173,7 +176,7 @@ async function getUserRole(userId: string): Promise<string> {
 }
 
 function isStaffRole(role: string) {
-  return role === "admin" || role === "super_admin" || role === "counselor" || role === "telecaller";
+  return role === "admin" || role === "super_admin" || role === "branch_head" || role === "counselor" || role === "telecaller";
 }
 
 function personName(row: any) {
@@ -379,11 +382,24 @@ async function requireStaff(req: IncomingMessage) {
     error.status = 403;
     throw error;
   }
+  // Managers see the chats of their own branches only (the same rule as the rest of the staff API).
+  if (auth.role === "admin" || auth.role === "branch_head") {
+    const found: any = await resolveAccountIdentity(getPool(), String(auth.user.id)).catch(() => null);
+    managerScopes.set(String(auth.user.id), scopeFor({ role: auth.role, branch_ids: found?.ok ? found.identity.branch_ids : [] }));
+  }
   return auth;
 }
 
+/** Branch limits of the managers who have made a request, refreshed on every request they make. */
+const managerScopes = new Map<string, any>();
+
 function canAccessConversation(role: string, userId: string, conversation: any, lead: any) {
-  if (role === "admin" || role === "super_admin") return true;
+  if (role === "super_admin") return true;
+  if (role === "admin" || role === "branch_head") {
+    const scope = managerScopes.get(String(userId));
+    // No scope on record means this was not reached through requireStaff: refuse rather than widen.
+    return Boolean(scope) && managerSeesConversation({ role }, scope, conversation, lead ? [lead] : []);
+  }
   if (role === "counselor") {
     return (
       String(lead?.assigned_counselor_id || "") === String(userId) ||

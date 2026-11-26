@@ -15,6 +15,7 @@
  *   routes/config.mjs     /api/config/*, /api/alerts/*   (CRM 2.6 and 2.6.1)
  *   routes/comms.mjs      /api/comms/*                   (CRM 2.7)
  */
+import "./lib/asyncRoutes.mjs";
 import express from "express";
 import cors from "cors";
 import path from "path";
