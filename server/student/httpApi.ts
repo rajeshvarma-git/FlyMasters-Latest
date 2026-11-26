@@ -27,11 +27,12 @@ import {
   requestPasswordReset,
   resetPasswordWithToken,
 } from "./studentAuth";
+import { chooseBranchForStudent, listChoosableBranches } from "../lib/studentBranchChoice.mjs";
 import { handleWhatsAppRequest, isWhatsAppConfigured, isWhatsAppPath } from "./whatsapp";
 import { rowMatches } from "./postgres";
 import { branchAdminFolders, canUseFile, checkMutation, isBranchAdmin, rowsForFilters, viewerFromRequest, visibleRows, visibleStorageListing } from "./dataPolicy";
 
-const API_PATHS = new Set(["/__local_db", "/__db_health", "/__auth", "/__session", "/__storage", "/__public_media"]);
+const API_PATHS = new Set(["/__local_db", "/__db_health", "/__auth", "/__session", "/__storage", "/__public_media", "/__branches", "/__branch_choice"]);
 const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 export function isApiPath(pathname: string) {
@@ -177,6 +178,22 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 
     if (isWhatsAppPath(url)) {
       await handleWhatsAppRequest(req, res);
+      return;
+    }
+
+    // The student's first chat: which branch is easiest to visit (optional; skipping means Head Office).
+    if (url === "/__branches" && req.method === "GET") {
+      const viewer = await viewerFromRequest(req);
+      if (!viewer) { sendJson(res, 401, { error: "Please sign in." }); return; }
+      sendJson(res, 200, { branches: await listChoosableBranches(getPool()) });
+      return;
+    }
+    if (url === "/__branch_choice" && req.method === "POST") {
+      const viewer = await viewerFromRequest(req);
+      if (!viewer) { sendJson(res, 401, { error: "Please sign in." }); return; }
+      const body = JSON.parse((await readBody(req)) || "{}");
+      const result = await chooseBranchForStudent(getPool(), viewer, body.branchId ? String(body.branchId) : null);
+      sendJson(res, result.status, result.body);
       return;
     }
 

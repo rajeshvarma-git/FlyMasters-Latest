@@ -10,6 +10,7 @@ import {
   type ChatContext,
 } from '@student/lib/chatContext';
 import { saveChatDataToProfile } from '@student/lib/syncChatProfile';
+import { fetchBranchOptions, saveBranchChoice, type BranchOption } from '@student/lib/branchChoiceApi';
 import { useAuth } from '@student/hooks/useAuth';
 import type { UniversityRecommendation } from '@student/lib/universityRecommendations';
 
@@ -31,6 +32,9 @@ interface ChatState {
   showResults: boolean;
   showExpertHelp: boolean;
   chatComplete: boolean;
+  /** Which question is being asked now (null once the chat is finished). */
+  currentStepKey: string | null;
+  branchOptions: BranchOption[];
 }
 
 const INITIAL_STATE: ChatState = {
@@ -42,6 +46,8 @@ const INITIAL_STATE: ChatState = {
   showResults: false,
   showExpertHelp: false,
   chatComplete: false,
+  currentStepKey: null,
+  branchOptions: [],
 };
 
 let cachedSessionId: string | null = null;
@@ -204,6 +210,7 @@ export const useChat = () => {
       ...prev,
       sessionId: sessionUuid,
       conversationData: dataRef.current,
+      currentStepKey: activeStepsRef.current[0]?.key ?? null,
       messages: [{
         id: 'welcome',
         type: 'ai',
@@ -223,37 +230,20 @@ export const useChat = () => {
     void initializeChat();
   }, [initializeChat]);
 
-  const sendMessage = useCallback(async (message: string) => {
-    const trimmed = message.trim();
-    if (!trimmed || state.isLoading || state.chatComplete || sendingRef.current) return;
+  // Load the branches when the chat reaches the branch question.
+  useEffect(() => {
+    if (state.currentStepKey !== 'branch' || state.branchOptions.length) return;
+    let cancelled = false;
+    fetchBranchOptions()
+      .then((options) => { if (!cancelled) setState((prev) => ({ ...prev, branchOptions: options })); })
+      .catch((error) => console.warn('Could not load branches:', error));
+    return () => { cancelled = true; };
+  }, [state.currentStepKey, state.branchOptions.length]);
 
-    sendingRef.current = true;
-    addMessage({ type: 'user', content: trimmed });
-    setState((prev) => ({ ...prev, isLoading: true }));
-
+  /** Save one answer and move to the next question (or finish the chat). */
+  const completeStep = useCallback(async (step: ChatStep, storedValue: string) => {
     const steps = activeStepsRef.current;
-    const step = steps[stepIndexRef.current];
-    if (!step) {
-      sendingRef.current = false;
-      setState((prev) => ({ ...prev, isLoading: false }));
-      return;
-    }
-
-    const validation = validateChatStep(step.key, trimmed);
-    await new Promise((resolve) => setTimeout(resolve, 350));
-
-    if (!validation.valid) {
-      addMessage({ type: 'ai', content: validation.error! });
-      sendingRef.current = false;
-      setState((prev) => ({ ...prev, isLoading: false }));
-      return;
-    }
-
-    const storedValue = validation.normalized ?? trimmed;
-    const nextData = {
-      ...dataRef.current,
-      [step.key]: storedValue,
-    };
+    const nextData = { ...dataRef.current, [step.key]: storedValue };
 
     dataRef.current = nextData;
     const nextStepIndex = stepIndexRef.current + 1;
@@ -262,6 +252,7 @@ export const useChat = () => {
     setState((prev) => ({
       ...prev,
       conversationData: nextData,
+      currentStepKey: steps[nextStepIndex]?.key ?? null,
     }));
 
     await persistSession(nextData, nextStepIndex);
@@ -287,20 +278,87 @@ export const useChat = () => {
     });
     sendingRef.current = false;
     setState((prev) => ({ ...prev, isLoading: false }));
+  }, [addMessage, persistSession, fetchUniversities, user, userProfile]);
+
+  /** The branch question is optional: a failed save or a skip never stops the chat (Head Office is the default). */
+  const answerBranch = useCallback(async (step: ChatStep, option: BranchOption | null) => {
+    try {
+      await saveBranchChoice(option ? option.id : null);
+    } catch (error) {
+      console.warn('Branch choice not saved yet:', error);
+    }
+    await completeStep(step, option ? option.name : 'skipped');
+  }, [completeStep]);
+
+  const sendMessage = useCallback(async (message: string) => {
+    const trimmed = message.trim();
+    if (!trimmed || state.isLoading || state.chatComplete || sendingRef.current) return;
+
+    sendingRef.current = true;
+    addMessage({ type: 'user', content: trimmed });
+    setState((prev) => ({ ...prev, isLoading: true }));
+
+    const steps = activeStepsRef.current;
+    const step = steps[stepIndexRef.current];
+    if (!step) {
+      sendingRef.current = false;
+      setState((prev) => ({ ...prev, isLoading: false }));
+      return;
+    }
+
+    if (step.key === 'branch') {
+      // The branch question is answered by tapping a card. If they type, accept a branch name or "skip".
+      const typed = trimmed.toLowerCase();
+      const match = state.branchOptions.find((option) => option.name.toLowerCase() === typed);
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      if (match) {
+        await answerBranch(step, match);
+      } else if (/^skip/.test(typed)) {
+        await answerBranch(step, null);
+      } else {
+        addMessage({ type: 'ai', content: 'Tap a branch below, or choose Skip for now.' });
+        sendingRef.current = false;
+        setState((prev) => ({ ...prev, isLoading: false }));
+      }
+      return;
+    }
+
+    const validation = validateChatStep(step.key, trimmed);
+    await new Promise((resolve) => setTimeout(resolve, 350));
+
+    if (!validation.valid) {
+      addMessage({ type: 'ai', content: validation.error! });
+      sendingRef.current = false;
+      setState((prev) => ({ ...prev, isLoading: false }));
+      return;
+    }
+
+    await completeStep(step, validation.normalized ?? trimmed);
   }, [
     state.isLoading,
     state.chatComplete,
+    state.branchOptions,
     addMessage,
-    persistSession,
-    fetchUniversities,
-    user,
-    userProfile,
+    completeStep,
+    answerBranch,
   ]);
+
+  /** Tap on a branch card, or on "Skip for now" (null). */
+  const chooseBranch = useCallback(async (option: BranchOption | null) => {
+    if (state.isLoading || state.chatComplete || sendingRef.current) return;
+    const step = activeStepsRef.current[stepIndexRef.current];
+    if (!step || step.key !== 'branch') return;
+    sendingRef.current = true;
+    addMessage({ type: 'user', content: option ? option.name : 'Skip for now' });
+    setState((prev) => ({ ...prev, isLoading: true }));
+    await answerBranch(step, option);
+  }, [state.isLoading, state.chatComplete, addMessage, answerBranch]);
 
   return {
     ...state,
     messagesEndRef,
     initializeChat,
     sendMessage,
+    chooseBranch,
   };
 };

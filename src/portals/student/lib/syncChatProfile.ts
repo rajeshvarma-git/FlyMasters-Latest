@@ -7,6 +7,7 @@ type ExistingProfile = {
   last_name?: string | null;
   full_name?: string | null;
   phone?: string | null;
+  whatsapp_number?: string | null;
   interested_countries?: string[] | null;
   degree_level?: string | null;
   course_preferences?: string | null;
@@ -92,6 +93,10 @@ export function buildProfileUpdateFromChat(chat: ChatContext, existing: Existing
   if (chat.phone) {
     update.phone = chat.phone;
   }
+  if (chat.whatsapp) {
+    update.whatsapp_number = chat.whatsapp;
+    if (!chat.phone && !existing?.phone) update.phone = chat.whatsapp;
+  }
   if (chat.fullName) {
     const names = splitName(chat.fullName);
     update.first_name = names.first_name;
@@ -175,6 +180,10 @@ export async function saveChatDataToProfile(
     leadPayload.notes = appendBudgetNote(existingLead?.notes, chat.budget);
   }
   if (chat.phone) leadPayload.phone = chat.phone;
+  if (chat.whatsapp) {
+    leadPayload.whatsapp_number = chat.whatsapp;
+    if (!chat.phone && !existingProfile?.phone) leadPayload.phone = chat.whatsapp;
+  }
   if (chat.fullName) {
     const names = splitName(chat.fullName);
     leadPayload.first_name = names.first_name;
