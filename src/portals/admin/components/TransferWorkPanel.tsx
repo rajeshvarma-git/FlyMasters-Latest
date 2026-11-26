@@ -16,7 +16,7 @@ import { Select } from "@admin/components/ui/Field";
 
 type Kind = "telecalling" | "counseling";
 interface Item { id: string; name: string; status: string; branchId: string | null }
-interface Receiver { id: string; counselorRowId: string | null; name: string; role: "telecaller" | "counselor"; load: number; branchIds?: string[] }
+interface Receiver { id: string; counselorRowId: string | null; name: string; role: "telecaller" | "counselor"; load: number; branchIds?: string[]; needsApproval?: boolean }
 interface Result { moved: number; skipped: { id: string; reason: string; label: string }[] }
 
 export function TransferWorkPanel({
@@ -38,6 +38,8 @@ export function TransferWorkPanel({
   const [branchIds, setBranchIds] = useState<string[]>([]);
   const [allowCross, setAllowCross] = useState(false);
   const [receivers, setReceivers] = useState<Receiver[]>([]);
+  const [approvalReceivers, setApprovalReceivers] = useState<Receiver[]>([]);
+  const [asked, setAsked] = useState<string | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [choosing, setChoosing] = useState(false);
   const [toId, setToId] = useState("");
@@ -55,11 +57,12 @@ export function TransferWorkPanel({
         isCounselor
           ? api<{ items: Item[] }>(`/transfer-work/${encodeURIComponent(personId)}/items?kind=${k === "counseling" ? "telecalling" : "counseling"}`)
           : Promise.resolve({ items: [] as Item[] }),
-        api<{ receivers: Receiver[] }>(`/transfer-work/${encodeURIComponent(personId)}/receivers?kind=${k}`),
+        api<{ receivers: Receiver[]; approvalReceivers?: Receiver[] }>(`/transfer-work/${encodeURIComponent(personId)}/receivers?kind=${k}`),
       ]);
       setItems(own.items);
       setBranchIds(own.person.branchIds || []);
       setReceivers(rec.receivers);
+      setApprovalReceivers(rec.approvalReceivers || []);
       const cross = Boolean(own.allowCrossBranch);
       setAllowCross(cross);
       // The owner (Super Admin) can move everything; branch Admins start with their branch's records.
@@ -77,7 +80,7 @@ export function TransferWorkPanel({
     void load(kind);
   }, [personId, kind]);
 
-  const receiver = receivers.find((r) => r.id === toId) || null;
+  const receiver = [...receivers, ...approvalReceivers].find((r) => r.id === toId) || null;
   useEffect(() => { onReceiverChange?.(receiver); }, [receiver?.id]);
 
   const word = kind === "counseling" ? "student" : "lead";
@@ -96,6 +99,15 @@ export function TransferWorkPanel({
     if (!receiver) return;
     setBusy(true); setError("");
     try {
+      if (receiver.needsApproval) {
+        const sent = await api<{ count: number }>("/transfer-requests", {
+          method: "POST",
+          body: { fromId: personId, toUserId: receiver.id, kind, leadIds: [...picked], reason: reason.trim() },
+        });
+        setAsked(`Sent to the owner for approval: ${sent.count} ${word}${sent.count === 1 ? "" : "s"} to ${receiver.name}. Nothing moves until they accept.`);
+        setConfirming(false); setReason(""); setToId("");
+        return;
+      }
       const res = await api<Result>(`/transfer-work/${encodeURIComponent(personId)}`, {
         method: "POST",
         body: { toUserId: receiver.id, kind, leadIds: [...picked], reason: reason.trim() },
@@ -136,6 +148,13 @@ export function TransferWorkPanel({
                 {r.name} · {r.role === "counselor" ? "Counselor" : "Telecaller"}{allowCross && r.branchIds && !r.branchIds.some((b) => branchIds.includes(b)) ? " · other branch" : ""} · {r.load} {word}{r.load === 1 ? "" : "s"} now
               </option>
             ))}
+            {approvalReceivers.length > 0 && (
+              <optgroup label="Another branch — the owner must approve">
+                {approvalReceivers.map((r) => (
+                  <option key={r.id} value={r.id}>{r.name} · {r.role === "counselor" ? "Counselor" : "Telecaller"} · other branch · {r.load} {word}{r.load === 1 ? "" : "s"} now</option>
+                ))}
+              </optgroup>
+            )}
           </Select>
         </div>
         <div className="min-w-[260px] flex-1">
@@ -149,14 +168,14 @@ export function TransferWorkPanel({
         </div>
         {!confirming ? (
           <Button size="sm" variant="secondary" disabled={busy || !ready} onClick={() => setConfirming(true)}>
-            <ArrowRightLeft className="h-4 w-4" /> Transfer data
+            <ArrowRightLeft className="h-4 w-4" /> {receiver?.needsApproval ? "Ask the owner" : "Transfer data"}
           </Button>
         ) : (
           <div role="group" aria-label="Confirm transfer" className="flex flex-wrap items-center gap-2 rounded-xl bg-slate-50 px-3 py-2">
             <span className="text-sm text-navy-900">
               Move <b>{picked.size} {word}{picked.size === 1 ? "" : "s"}</b> from <b>{personName}</b> to <b>{receiver?.name}</b>?
             </span>
-            <Button size="sm" disabled={busy} onClick={() => void submit()}>{busy ? "Moving…" : "Yes, transfer"}</Button>
+            <Button size="sm" disabled={busy} onClick={() => void submit()}>{busy ? "Sending…" : receiver?.needsApproval ? "Yes, ask the owner" : "Yes, transfer"}</Button>
             <Button size="sm" variant="secondary" disabled={busy} onClick={() => setConfirming(false)}>Cancel</Button>
           </div>
         )}
@@ -194,6 +213,7 @@ export function TransferWorkPanel({
         </ul>
       )}
 
+      {asked && <p role="status" className="rounded-xl bg-sky-50 px-3 py-2 text-sm text-sky-800">{asked}</p>}
       {error && <p role="alert" className="text-sm font-medium text-rose-700">{error}</p>}
       {result && (
         <div role="status" className="rounded-xl bg-emerald-50 px-3 py-2 text-sm text-emerald-800">

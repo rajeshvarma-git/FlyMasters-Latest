@@ -43,7 +43,7 @@ import { planWorkTransfer, SKIP_REASONS } from "../lib/workTransfer.mjs";
 import { allow, branchInScope, checkLeadInScope, checkRecipientInScope, checkStaffInScope, managerSeesConversation, requireGlobalScope, checkRowInScope, checkLeaveInScope, staffAuthId } from "../lib/scopeGuards.mjs";
 import { noteWarnings, resolveAccountIdentity } from "../lib/accountIdentity.mjs";
 import { beginLoginMfa, checkLoginCode, resendLoginCode } from "../lib/loginMfa.mjs";
-import { setSwitch } from "../lib/switches.mjs";
+import { setSwitch, switchOn } from "../lib/switches.mjs";
 import { sendWhatsAppOtpTemplate } from "../student/whatsapp.ts";
 import { rotateRefreshToken, revokeFamily, revokeAllForUser, RefreshRejected } from "../lib/refreshTokens.mjs";
 import { branchExists, listBranches, allocateBranchCode, suggestBranchCode } from "../lib/branches.mjs";
@@ -3718,10 +3718,9 @@ router.get("/api/transfer-work/:id/receivers", staffMoveAuth, async (req, res) =
   const leads = await jsonTable("student_leads");
   const converted = (l) => l.entity_type === "student" || l.lead_status === "converted";
   const counselors = await loadCounselors();
-  const receivers = (await loadUsers())
+  const shape = (list) => list
     .filter((u) => String(u.id) !== person.id && u.is_active !== false)
     .filter((u) => (kind === "counseling" ? u.role === "counselor" : ["telecaller", "counselor"].includes(u.role)))
-    .filter((u) => req.scope.allBranches || (u.branch_ids || []).map(String).some((b) => theirBranches.has(b) && branchInScope(req.scope, b)))
     .map((u) => {
       const c = u.role === "counselor"
         ? counselors.find((row) => String(row.auth_user_id || "") === String(u.id) || String(row.id) === String(u.id))
@@ -3740,7 +3739,15 @@ router.get("/api/transfer-work/:id/receivers", staffMoveAuth, async (req, res) =
       };
     })
     .sort((a, b) => a.load - b.load || a.name.localeCompare(b.name));
-  res.json({ person: { id: person.id, name: person.name, branchIds: person.branchIds }, kind, receivers, allowCrossBranch: Boolean(req.scope.allBranches) });
+  const allUsers = await loadUsers();
+  const inReach = (u) => req.scope.allBranches || (u.branch_ids || []).map(String).some((b) => theirBranches.has(b) && branchInScope(req.scope, b));
+  const receivers = shape(allUsers.filter(inReach));
+  // An Admin may also ask the owner to move work to another branch: those people are listed apart, and nothing
+  // moves until the Super Admin accepts.
+  const approvalReceivers = !req.scope.allBranches && (await switchOn(pool, "transfer_needs_approval"))
+    ? shape(allUsers.filter((u) => !inReach(u))).map((r) => ({ ...r, needsApproval: true }))
+    : [];
+  res.json({ person: { id: person.id, name: person.name, branchIds: person.branchIds }, kind, receivers, approvalReceivers, allowCrossBranch: Boolean(req.scope.allBranches) });
 });
 
 /**
@@ -3805,6 +3812,47 @@ router.post("/api/super/activity/:id/undo", superAdminAuth, async (req, res) => 
   }
 });
 
+/**
+ * Carries out a transfer plan: moves every record, writes the history and the audit rows, tells the receiver.
+ * Shared by a direct transfer and by an accepted request, so both behave and log identically.
+ */
+async function runTransferPlan(req, plan, from, to) {
+  // Counseling ownership is stored against the counselor's record; telecalling against their login.
+  const field = plan.kind === "counseling" ? "assigned_counselor_id" : "assigned_telecaller_id";
+  const value = plan.kind === "counseling" ? (to.counselorRowId || to.id) : to.id;
+  const moved = [];
+  const batch = crypto.randomUUID();
+  for (const lead of plan.move) {
+    const before = { ...lead };
+    const updated = await applyLeadPatch(lead.id, {
+      [field]: value,
+      status: "assigned",
+      ...(lead.newBranchId ? { branch_id: lead.newBranchId } : {}),
+    });
+    await syncOwnershipOnAssignment(before, updated);
+    await audit(req, "lead.transfer", "student_leads", lead.id, {
+      kind: plan.kind, from: from.id, to: to.id, reason: plan.reason, branchId: lead.branch_id || null,
+      ...(lead.newBranchId ? { movedToBranchId: lead.newBranchId } : {}),
+      batch, field, prev: before[field] ?? null, now: value,
+    });
+    moved.push(String(lead.id));
+  }
+  await audit(req, "staff.transfer_work", "auth_users", from.id, {
+    kind: plan.kind, from: from.id, to: to.id, moved: moved.length, skipped: plan.skipped.length, reason: plan.reason,
+    batch, ...(moved.length ? { undo: { kind: "batch", batch } } : {}),
+  });
+  if (moved.length) {
+    await notify(
+      to.id,
+      plan.kind === "counseling" ? "Students transferred to you" : "Leads transferred to you",
+      `${moved.length} ${plan.kind === "counseling" ? "student(s)" : "lead(s)"} from ${from.name} were transferred to you, with their history. Reason: ${plan.reason}`,
+      "info",
+      plan.kind === "counseling" ? "/counselor/students" : "/telecaller/queue",
+    );
+  }
+  return { moved, batch };
+}
+
 router.post("/api/transfer-work/:id", staffMoveAuth, async (req, res) => {
   try {
     const toUserId = String(req.body.toUserId || "");
@@ -3824,39 +3872,7 @@ router.post("/api/transfer-work/:id", staffMoveAuth, async (req, res) => {
     });
     if (!plan.ok) return res.status(plan.status).json({ error: plan.error, code: plan.code });
 
-    // Counseling ownership is stored against the counselor's record; telecalling against their login.
-    const field = plan.kind === "counseling" ? "assigned_counselor_id" : "assigned_telecaller_id";
-    const value = plan.kind === "counseling" ? (to.counselorRowId || to.id) : to.id;
-    const moved = [];
-    const batch = crypto.randomUUID();
-    for (const lead of plan.move) {
-      const before = { ...lead };
-      const updated = await applyLeadPatch(lead.id, {
-        [field]: value,
-        status: "assigned",
-        ...(lead.newBranchId ? { branch_id: lead.newBranchId } : {}),
-      });
-      await syncOwnershipOnAssignment(before, updated);
-      await audit(req, "lead.transfer", "student_leads", lead.id, {
-        kind: plan.kind, from: from.id, to: to.id, reason: plan.reason, branchId: lead.branch_id || null,
-        ...(lead.newBranchId ? { movedToBranchId: lead.newBranchId } : {}),
-        batch, field, prev: before[field] ?? null, now: value,
-      });
-      moved.push(String(lead.id));
-    }
-    await audit(req, "staff.transfer_work", "auth_users", from.id, {
-      kind: plan.kind, from: from.id, to: to.id, moved: moved.length, skipped: plan.skipped.length, reason: plan.reason,
-      batch, ...(moved.length ? { undo: { kind: "batch", batch } } : {}),
-    });
-    if (moved.length) {
-      await notify(
-        to.id,
-        plan.kind === "counseling" ? "Students transferred to you" : "Leads transferred to you",
-        `${moved.length} ${plan.kind === "counseling" ? "student(s)" : "lead(s)"} from ${from.name} were transferred to you, with their history. Reason: ${plan.reason}`,
-        "info",
-        plan.kind === "counseling" ? "/counselor/students" : "/telecaller/queue",
-      );
-    }
+    const { moved } = await runTransferPlan(req, plan, from, to);
     res.json({
       ok: true,
       moved: moved.length,
@@ -3867,6 +3883,83 @@ router.post("/api/transfer-work/:id", staffMoveAuth, async (req, res) => {
     res.status(400).json({ error: error.message || "Could not transfer this work." });
   }
 });
+
+/**
+ * Cross-branch transfers by an Admin wait for the Super Admin (CRM 3.2). The Admin names the work and the
+ * receiver; nothing moves. The owner gets an alert and accepts or declines from Controls -> Approvals.
+ */
+router.post("/api/transfer-requests", staffMoveAuth, async (req, res) => {
+  try {
+    if (req.scope.allBranches) return res.status(400).json({ error: "You can transfer directly. Use the Transfer button." });
+    if (!(await switchOn(pool, "transfer_needs_approval"))) {
+      return res.status(403).json({ error: "Moving work to another branch is switched off. Ask the owner." });
+    }
+    if (!(await allow(res, checkStaffInScope(pool, req.scope, String(req.body.fromId || ""))))) return;
+    const from = await transferPerson(String(req.body.fromId || ""));
+    const to = await transferPerson(String(req.body.toUserId || ""));
+    const leads = (await jsonTable("student_leads")).filter((l) => !l.branch_id || branchInScope(req.scope, l.branch_id));
+    const plan = planWorkTransfer({
+      kind: req.body.kind, from, to, leads,
+      leadIds: Array.isArray(req.body.leadIds) ? req.body.leadIds : null,
+      reason: req.body.reason, allowCrossBranch: true,
+    });
+    if (!plan.ok) return res.status(plan.status).json({ error: plan.error, code: plan.code });
+    if (!plan.move.length) return res.status(400).json({ error: "There is nothing to move." });
+    const id = `treq:${crypto.randomUUID()}`;
+    const who = await transferPerson(req.user.id);
+    await jsonUpsert("transfer_requests", {
+      id, status: "pending", kind: plan.kind, from_id: from.id, from_name: from.name, to_id: to.id, to_name: to.name,
+      lead_ids: plan.move.map((l) => String(l.id)), count: plan.move.length, reason: plan.reason,
+      requested_by: req.user.id, requested_by_name: who?.name || req.user.email || null, created_at: new Date().toISOString(),
+    });
+    await audit(req, "transfer.request", "transfer_requests", id, { kind: plan.kind, from: from.id, to: to.id, count: plan.move.length, reason: plan.reason });
+    for (const boss of (await loadUsers()).filter((u) => u.role === "super_admin" && u.is_active !== false)) {
+      await notify(boss.id, "Transfer needs your approval",
+        `${who?.name || "An Admin"} asks to move ${plan.move.length} ${plan.kind === "counseling" ? "student(s)" : "lead(s)"} from ${from.name} to ${to.name} (another branch). Reason: ${plan.reason}`,
+        "warning", "/controls?tab=approvals");
+    }
+    res.json({ ok: true, requestId: id, count: plan.move.length });
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Could not send the request." });
+  }
+});
+
+router.get("/api/super/transfer-requests", superAdminAuth, async (req, res) => {
+  const status = String(req.query.status || "pending");
+  const rows = (await jsonTable("transfer_requests")).filter((r) => status === "all" || r.status === status)
+    .sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 100);
+  res.json({ items: rows });
+});
+
+router.post("/api/super/transfer-requests/:id/decide", superAdminAuth, async (req, res) => {
+  try {
+    const row = (await jsonTable("transfer_requests")).find((r) => r.id === req.params.id);
+    if (!row) return res.status(404).json({ error: "Request not found." });
+    if (row.status !== "pending") return res.status(409).json({ error: `Already ${row.status}.` });
+    const note = String(req.body.note || "").slice(0, 300);
+    const accept = req.body.accept === true;
+    let outcome = { moved: 0 };
+    if (accept) {
+      const from = await transferPerson(row.from_id);
+      const to = await transferPerson(row.to_id);
+      const leads = await jsonTable("student_leads");
+      const plan = planWorkTransfer({ kind: row.kind, from, to, leads, leadIds: row.lead_ids, reason: `${row.reason} (approved by the owner)`, allowCrossBranch: true });
+      if (!plan.ok) return res.status(plan.status).json({ error: plan.error, code: plan.code });
+      if (!plan.move.length) return res.status(409).json({ error: "Those records have changed owner since the request, so nothing is left to move." });
+      const { moved } = await runTransferPlan(req, plan, from, to);
+      outcome = { moved: moved.length };
+    }
+    await jsonUpsert("transfer_requests", { ...row, status: accept ? "accepted" : "declined", decided_by: req.user.id, decided_at: new Date().toISOString(), decision_note: note, moved: outcome.moved });
+    await audit(req, "transfer.decision", "transfer_requests", row.id, { decision: accept ? "accepted" : "declined", ...outcome, note: note || null, from: row.from_id, to: row.to_id });
+    await notify(row.requested_by, accept ? "Transfer approved" : "Transfer declined",
+      accept ? `The owner approved your request: ${outcome.moved} moved from ${row.from_name} to ${row.to_name}.` : `The owner declined moving work from ${row.from_name} to ${row.to_name}.${note ? ` ${note}` : ""}`,
+      accept ? "success" : "warning", "/");
+    res.json({ ok: true, ...outcome });
+  } catch (error) {
+    res.status(400).json({ error: error.message || "Could not decide." });
+  }
+});
+
 
 /** Older one-click transfers: refuse when the two people do not share a branch, except for the Super Admin. */
 async function receiverBranchesForSuperAdmin(req, toId) {

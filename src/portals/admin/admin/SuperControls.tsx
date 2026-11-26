@@ -16,10 +16,12 @@ type Item = {
   detail: Record<string, unknown>; canUndo: boolean; undone: boolean;
 };
 
+type Req = { id: string; kind: string; from_name: string; to_name: string; count: number; reason: string; requested_by_name: string | null; created_at: string; status: string };
+
 const WORDS: Record<string, string> = {
   "auth.signin": "Signed in", "auth.signin_failed": "Failed sign-in", "auth.signin_blocked": "Sign-in refused", "auth.code_sent": "WhatsApp code sent", "auth.code_failed": "Wrong WhatsApp code",
   "switch.change": "Switch changed", "lead.transfer": "Lead moved to another owner", "staff.transfer_work": "Work transferred", "lead.telecaller": "Telecaller changed",
-  "lead.branch": "Lead moved to a branch", undo: "Undone",
+  "lead.branch": "Lead moved to a branch", undo: "Undone", "transfer.request": "Transfer requested by an Admin", "transfer.decision": "Transfer request decided",
 };
 const label = (action: string) => WORDS[action] || action.replace(/[._]/g, " ");
 const when = (iso: string) => new Date(iso).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
@@ -34,7 +36,10 @@ function summary(it: Item) {
 }
 
 export default function SuperControls() {
-  const [tab, setTab] = useState<"switches" | "activity">("switches");
+  const [tab, setTab] = useState<"switches" | "activity" | "approvals">(
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).get("tab") === "approvals" ? "approvals" : "switches",
+  );
+  const [requests, setRequests] = useState<Req[]>([]);
   const [switches, setSwitches] = useState<Switch[]>([]);
   const [ready, setReady] = useState<Readiness | null>(null);
   const [items, setItems] = useState<Item[]>([]);
@@ -55,7 +60,11 @@ export default function SuperControls() {
     api<{ items: Item[]; next: string | null }>(`/super/activity?${p}`).then((d) => { setItems((cur) => (more ? [...cur, ...d.items] : d.items)); setNext(d.next); }).catch((e) => setMsg(e.message));
   }, [q, kind]);
 
+  const loadRequests = useCallback(() => {
+    api<{ items: Req[] }>("/super/transfer-requests?status=pending").then((d) => setRequests(d.items)).catch((e) => setMsg(e.message));
+  }, []);
   useEffect(loadSwitches, [loadSwitches]);
+  useEffect(() => { loadRequests(); }, [loadRequests]);
   useEffect(() => { if (tab === "activity") loadActivity(); }, [tab, kind]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function flip(s: Switch) {
@@ -67,6 +76,18 @@ export default function SuperControls() {
     setBusy(s.key); setMsg("");
     try { await api(`/super/switches/${s.key}`, { method: "PUT", body: { value: turningOn } }); loadSwitches(); }
     catch (e: any) { setMsg(e.message || "Could not change it."); }
+    finally { setBusy(""); }
+  }
+
+  async function decide(r: Req, accept: boolean) {
+    const note = accept ? "" : window.prompt("Reason for declining (optional)") || "";
+    if (accept && !window.confirm(`Approve: move ${r.count} ${r.kind === "counseling" ? "student(s)" : "lead(s)"} from ${r.from_name} to ${r.to_name}?`)) return;
+    setBusy(r.id); setMsg("");
+    try {
+      const d = await api<{ moved: number }>(`/super/transfer-requests/${encodeURIComponent(r.id)}/decide`, { method: "POST", body: { accept, note } });
+      setMsg(accept ? `Approved. ${d.moved} moved. You can undo it from the Activity log.` : "Declined. Nothing moved.");
+      loadRequests();
+    } catch (e: any) { setMsg(e.message || "Could not decide."); }
     finally { setBusy(""); }
   }
 
@@ -85,7 +106,7 @@ export default function SuperControls() {
         <p className="mt-1 text-sm text-slate-500">Your switches for what protects the business, and a record of everything that happens. Only you see this.</p>
       </div>
       <div className="flex gap-2">
-        {([["switches", "Switches", ShieldCheck], ["activity", "Activity log", ScrollText]] as const).map(([k, t, Icon]) => (
+        {([["switches", "Switches", ShieldCheck], ["approvals", requests.length ? `Approvals (${requests.length})` : "Approvals", Undo2], ["activity", "Activity log", ScrollText]] as const).map(([k, t, Icon]) => (
           <button key={k} onClick={() => setTab(k)} className={`flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium ${tab === k ? "bg-navy-900 text-white" : "bg-white text-slate-600 border border-slate-200"}`}>
             <Icon className="h-4 w-4" /> {t}
           </button>
@@ -118,6 +139,23 @@ export default function SuperControls() {
                 </button>
               </div>
               <p className={`mt-3 text-sm font-medium ${s.value ? "text-emerald-700" : "text-slate-500"}`}>{s.value ? "ON" : "OFF"}</p>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {tab === "approvals" && (
+        <div className="space-y-3">
+          {requests.length === 0 && <Card className="p-5 text-sm text-slate-500">Nothing is waiting for you.</Card>}
+          {requests.map((r) => (
+            <Card key={r.id} className="p-5">
+              <p className="font-semibold text-navy-900">Move {r.count} {r.kind === "counseling" ? "student(s)" : "lead(s)"} from {r.from_name} to {r.to_name}</p>
+              <p className="mt-1 text-sm text-slate-600">Reason: {r.reason}</p>
+              <p className="mt-1 text-xs text-slate-400">Asked by {r.requested_by_name || "an Admin"} · {when(r.created_at)} · another branch</p>
+              <div className="mt-3 flex gap-2">
+                <button disabled={busy === r.id} onClick={() => decide(r, true)} className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">Accept</button>
+                <button disabled={busy === r.id} onClick={() => decide(r, false)} className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 disabled:opacity-50">Decline</button>
+              </div>
             </Card>
           ))}
         </div>
