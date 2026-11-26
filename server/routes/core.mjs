@@ -3486,6 +3486,10 @@ router.put("/api/users/:id/password", auth, async (req, res) => {
   if (!target) return;
   const role = target.role;
   await pool.query("UPDATE auth_users SET password = $2 WHERE id = $1", [req.params.id, hashPassword(password)]);
+  // A new password ends every sign-in that used the old one.
+  await revokeAllForUser(pool, req.params.id, "password reset by admin").catch(() => null);
+  await pool.query("DELETE FROM auth_sessions WHERE user_id = $1", [req.params.id]).catch(() => null);
+  await audit(req, "user.password_reset", "auth_users", req.params.id, { by: req.user.id });
   const counselor = await pool.query("SELECT id FROM counselor_users WHERE email = (SELECT email FROM auth_users WHERE id = $1)", [req.params.id]).catch(() => ({ rows: [] }));
   if (counselor.rows[0]) {
     await pool.query("UPDATE counselor_users SET password_hash = $2 WHERE id = $1", [counselor.rows[0].id, await bcrypt.hash(password, 10)]);
