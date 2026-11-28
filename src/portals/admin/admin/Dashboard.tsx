@@ -256,8 +256,8 @@ export default function Dashboard() {
     { label: "Students", value: students.length, icon: GraduationCap, to: "/students" },
     { label: "Need counselor", value: unassignedCounselor.length, icon: Target, to: "/students?view=assign" },
     { label: "Converted this month", value: convertedThisMonth, icon: GraduationCap, to: "/students?converted=month" },
-    { label: "Docs to review", value: pendingDocs.length, icon: FileText, to: "/documents" },
-    { label: "Applications", value: pendingApps.length, icon: BookOpen, to: "/applications" },
+    { label: "Docs to review", value: pendingDocs.length, icon: FileText, to: "/documents?status=uploaded" },
+    { label: "Applications to review", value: pendingApps.length, icon: BookOpen, to: "/leads?view=applications&status=needs_review" },
   ];
 
   // Two lists, shown as tabs: counselors by the students they hold, telecallers by the open leads they hold.

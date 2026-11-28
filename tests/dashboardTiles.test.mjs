@@ -85,3 +85,22 @@ test("the student list reads its filters and says when it is showing a narrowed 
   assert.match(live, /narrowed/, "nothing tells the person the list is filtered");
   assert.match(live, /Show all students/, "there is no way back to the full list");
 });
+
+test("the review tiles say they count what needs review, and open exactly that view", () => {
+  const all = tiles();
+  // Reported 28 Nov 2026: a tile called "Applications" showed 0 while the Applications tab said 9 - it only
+  // ever counted the ones waiting for review.
+  assert.equal(all.find((t) => t.label === "Applications"), undefined, "the review count is labelled as if it were every application");
+  const apps = all.find((t) => t.label === "Applications to review");
+  const docs = all.find((t) => t.label === "Docs to review");
+  assert.ok(apps && docs, "a review tile is missing");
+  assert.match(apps.to, /view=applications/);
+  assert.match(apps.to, /status=needs_review/);
+  assert.match(docs.to, /status=uploaded/);
+  for (const [file, value] of [["Applications", "needs_review"], ["Documents", "uploaded"]]) {
+    const src = read(`src/portals/admin/admin/${file}.tsx`);
+    const live = src.slice(src.lastIndexOf(`export default function ${file}()`));
+    assert.match(live, /searchParams\.get\("status"\)/, `${file} ignores the status the tile links to`);
+    assert.match(live, new RegExp(`"${value}"`), `${file} has no "${value}" view for the tile to open`);
+  }
+});

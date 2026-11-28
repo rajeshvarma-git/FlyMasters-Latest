@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { format } from "date-fns";
 import { BookOpen } from "lucide-react";
 import { api } from "@admin/lib/api";
@@ -16,7 +17,11 @@ function needsReview(status: string) {
 export default function Applications() {
   const store = useAdminStore();
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState("needs_review");
+  const [searchParams] = useSearchParams();
+  // A link (the dashboard's "Applications to review" tile) can open a given view.
+  const [statusFilter, setStatusFilter] = useState(() =>
+    ["needs_review", "counselor_approved", "returned", "all"].includes(searchParams.get("status") || "") ? String(searchParams.get("status")) : "needs_review",
+  );
   const [reviewId, setReviewId] = useState<string | null>(null);
   const [comments, setComments] = useState("");
   const [busy, setBusy] = useState(false);
