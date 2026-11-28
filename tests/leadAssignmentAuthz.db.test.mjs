@@ -304,3 +304,31 @@ test("a lead already held by a suspended person can still be saved, and moved aw
   assert.equal(away.code, 200, JSON.stringify(away.body));
   assert.equal(await telecallerOf(id), String(other));
 });
+
+// ---- one owner: a telecaller OR a counselor, never both ---------------------------------------
+
+test("giving a converted student to a counselor takes the telecaller off, and remembers who converted them", { skip }, async () => {
+  const caller = await staff("telecaller", A);
+  const counselor = await staff("counselor", A);
+  const id = await lead({ branchId: A, telecallerId: caller });
+  await pool.query(
+    "UPDATE app_records SET data = data || '{\"entity_type\":\"student\",\"lead_status\":\"converted\"}'::jsonb WHERE table_name = 'student_leads' AND id::text = $1",
+    [id],
+  );
+
+  const r = await call(h.patch, { actor: SUPER, params: { id }, body: { assigned_counselor_id: counselor } });
+  assert.equal(r.code, 200, JSON.stringify(r.body));
+  const row = (await pool.query("SELECT data FROM app_records WHERE table_name = 'student_leads' AND id::text = $1", [id])).rows[0].data;
+  assert.ok(row.assigned_counselor_id, "the counselor was not saved");
+  assert.equal(row.assigned_telecaller_id, null, "the student still has a telecaller as well as a counselor");
+  assert.equal(String(row.converted_by_telecaller_id), String(caller), "who converted the student was lost");
+});
+
+test("a new lead cannot be created with both a telecaller and a counselor", { skip }, async () => {
+  const caller = await staff("telecaller", A);
+  const counselor = await staff("counselor", A);
+  const create = layerFor("/api/leads", "post");
+  const r = await call(create, { actor: SUPER, body: { email: `one.owner.${seq}@x.test`, firstName: "One", telecallerId: caller, counselorId: counselor } });
+  assert.equal(r.code, 400, JSON.stringify(r.body));
+  assert.equal(r.body.code, "ONE_OWNER");
+});

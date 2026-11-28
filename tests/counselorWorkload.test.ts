@@ -70,3 +70,11 @@ test("one workload definition: the Dashboard and Transfer work count a person's 
     assert.match(src, /studentsCounseledBy/, `${file} counts students its own way again`);
   }
 });
+
+test("a telecaller's conversion rate still counts a student a counselor has since taken over", () => {
+  const rows = [
+    { id: "a", assigned_telecaller_id: "tc", lead_status: "warm" },
+    { id: "b", assigned_telecaller_id: null, converted_by_telecaller_id: "tc", assigned_counselor_id: "c", lead_status: "converted" },
+  ];
+  assert.equal(telecallingConversionRate(rows as any[], "tc"), 50);
+});

@@ -1278,6 +1278,15 @@ async function applyLeadPatch(id, patch) {
   const shared = findLeadJsonRecord(jsonLeads, id) || { id };
   const now = new Date().toISOString();
 
+  // One owner: a telecaller OR a counselor, never both. When a counselor takes a student, the telecaller
+  // comes off. Who converted the student is kept (JSON only) so the telecaller's Converted list and
+  // conversion rate still count it.
+  const jsonOnly = {};
+  if (patch.assigned_counselor_id && patch.assigned_telecaller_id === undefined && shared.assigned_telecaller_id) {
+    jsonOnly.converted_by_telecaller_id = shared.converted_by_telecaller_id || String(shared.assigned_telecaller_id);
+    patch.assigned_telecaller_id = null;
+  }
+
   if (patch.assigned_telecaller_id !== undefined) {
     const next = patch.assigned_telecaller_id || null;
     const prev = shared.assigned_telecaller_id || null;
@@ -1315,7 +1324,7 @@ async function applyLeadPatch(id, patch) {
   }
 
   const storeId = String(shared.id || id);
-  const merged = { ...shared, ...patch, id: storeId, updated_at: now };
+  const merged = { ...shared, ...patch, ...jsonOnly, id: storeId, updated_at: now };
 
   // A telecaller only sees leads in their own branches. WhatsApp leads start in Head
   // Office, so assigning one to a telecaller in another branch used to leave the lead
@@ -2329,8 +2338,13 @@ router.get("/api/telecaller/state", telecallerAuth, async (req, res) => {
         threadBelongsToLeads(row, mineOpen),
     );
     const myWhatsAppIds = new Set(myWhatsAppConversations.map((row) => String(row.id)));
+    // Students they converted that a counselor now owns: listed (Converted, conversion rate) but not theirs,
+    // so they give no access to the student's chats.
+    const convertedByMe = state.leads.filter(
+      (lead) => !mine.includes(lead) && myIds.has(String(lead.converted_by_telecaller_id || "")),
+    );
     res.json({
-      leads: mine,
+      leads: [...mine, ...convertedByMe],
       notifications: state.notifications.filter((row) => String(row.user_id) === String(req.user.id)),
       counselors: state.counselors.map((row) => ({
         id: row.id,
@@ -2987,6 +3001,9 @@ router.post("/api/leads", auth, async (req, res) => {
   const countries = String(req.body.countries || "").split(",").map((item) => item.trim()).filter(Boolean);
   const telecallerId = req.body.telecallerId || null;
   const counselorId = await resolveCounselorId(req.body.counselorId || null);
+  if (telecallerId && counselorId) {
+    return res.status(400).json({ error: "A lead has one owner: choose a telecaller or a counselor, not both.", code: "ONE_OWNER" });
+  }
   if ((await refuseInactiveAssignee(res, telecallerId)) || (await refuseInactiveAssignee(res, counselorId))) return;
   const assignedAt = new Date().toISOString();
   const payload = {
