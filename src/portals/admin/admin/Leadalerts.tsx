@@ -1075,6 +1075,11 @@ export default function LeadAlerts() {
   const [telecallerId, setTelecallerId] = useState("");
   const [counselorId, setCounselorId] = useState("");
   const [busy, setBusy] = useState(false);
+  // Leads whose assign is still saving: the row stays on screen, with its own loading state.
+  const [assigning, setAssigning] = useState<Record<string, Lead>>({});
+  // Leads whose assign has saved but the shared data has not caught up yet: hidden at once.
+  const [assignedIds, setAssignedIds] = useState<Set<string>>(() => new Set());
+  const [toast, setToast] = useState("");
   const [error, setError] = useState("");
   const [, forceTick] = useState(0);
 
@@ -1106,13 +1111,30 @@ export default function LeadAlerts() {
     };
   }, []);
 
-  const waiting = useMemo(
-    () =>
-      store.leads
-        .filter((lead) => leadNeedsAssignment(lead))
-        .sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || ""))),
-    [store.leads],
-  );
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(""), 3000);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+
+  // Once the shared data shows a lead as assigned, it no longer needs hiding here.
+  useEffect(() => {
+    setAssignedIds((prev) => {
+      if (!prev.size) return prev;
+      const stillWaiting = new Set(store.leads.filter((lead) => leadNeedsAssignment(lead)).map((lead) => lead.id));
+      const next = new Set([...prev].filter((id) => stillWaiting.has(id)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [store.leads]);
+
+  const waiting = useMemo(() => {
+    const rows = store.leads.filter((lead) => leadNeedsAssignment(lead) && !assignedIds.has(lead.id));
+    // A lead being assigned stays listed until its save returns, even if a poll already shows it assigned.
+    for (const lead of Object.values(assigning)) {
+      if (!rows.some((row) => row.id === lead.id)) rows.push(lead);
+    }
+    return rows.sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
+  }, [store.leads, assigning, assignedIds]);
 
   const whatsappWaiting = useMemo(
     () => waiting.filter((lead) => isWhatsAppLead(lead) && !isConvertedStudent(lead)),
@@ -1144,38 +1166,37 @@ export default function LeadAlerts() {
   };
 
   const assignLead = async (lead: Lead) => {
-    if (assignMode === "telecaller") {
-      if (!telecallerId) return;
-      setBusy(true);
-      setError("");
-      try {
-        await api(`/leads/${lead.id}`, {
-          method: "PATCH",
-          body: { assigned_telecaller_id: telecallerId, status: "assigned" },
-        });
-        await refreshStore();
-        await loadStatus();
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not assign the telecaller.");
-      } finally {
-        setBusy(false);
-      }
-      return;
-    }
-    if (!counselorId) return;
-    setBusy(true);
+    const mode = assignMode;
+    const assigneeId = mode === "telecaller" ? telecallerId : counselorId;
+    if (!assigneeId || assigning[lead.id]) return;
+    const assignee = (mode === "telecaller" ? store.telecallers : store.counselors).find((row) => row.id === assigneeId);
+    const assigneeName = assignee ? displayName(assignee.first_name, assignee.last_name, assignee.email) : `the ${mode}`;
+    const leadName = displayName(lead.first_name, lead.last_name, lead.email);
+    setAssigning((prev) => ({ ...prev, [lead.id]: lead }));
     setError("");
     try {
       await api(`/leads/${lead.id}`, {
         method: "PATCH",
-        body: { assigned_counselor_id: counselorId, status: "assigned" },
+        body:
+          mode === "telecaller"
+            ? { assigned_telecaller_id: assigneeId, status: "assigned" }
+            : { assigned_counselor_id: assigneeId, status: "assigned" },
       });
-      await refreshStore();
-      await loadStatus();
+      setAssignedIds((prev) => new Set(prev).add(lead.id));
+      setToast(`Assigned to ${assigneeName}`);
+      void refreshStore();
+      void loadStatus();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not assign the counselor.");
+      const reason = err instanceof Error && err.message && err.message !== "Request failed" ? err.message : "";
+      setError(
+        `Could not assign ${leadName} to ${assigneeName}. ${reason || "The server did not accept the change."} Nothing was changed; the lead is still waiting.`,
+      );
     } finally {
-      setBusy(false);
+      setAssigning((prev) => {
+        const next = { ...prev };
+        delete next[lead.id];
+        return next;
+      });
     }
   };
 
@@ -1266,10 +1287,10 @@ export default function LeadAlerts() {
                   <Badge value="whatsapp" className="normal-case" />
                   <Button
                     size="sm"
-                    disabled={busy || assignMode !== "telecaller" || !telecallerId}
+                    disabled={busy || Boolean(assigning[lead.id]) || assignMode !== "telecaller" || !telecallerId}
                     onClick={() => void assignLead(lead)}
                   >
-                    Assign telecaller
+                    {assigning[lead.id] ? "Assigning…" : "Assign telecaller"}
                   </Button>
                 </div>
               </div>
@@ -1302,8 +1323,12 @@ export default function LeadAlerts() {
               <div className="flex items-center gap-2">
                 <Badge value={isConvertedStudent(lead) ? "converted" : lead.lead_status || "hot"} />
                 {isWhatsAppLead(lead) && <Badge value="whatsapp" className="normal-case" />}
-                <Button size="sm" disabled={busy || !selectedAssignee} onClick={() => void assignLead(lead)}>
-                  Assign {assignMode}
+                <Button
+                  size="sm"
+                  disabled={busy || Boolean(assigning[lead.id]) || !selectedAssignee}
+                  onClick={() => void assignLead(lead)}
+                >
+                  {assigning[lead.id] ? "Assigning…" : `Assign ${assignMode}`}
                 </Button>
               </div>
             </div>
@@ -1313,6 +1338,14 @@ export default function LeadAlerts() {
           <p className="p-8 text-center text-sm text-slate-500">All caught up — every lead has a telecaller or counselor.</p>
         )}
       </Card>
+      {toast && (
+        <div
+          role="status"
+          className="fixed bottom-6 right-6 z-50 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-medium text-white shadow-card"
+        >
+          {toast}
+        </div>
+      )}
     </div>
   );
 }
