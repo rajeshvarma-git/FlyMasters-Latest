@@ -25,6 +25,7 @@ import { applyRoleChange } from "../lib/roleChange.mjs";
 import { staffOnlyForStudentRef } from "../lib/staffOnlyDocuments.mjs";
 import { applyApplicationStatus, buildApplicationEvent, shortlistApplicationPatch } from "../lib/applicationWorkflow.mjs";
 import { STATUS_INFO } from "../../src/shared/applicationJourney.ts";
+import { leadsCalledBy, studentsCounseledBy } from "../../src/shared/workload.ts";
 import {
   ROOT as root,
   IS_PRODUCTION,
@@ -214,6 +215,24 @@ function mergeLeadSources(sqlRows, jsonRows) {
     else combined[idx] = coalesceLeadRow(combined[idx], row);
   }
   return combined;
+}
+
+/** Drops a record folded into another one, while that other one still exists (a deleted student must not hide the lead). */
+function visibleLeads(allLeads) {
+  const leadIds = new Set(allLeads.map((lead) => String(lead.id)));
+  return allLeads.filter((lead) => !lead.merged_into || !leadIds.has(String(lead.merged_into)));
+}
+
+/**
+ * The leads and students exactly as the admin portal lists them: both stores merged, duplicates folded,
+ * merged records hidden. Workload counts and Transfer work read this, so they match the Dashboard.
+ */
+async function loadWorkLeads(scope = null) {
+  const [sqlLeads, jsonLeads] = await Promise.all([
+    scopedRows("student_leads", "created_at DESC", scope),
+    jsonTable("student_leads", scope ? { scope } : undefined),
+  ]);
+  return visibleLeads(mergeLeadSources(sqlLeads.rows.map(asLead), jsonLeads.map(asLead)));
 }
 
 function findLeadJsonRecord(jsonLeads, id) {
@@ -1496,8 +1515,7 @@ async function loadStateUncached(scope = null) {
     };
   });
   // Hidden only while the record it was folded into still exists (a deleted student must not hide the lead).
-  const leadIds = new Set(allLeads.map((lead) => String(lead.id)));
-  const leads = allLeads.filter((lead) => !lead.merged_into || !leadIds.has(String(lead.merged_into)));
+  const leads = visibleLeads(allLeads);
 
   const studentIds = new Set(users.filter((row) => row.role === "student").map((row) => row.id));
   // Portal signups with no lead row of their own enter as HOT LEADS, not students.
@@ -3707,7 +3725,7 @@ router.get("/api/transfer-work/people", staffMoveAuth, async (req, res) => {
   const users = (await loadUsers()).filter(
     (u) => ["telecaller", "counselor"].includes(u.role) && (u.branch_ids || []).map(String).includes(branchId),
   );
-  const leads = await jsonTable("student_leads");
+  const leads = await loadWorkLeads();
   const counselors = await loadCounselors();
   const people = users.map((u) => {
     const c = u.role === "counselor"
@@ -3715,14 +3733,13 @@ router.get("/api/transfer-work/people", staffMoveAuth, async (req, res) => {
       : null;
     const keys = new Set(c ? counselorKeyIds(c) : [String(u.id)]);
     keys.add(String(u.id));
-    const converted = (l) => l.entity_type === "student" || l.lead_status === "converted";
     return {
       id: String(u.id),
       name: [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email,
       role: u.role,
       isActive: u.is_active !== false,
-      telecalling: leads.filter((l) => !converted(l) && keys.has(String(l.assigned_telecaller_id || ""))).length,
-      counseling: leads.filter((l) => converted(l) && keys.has(String(l.assigned_counselor_id || ""))).length,
+      telecalling: leadsCalledBy(leads, keys).length,
+      counseling: studentsCounseledBy(leads, keys).length,
     };
   });
   res.json({ people });
@@ -3734,11 +3751,7 @@ router.get("/api/transfer-work/:id/items", staffMoveAuth, async (req, res) => {
   if (!person) return res.status(404).json({ error: "That employee could not be found." });
   const kind = req.query.kind === "counseling" ? "counseling" : "telecalling";
   const keys = new Set(person.keys.concat(person.id));
-  const converted = (l) => l.entity_type === "student" || l.lead_status === "converted";
-  const items = (await jsonTable("student_leads"))
-    .filter((l) => (kind === "counseling"
-      ? converted(l) && keys.has(String(l.assigned_counselor_id || ""))
-      : !converted(l) && keys.has(String(l.assigned_telecaller_id || ""))))
+  const items = (kind === "counseling" ? studentsCounseledBy : leadsCalledBy)(await loadWorkLeads(), keys)
     .filter((l) => !l.branch_id || branchInScope(req.scope, l.branch_id))
     .map(leadLabel);
   res.json({ person: { id: person.id, name: person.name, role: person.role, isActive: person.isActive, branchIds: person.branchIds }, kind, items, allowCrossBranch: Boolean(req.scope.allBranches) });
@@ -3752,8 +3765,7 @@ router.get("/api/transfer-work/:id/receivers", staffMoveAuth, async (req, res) =
   if (!person) return res.status(404).json({ error: "That employee could not be found." });
   const kind = req.query.kind === "counseling" ? "counseling" : "telecalling";
   const theirBranches = new Set(person.branchIds);
-  const leads = await jsonTable("student_leads");
-  const converted = (l) => l.entity_type === "student" || l.lead_status === "converted";
+  const leads = await loadWorkLeads();
   const counselors = await loadCounselors();
   const shape = (list) => list
     .filter((u) => String(u.id) !== person.id && u.is_active !== false)
@@ -3771,8 +3783,8 @@ router.get("/api/transfer-work/:id/receivers", staffMoveAuth, async (req, res) =
         role: u.role,
         branchIds: (u.branch_ids || []).map(String),
         load: kind === "counseling"
-          ? leads.filter((l) => converted(l) && keys.has(String(l.assigned_counselor_id || ""))).length
-          : leads.filter((l) => !converted(l) && keys.has(String(l.assigned_telecaller_id || ""))).length,
+          ? studentsCounseledBy(leads, keys).length
+          : leadsCalledBy(leads, keys).length,
       };
     })
     .sort((a, b) => a.load - b.load || a.name.localeCompare(b.name));
@@ -3897,7 +3909,7 @@ router.post("/api/transfer-work/:id", staffMoveAuth, async (req, res) => {
     if (toUserId && !(await allow(res, checkStaffInScope(pool, req.scope, toUserId)))) return;
     const from = await transferPerson(req.params.id);
     const to = toUserId ? await transferPerson(toUserId) : null;
-    const leads = (await jsonTable("student_leads")).filter((l) => !l.branch_id || branchInScope(req.scope, l.branch_id));
+    const leads = (await loadWorkLeads()).filter((l) => !l.branch_id || branchInScope(req.scope, l.branch_id));
     const plan = planWorkTransfer({
       kind: req.body.kind,
       from,
@@ -3934,7 +3946,7 @@ router.post("/api/transfer-requests", staffMoveAuth, async (req, res) => {
     if (!(await allow(res, checkStaffInScope(pool, req.scope, String(req.body.fromId || ""))))) return;
     const from = await transferPerson(String(req.body.fromId || ""));
     const to = await transferPerson(String(req.body.toUserId || ""));
-    const leads = (await jsonTable("student_leads")).filter((l) => !l.branch_id || branchInScope(req.scope, l.branch_id));
+    const leads = (await loadWorkLeads()).filter((l) => !l.branch_id || branchInScope(req.scope, l.branch_id));
     const plan = planWorkTransfer({
       kind: req.body.kind, from, to, leads,
       leadIds: Array.isArray(req.body.leadIds) ? req.body.leadIds : null,
@@ -3979,7 +3991,7 @@ router.post("/api/super/transfer-requests/:id/decide", superAdminAuth, async (re
     if (accept) {
       const from = await transferPerson(row.from_id);
       const to = await transferPerson(row.to_id);
-      const leads = await jsonTable("student_leads");
+      const leads = await loadWorkLeads();
       const plan = planWorkTransfer({ kind: row.kind, from, to, leads, leadIds: row.lead_ids, reason: `${row.reason} (approved by the owner)`, allowCrossBranch: true });
       if (!plan.ok) return res.status(plan.status).json({ error: plan.error, code: plan.code });
       if (!plan.move.length) return res.status(409).json({ error: "Those records have changed owner since the request, so nothing is left to move." });

@@ -51,3 +51,22 @@ test("a suspended person is never offered as someone to give work to, but a curr
   assert.deepEqual(ids(telecallerChoices(people, { branch_id: null })), ["t-on"], "a lead with no branch offered a suspended person");
   assert.deepEqual(ids(telecallerChoices(people, { branch_id: "ameerpet", assigned_telecaller_id: "t-off" })), ["t-on", "t-off"], "the current holder vanished from the picker");
 });
+
+test("one workload definition: the Dashboard and Transfer work count a person's work the same way", async () => {
+  const { studentsCounseledBy, leadsCalledBy } = await import("../src/shared/workload");
+  // A counselor carries two ids (login and counselor record); work under either is theirs.
+  const ids = ["login-c", "row-c"];
+  const rows = [
+    { id: "1", assigned_counselor_id: "login-c", entity_type: "student" },
+    { id: "2", assigned_counselor_id: "row-c", lead_status: "converted" },
+    { id: "3", assigned_counselor_id: "login-c", lead_status: "warm" },        // not converted: not a student yet
+    { id: "4", assigned_telecaller_id: "login-c", lead_status: "warm" },       // a lead they are calling
+    { id: "5", assigned_telecaller_id: "login-c", lead_status: "converted" },  // converted: no longer a lead
+  ];
+  assert.deepEqual(studentsCounseledBy(rows, ids).map((r) => r.id), ["1", "2"]);
+  assert.deepEqual(leadsCalledBy(rows, ids).map((r) => r.id), ["4"]);
+  for (const file of ["src/portals/admin/admin/Dashboard.tsx", "server/routes/core.mjs"]) {
+    const src = (await import("node:fs")).readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
+    assert.match(src, /studentsCounseledBy/, `${file} counts students its own way again`);
+  }
+});

@@ -226,10 +226,11 @@ import { Link } from "react-router-dom";
 import { BookOpen, FileText, GraduationCap, LayoutDashboard, PhoneCall, Target } from "lucide-react";
 import { format } from "date-fns";
 import { useAdminStore } from "@admin/lib/store";
-import { counselorLabel, counselorOwns, displayName, isConvertedStudent, openLeadNeedsOwner, telecallerLabel } from "@admin/lib/utils";
+import { counselorLabel, displayName, isConvertedStudent, openLeadNeedsOwner, telecallerLabel } from "@admin/lib/utils";
 import { Badge } from "@admin/components/ui/Badge";
 import { Card } from "@admin/components/ui/Card";
 import { HR_ENABLED } from "@shared/lib/features";
+import { leadsCalledBy, studentsCounseledBy } from "@shared/workload";
 
 export default function Dashboard() {
   const store = useAdminStore();
@@ -265,14 +266,14 @@ export default function Dashboard() {
     id: row.id,
     name: displayName(row.first_name, row.last_name, row.email),
     note: (row.specializations || []).join(", ") || "General",
-    count: store.leads.filter((lead) => isConvertedStudent(lead) && counselorOwns(row, lead.assigned_counselor_id)).length,
+    count: studentsCounseledBy(store.leads, [row.id, row.auth_user_id]).length,
     unit: "student",
   }));
   const telecallerRows = store.telecallers.map((row) => ({
     id: row.id,
     name: displayName(row.first_name, row.last_name, row.email),
     note: row.can_telecall ? "Counselor who also telecalls" : "Telecaller",
-    count: leads.filter((lead) => lead.assigned_telecaller_id === row.id).length,
+    count: leadsCalledBy(store.leads, [row.id]).length,
     unit: "lead",
   }));
   const workload = workTab === "counselors" ? counselorRows : telecallerRows;
