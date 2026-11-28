@@ -16,7 +16,7 @@ import { Select } from "@admin/components/ui/Field";
 
 type Kind = "telecalling" | "counseling";
 interface Item { id: string; name: string; status: string; branchId: string | null }
-interface Receiver { id: string; counselorRowId: string | null; name: string; role: "telecaller" | "counselor"; load: number; branchIds?: string[]; needsApproval?: boolean }
+interface Receiver { id: string; counselorRowId: string | null; name: string; role: "telecaller" | "counselor"; load: number; branchIds?: string[]; needsApproval?: boolean; isActive?: boolean }
 interface Result { moved: number; skipped: { id: string; reason: string; label: string }[] }
 
 export function TransferWorkPanel({
@@ -112,10 +112,12 @@ export function TransferWorkPanel({
         method: "POST",
         body: { toUserId: receiver.id, kind, leadIds: [...picked], reason: reason.trim() },
       });
+      // Shared data first, so no page still shows the old owner once "Moved" appears.
+      await refreshStore();
       const names = new Map(items.map((i) => [i.id, i.name]));
       setResult({ ...res, skipped: res.skipped.map((s) => ({ ...s, id: names.get(s.id) || s.id })) });
       setConfirming(false); setReason(""); setToId("");
-      await Promise.all([refreshStore(), load(kind)]);
+      await load(kind);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not transfer this work.");
     } finally {
@@ -145,7 +147,7 @@ export function TransferWorkPanel({
             <option value="">{receivers.length ? "Choose a colleague" : (allowCross ? "No active colleague found" : "No active colleague in this branch")}</option>
             {receivers.map((r) => (
               <option key={r.id} value={r.id}>
-                {r.name} · {r.role === "counselor" ? "Counselor" : "Telecaller"}{allowCross && r.branchIds && !r.branchIds.some((b) => branchIds.includes(b)) ? " · other branch" : ""} · {r.load} {word}{r.load === 1 ? "" : "s"} now
+                {r.name} · {r.role === "counselor" ? "Counselor" : "Telecaller"}{allowCross && r.branchIds && !r.branchIds.some((b) => branchIds.includes(b)) ? " · other branch" : ""}{r.isActive === false ? " · access suspended" : ""} · {r.load} {word}{r.load === 1 ? "" : "s"} now
               </option>
             ))}
             {approvalReceivers.length > 0 && (

@@ -16,6 +16,8 @@ type LeadLike = {
   email?: string | null;
   assigned_counselor_id?: string | null;
   assigned_telecaller_id?: string | null;
+  /** Who telecalled and converted the student, kept after a counselor takes over (one owner at a time). */
+  converted_by_telecaller_id?: string | null;
   entity_type?: string;
   lead_status?: string;
   lead_stage?: string;
@@ -43,7 +45,7 @@ export function telecallingLeads<T extends LeadLike>(leads: T[], userId?: string
 /** Of the leads this person telecalled, how many they converted (0-100). */
 export function telecallingConversionRate(leads: LeadLike[], userId?: string | null): number {
   if (!userId) return 0;
-  const called = leads.filter((lead) => lead.assigned_telecaller_id === userId);
+  const called = leads.filter((lead) => lead.assigned_telecaller_id === userId || lead.converted_by_telecaller_id === userId);
   if (!called.length) return 0;
   return Math.round((called.filter((lead) => isConvertedStudent(lead)).length / called.length) * 100);
 }

@@ -25,6 +25,7 @@ import { applyRoleChange } from "../lib/roleChange.mjs";
 import { staffOnlyForStudentRef } from "../lib/staffOnlyDocuments.mjs";
 import { applyApplicationStatus, buildApplicationEvent, shortlistApplicationPatch } from "../lib/applicationWorkflow.mjs";
 import { STATUS_INFO } from "../../src/shared/applicationJourney.ts";
+import { leadsCalledBy, studentsCounseledBy } from "../../src/shared/workload.ts";
 import {
   ROOT as root,
   IS_PRODUCTION,
@@ -214,6 +215,24 @@ function mergeLeadSources(sqlRows, jsonRows) {
     else combined[idx] = coalesceLeadRow(combined[idx], row);
   }
   return combined;
+}
+
+/** Drops a record folded into another one, while that other one still exists (a deleted student must not hide the lead). */
+function visibleLeads(allLeads) {
+  const leadIds = new Set(allLeads.map((lead) => String(lead.id)));
+  return allLeads.filter((lead) => !lead.merged_into || !leadIds.has(String(lead.merged_into)));
+}
+
+/**
+ * The leads and students exactly as the admin portal lists them: both stores merged, duplicates folded,
+ * merged records hidden. Workload counts and Transfer work read this, so they match the Dashboard.
+ */
+async function loadWorkLeads(scope = null) {
+  const [sqlLeads, jsonLeads] = await Promise.all([
+    scopedRows("student_leads", "created_at DESC", scope),
+    jsonTable("student_leads", scope ? { scope } : undefined),
+  ]);
+  return visibleLeads(mergeLeadSources(sqlLeads.rows.map(asLead), jsonLeads.map(asLead)));
 }
 
 function findLeadJsonRecord(jsonLeads, id) {
@@ -873,13 +892,15 @@ function loadTelecallers(users, counselors = []) {
     const id = String(c.auth_user_id || c.user_id || c.id || "");
     if (!id || seen.has(id) || c.is_active === false) continue;
     seen.add(id);
+    // Suspension is written on the login (user_roles), not on the counselor record, so read it there.
+    const login = users.find((user) => String(user.id) === id);
     telecallers.push({
       id,
       email: c.email || "",
       first_name: c.first_name || "",
       last_name: c.last_name || "",
       phone: c.phone || "",
-      is_active: true,
+      is_active: login ? login.is_active !== false : true,
       created_at: c.created_at || null,
       can_telecall: true,
       role: "counselor",
@@ -1257,6 +1278,15 @@ async function applyLeadPatch(id, patch) {
   const shared = findLeadJsonRecord(jsonLeads, id) || { id };
   const now = new Date().toISOString();
 
+  // One owner: a telecaller OR a counselor, never both. When a counselor takes a student, the telecaller
+  // comes off. Who converted the student is kept (JSON only) so the telecaller's Converted list and
+  // conversion rate still count it.
+  const jsonOnly = {};
+  if (patch.assigned_counselor_id && patch.assigned_telecaller_id === undefined && shared.assigned_telecaller_id) {
+    jsonOnly.converted_by_telecaller_id = shared.converted_by_telecaller_id || String(shared.assigned_telecaller_id);
+    patch.assigned_telecaller_id = null;
+  }
+
   if (patch.assigned_telecaller_id !== undefined) {
     const next = patch.assigned_telecaller_id || null;
     const prev = shared.assigned_telecaller_id || null;
@@ -1294,7 +1324,7 @@ async function applyLeadPatch(id, patch) {
   }
 
   const storeId = String(shared.id || id);
-  const merged = { ...shared, ...patch, id: storeId, updated_at: now };
+  const merged = { ...shared, ...patch, ...jsonOnly, id: storeId, updated_at: now };
 
   // A telecaller only sees leads in their own branches. WhatsApp leads start in Head
   // Office, so assigning one to a telecaller in another branch used to leave the lead
@@ -1494,8 +1524,7 @@ async function loadStateUncached(scope = null) {
     };
   });
   // Hidden only while the record it was folded into still exists (a deleted student must not hide the lead).
-  const leadIds = new Set(allLeads.map((lead) => String(lead.id)));
-  const leads = allLeads.filter((lead) => !lead.merged_into || !leadIds.has(String(lead.merged_into)));
+  const leads = visibleLeads(allLeads);
 
   const studentIds = new Set(users.filter((row) => row.role === "student").map((row) => row.id));
   // Portal signups with no lead row of their own enter as HOT LEADS, not students.
@@ -1556,7 +1585,13 @@ async function loadStateUncached(scope = null) {
   const visibleAppIds = new Set(jsonApps.map((app) => String(app.id)));
   return {
     users,
-    counselors,
+    // A suspended counselor keeps is_active (their counselor record is untouched; the Counselors page
+    // still lists them), but `suspended` says their login is switched off, so pickers can leave them out.
+    counselors: counselors.map((c) => {
+      const loginId = String(c.auth_user_id || c.user_id || c.id || "");
+      const login = users.find((user) => String(user.id) === loginId);
+      return { ...c, suspended: Boolean(login && login.is_active === false) };
+    }),
     telecallers: loadTelecallers(users, counselors),
     leads,
     documents: mergeById(sqlDocs.rows.map(asDocument), jsonDocs.map(asDocument)),
@@ -2303,8 +2338,13 @@ router.get("/api/telecaller/state", telecallerAuth, async (req, res) => {
         threadBelongsToLeads(row, mineOpen),
     );
     const myWhatsAppIds = new Set(myWhatsAppConversations.map((row) => String(row.id)));
+    // Students they converted that a counselor now owns: listed (Converted, conversion rate) but not theirs,
+    // so they give no access to the student's chats.
+    const convertedByMe = state.leads.filter(
+      (lead) => !mine.includes(lead) && myIds.has(String(lead.converted_by_telecaller_id || "")),
+    );
     res.json({
-      leads: mine,
+      leads: [...mine, ...convertedByMe],
       notifications: state.notifications.filter((row) => String(row.user_id) === String(req.user.id)),
       counselors: state.counselors.map((row) => ({
         id: row.id,
@@ -2939,11 +2979,34 @@ router.get("/api/state", auth, async (req, res) => {
   }
 });
 
+/**
+ * Refuses (409) when anyone but the Super Admin gives new work to someone whose access is suspended or removed. They keep
+ * their existing records (those are moved away on Transfer work), but nothing new may land on them.
+ * Returns true when it has answered.
+ */
+async function refuseInactiveAssignee(req, res, staffId) {
+  if (!staffId) return false;
+  // The Super Admin is the owner and is never refused.
+  if (req.user?.role === ROLES.SUPER_ADMIN) return false;
+  const authId = (await staffAuthId(pool, staffId)) || String(staffId);
+  const person = (await loadUsers()).find((u) => String(u.id) === String(authId));
+  if (!person || person.is_active !== false) return false;
+  res.status(409).json({
+    error: `${[person.first_name, person.last_name].filter(Boolean).join(" ") || "That person"}'s access is suspended, so they cannot be given new work.`,
+    code: "ASSIGNEE_SUSPENDED",
+  });
+  return true;
+}
+
 router.post("/api/leads", auth, async (req, res) => {
   const studentId = crypto.randomUUID();
   const countries = String(req.body.countries || "").split(",").map((item) => item.trim()).filter(Boolean);
   const telecallerId = req.body.telecallerId || null;
   const counselorId = await resolveCounselorId(req.body.counselorId || null);
+  if (telecallerId && counselorId && req.user?.role !== ROLES.SUPER_ADMIN) {
+    return res.status(400).json({ error: "A lead has one owner: choose a telecaller or a counselor, not both.", code: "ONE_OWNER" });
+  }
+  if ((await refuseInactiveAssignee(req, res, telecallerId)) || (await refuseInactiveAssignee(req, res, counselorId))) return;
   const assignedAt = new Date().toISOString();
   const payload = {
     id: crypto.randomUUID(),
@@ -3053,6 +3116,24 @@ router.patch("/api/leads/:id", auth, async (req, res) => {
   }
   const jsonLeads = await jsonTable("student_leads");
   const current = findLeadJsonRecord(jsonLeads, req.params.id);
+  // One owner: a telecaller OR a counselor. Assigning a counselor takes the telecaller off (applyLeadPatch);
+  // explicitly asking for both is refused, except for the Super Admin, who sets the rules.
+  if (req.user?.role !== ROLES.SUPER_ADMIN && (patch.assigned_counselor_id || patch.assigned_telecaller_id)) {
+    const nextCounselor = patch.assigned_counselor_id !== undefined ? patch.assigned_counselor_id : current?.assigned_counselor_id;
+    const nextTelecaller = patch.assigned_telecaller_id !== undefined
+      ? patch.assigned_telecaller_id
+      : (patch.assigned_counselor_id ? null : current?.assigned_telecaller_id);
+    const changes = (field) => patch[field] !== undefined && String(patch[field] || "") !== String(current?.[field] || "");
+    // Only a change that CREATES two owners is refused; re-saving an older record that has both is not.
+    if (nextCounselor && nextTelecaller && (changes("assigned_counselor_id") || changes("assigned_telecaller_id"))) {
+      return res.status(409).json({ error: "A lead has one owner: a telecaller or a counselor, not both.", code: "ONE_OWNER" });
+    }
+  }
+  // New work never goes to a suspended person. Re-saving the person a lead already has is not new work.
+  for (const field of ["assigned_counselor_id", "assigned_telecaller_id"]) {
+    const next = patch[field];
+    if (next && String(next) !== String(current?.[field] || "") && (await refuseInactiveAssignee(req, res, next))) return;
+  }
 
   // The caller's scope is not the whole question. A Super Admin covers every branch, so scope alone
   // would let them put a Vizag telecaller on a Hyderabad lead - the lead would then sit in a queue
@@ -3187,6 +3268,7 @@ router.post("/api/leads/bulk-assign", auth, async (req, res) => {
   if (!ids.length) return res.status(400).json({ error: "Select at least one student." });
   if (!counselorId) return res.status(400).json({ error: "Choose a counselor to assign." });
   if (!(await allow(res, checkStaffInScope(pool, req.scope, counselorId)))) return;
+  if (await refuseInactiveAssignee(req, res, counselorId)) return;
   // Same branch check as the single-lead PATCH route — resolved once here
   // rather than per lead, since the counselor doesn't change across the batch.
   const counselorMembership = await pool
@@ -3257,6 +3339,7 @@ router.post("/api/leads/bulk-assign-telecaller", auth, async (req, res) => {
   const telecallerId = req.body.telecallerId ? String(req.body.telecallerId) : "";
   if (!ids.length || !telecallerId) return res.status(400).json({ error: "Select leads and a telecaller." });
   if (!(await allow(res, checkStaffInScope(pool, req.scope, telecallerId)))) return;
+  if (await refuseInactiveAssignee(req, res, telecallerId)) return;
   let count = 0;
   let skippedScope = 0;
   for (const id of ids) {
@@ -3674,7 +3757,7 @@ router.get("/api/transfer-work/people", staffMoveAuth, async (req, res) => {
   const users = (await loadUsers()).filter(
     (u) => ["telecaller", "counselor"].includes(u.role) && (u.branch_ids || []).map(String).includes(branchId),
   );
-  const leads = await jsonTable("student_leads");
+  const leads = await loadWorkLeads();
   const counselors = await loadCounselors();
   const people = users.map((u) => {
     const c = u.role === "counselor"
@@ -3682,14 +3765,13 @@ router.get("/api/transfer-work/people", staffMoveAuth, async (req, res) => {
       : null;
     const keys = new Set(c ? counselorKeyIds(c) : [String(u.id)]);
     keys.add(String(u.id));
-    const converted = (l) => l.entity_type === "student" || l.lead_status === "converted";
     return {
       id: String(u.id),
       name: [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email,
       role: u.role,
       isActive: u.is_active !== false,
-      telecalling: leads.filter((l) => !converted(l) && keys.has(String(l.assigned_telecaller_id || ""))).length,
-      counseling: leads.filter((l) => converted(l) && keys.has(String(l.assigned_counselor_id || ""))).length,
+      telecalling: leadsCalledBy(leads, keys).length,
+      counseling: studentsCounseledBy(leads, keys).length,
     };
   });
   res.json({ people });
@@ -3701,11 +3783,7 @@ router.get("/api/transfer-work/:id/items", staffMoveAuth, async (req, res) => {
   if (!person) return res.status(404).json({ error: "That employee could not be found." });
   const kind = req.query.kind === "counseling" ? "counseling" : "telecalling";
   const keys = new Set(person.keys.concat(person.id));
-  const converted = (l) => l.entity_type === "student" || l.lead_status === "converted";
-  const items = (await jsonTable("student_leads"))
-    .filter((l) => (kind === "counseling"
-      ? converted(l) && keys.has(String(l.assigned_counselor_id || ""))
-      : !converted(l) && keys.has(String(l.assigned_telecaller_id || ""))))
+  const items = (kind === "counseling" ? studentsCounseledBy : leadsCalledBy)(await loadWorkLeads(), keys)
     .filter((l) => !l.branch_id || branchInScope(req.scope, l.branch_id))
     .map(leadLabel);
   res.json({ person: { id: person.id, name: person.name, role: person.role, isActive: person.isActive, branchIds: person.branchIds }, kind, items, allowCrossBranch: Boolean(req.scope.allBranches) });
@@ -3719,11 +3797,12 @@ router.get("/api/transfer-work/:id/receivers", staffMoveAuth, async (req, res) =
   if (!person) return res.status(404).json({ error: "That employee could not be found." });
   const kind = req.query.kind === "counseling" ? "counseling" : "telecalling";
   const theirBranches = new Set(person.branchIds);
-  const leads = await jsonTable("student_leads");
-  const converted = (l) => l.entity_type === "student" || l.lead_status === "converted";
+  const leads = await loadWorkLeads();
   const counselors = await loadCounselors();
+  const superAdmin = req.user?.role === ROLES.SUPER_ADMIN;
   const shape = (list) => list
-    .filter((u) => String(u.id) !== person.id && u.is_active !== false)
+    // The Super Admin sets the rules: suspended people are offered to them too (marked isActive: false).
+    .filter((u) => String(u.id) !== person.id && (superAdmin || u.is_active !== false))
     .filter((u) => (kind === "counseling" ? u.role === "counselor" : ["telecaller", "counselor"].includes(u.role)))
     .map((u) => {
       const c = u.role === "counselor"
@@ -3736,10 +3815,11 @@ router.get("/api/transfer-work/:id/receivers", staffMoveAuth, async (req, res) =
         counselorRowId: c ? String(c.id) : null,
         name: [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email,
         role: u.role,
+        isActive: u.is_active !== false,
         branchIds: (u.branch_ids || []).map(String),
         load: kind === "counseling"
-          ? leads.filter((l) => converted(l) && keys.has(String(l.assigned_counselor_id || ""))).length
-          : leads.filter((l) => !converted(l) && keys.has(String(l.assigned_telecaller_id || ""))).length,
+          ? studentsCounseledBy(leads, keys).length
+          : leadsCalledBy(leads, keys).length,
       };
     })
     .sort((a, b) => a.load - b.load || a.name.localeCompare(b.name));
@@ -3864,7 +3944,7 @@ router.post("/api/transfer-work/:id", staffMoveAuth, async (req, res) => {
     if (toUserId && !(await allow(res, checkStaffInScope(pool, req.scope, toUserId)))) return;
     const from = await transferPerson(req.params.id);
     const to = toUserId ? await transferPerson(toUserId) : null;
-    const leads = (await jsonTable("student_leads")).filter((l) => !l.branch_id || branchInScope(req.scope, l.branch_id));
+    const leads = (await loadWorkLeads()).filter((l) => !l.branch_id || branchInScope(req.scope, l.branch_id));
     const plan = planWorkTransfer({
       kind: req.body.kind,
       from,
@@ -3873,6 +3953,7 @@ router.post("/api/transfer-work/:id", staffMoveAuth, async (req, res) => {
       leadIds: Array.isArray(req.body.leadIds) ? req.body.leadIds : null,
       reason: req.body.reason,
       allowCrossBranch: Boolean(req.scope.allBranches),
+      allowInactiveTarget: req.user?.role === ROLES.SUPER_ADMIN,
     });
     if (!plan.ok) return res.status(plan.status).json({ error: plan.error, code: plan.code });
 
@@ -3901,7 +3982,7 @@ router.post("/api/transfer-requests", staffMoveAuth, async (req, res) => {
     if (!(await allow(res, checkStaffInScope(pool, req.scope, String(req.body.fromId || ""))))) return;
     const from = await transferPerson(String(req.body.fromId || ""));
     const to = await transferPerson(String(req.body.toUserId || ""));
-    const leads = (await jsonTable("student_leads")).filter((l) => !l.branch_id || branchInScope(req.scope, l.branch_id));
+    const leads = (await loadWorkLeads()).filter((l) => !l.branch_id || branchInScope(req.scope, l.branch_id));
     const plan = planWorkTransfer({
       kind: req.body.kind, from, to, leads,
       leadIds: Array.isArray(req.body.leadIds) ? req.body.leadIds : null,
@@ -3946,7 +4027,7 @@ router.post("/api/super/transfer-requests/:id/decide", superAdminAuth, async (re
     if (accept) {
       const from = await transferPerson(row.from_id);
       const to = await transferPerson(row.to_id);
-      const leads = await jsonTable("student_leads");
+      const leads = await loadWorkLeads();
       const plan = planWorkTransfer({ kind: row.kind, from, to, leads, leadIds: row.lead_ids, reason: `${row.reason} (approved by the owner)`, allowCrossBranch: true });
       if (!plan.ok) return res.status(plan.status).json({ error: plan.error, code: plan.code });
       if (!plan.move.length) return res.status(409).json({ error: "Those records have changed owner since the request, so nothing is left to move." });

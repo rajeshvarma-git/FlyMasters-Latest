@@ -279,3 +279,86 @@ test("unassigning is allowed and audited, and a no-op writes no entry", { skip }
   const [entry] = await auditRows("lead.telecaller", id);
   assert.ok(entry, "unassigning was not audited");
 });
+
+test("a branch Admin cannot give a lead to someone whose access is suspended", { skip }, async () => {
+  const active = await staff("telecaller", A);
+  const suspended = await staff("telecaller", A);
+  await pool.query("UPDATE user_roles SET is_active = false WHERE user_id = $1", [String(suspended)]);
+  const id = await lead({ branchId: A, telecallerId: active });
+
+  const r = await call(h.patch, { actor: adminOf(A), params: { id }, body: { assigned_telecaller_id: suspended } });
+  assert.equal(r.code, 409, JSON.stringify(r.body));
+  assert.equal(r.body.code, "ASSIGNEE_SUSPENDED");
+  assert.equal(await telecallerOf(id), String(active), "the lead moved to a suspended person");
+});
+
+test("the Super Admin has every access: they can give a lead to a suspended person", { skip }, async () => {
+  const active = await staff("telecaller", A);
+  const suspended = await staff("telecaller", A);
+  await pool.query("UPDATE user_roles SET is_active = false WHERE user_id = $1", [String(suspended)]);
+  const id = await lead({ branchId: A, telecallerId: active });
+
+  const r = await call(h.patch, { actor: SUPER, params: { id }, body: { assigned_telecaller_id: suspended } });
+  assert.equal(r.code, 200, JSON.stringify(r.body));
+  assert.equal(await telecallerOf(id), String(suspended));
+});
+
+test("a lead already held by a suspended person can still be saved, and moved away from them", { skip }, async () => {
+  const suspended = await staff("telecaller", A);
+  const other = await staff("telecaller", A);
+  const id = await lead({ branchId: A, telecallerId: suspended });
+  await pool.query("UPDATE user_roles SET is_active = false WHERE user_id = $1", [String(suspended)]);
+
+  const same = await call(h.patch, { actor: SUPER, params: { id }, body: { assigned_telecaller_id: suspended, priority: "high" } });
+  assert.equal(same.code, 200, JSON.stringify(same.body));
+  const away = await call(h.patch, { actor: SUPER, params: { id }, body: { assigned_telecaller_id: other } });
+  assert.equal(away.code, 200, JSON.stringify(away.body));
+  assert.equal(await telecallerOf(id), String(other));
+});
+
+// ---- one owner: a telecaller OR a counselor, never both ---------------------------------------
+
+test("giving a converted student to a counselor takes the telecaller off, and remembers who converted them", { skip }, async () => {
+  const caller = await staff("telecaller", A);
+  const counselor = await staff("counselor", A);
+  const id = await lead({ branchId: A, telecallerId: caller });
+  await pool.query(
+    "UPDATE app_records SET data = data || '{\"entity_type\":\"student\",\"lead_status\":\"converted\"}'::jsonb WHERE table_name = 'student_leads' AND id::text = $1",
+    [id],
+  );
+
+  const r = await call(h.patch, { actor: SUPER, params: { id }, body: { assigned_counselor_id: counselor } });
+  assert.equal(r.code, 200, JSON.stringify(r.body));
+  const row = (await pool.query("SELECT data FROM app_records WHERE table_name = 'student_leads' AND id::text = $1", [id])).rows[0].data;
+  assert.ok(row.assigned_counselor_id, "the counselor was not saved");
+  assert.equal(row.assigned_telecaller_id, null, "the student still has a telecaller as well as a counselor");
+  assert.equal(String(row.converted_by_telecaller_id), String(caller), "who converted the student was lost");
+});
+
+test("a branch Admin cannot create a lead with both a telecaller and a counselor; the Super Admin can", { skip }, async () => {
+  const caller = await staff("telecaller", A);
+  const counselor = await staff("counselor", A);
+  const create = layerFor("/api/leads", "post");
+  const r = await call(create, { actor: adminOf(A), body: { email: `one.owner.${seq}@x.test`, firstName: "One", telecallerId: caller, counselorId: counselor } });
+  assert.equal(r.code, 400, JSON.stringify(r.body));
+  assert.equal(r.body.code, "ONE_OWNER");
+  const boss = await call(create, { actor: SUPER, body: { email: `one.owner.boss.${seq}@x.test`, firstName: "Two", telecallerId: caller, counselorId: counselor } });
+  assert.equal(boss.code, 200, JSON.stringify(boss.body));
+});
+
+test("asking for both owners on an existing student: refused for a branch Admin, kept for the Super Admin", { skip }, async () => {
+  const caller = await staff("telecaller", A);
+  const counselor = await staff("counselor", A);
+  const id = await lead({ branchId: A, telecallerId: caller });
+  await pool.query(
+    "UPDATE app_records SET data = data || '{\"entity_type\":\"student\",\"lead_status\":\"converted\"}'::jsonb WHERE table_name = 'student_leads' AND id::text = $1",
+    [id],
+  );
+  const body = { assigned_counselor_id: counselor, assigned_telecaller_id: caller };
+  const admin = await call(h.patch, { actor: adminOf(A), params: { id }, body });
+  assert.equal(admin.code, 409, JSON.stringify(admin.body));
+  assert.equal(admin.body.code, "ONE_OWNER");
+  const boss = await call(h.patch, { actor: SUPER, params: { id }, body });
+  assert.equal(boss.code, 200, JSON.stringify(boss.body));
+  assert.equal(await telecallerOf(id), String(caller), "the Super Admin's choice of two owners was overridden");
+});

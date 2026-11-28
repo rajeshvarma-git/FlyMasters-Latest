@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRightLeft, CheckCircle2 } from "lucide-react";
 import { api } from "@admin/lib/api";
 import { refreshStore } from "@admin/lib/store";
@@ -18,10 +18,19 @@ type Kind = "telecalling" | "counseling";
 interface BranchRow { id: string; name: string; code?: string; is_active?: boolean }
 interface Person { id: string; name: string; role: "telecaller" | "counselor"; isActive: boolean; telecalling: number; counseling: number }
 interface Item { id: string; name: string; status: string; branchId: string | null; stage: string }
-interface Receiver { id: string; name: string; role: "telecaller" | "counselor"; load: number; branchIds: string[] }
+interface Receiver { id: string; name: string; role: "telecaller" | "counselor"; load: number; branchIds: string[]; isActive?: boolean }
 interface Result { moved: number; skipped: { id: string; reason: string; label: string }[] }
 
 const roleLabel = (p: Person) => (p.role === "counselor" ? "Counselor" : "Telecaller");
+
+/** The work type to show for this person: the only kind they have, if just one is non-empty. */
+function pickKind(p: Person | undefined, current: Kind): Kind {
+  if (!p) return current;
+  const kinds: Kind[] = p.role === "counselor" ? ["telecalling", "counseling"] : ["telecalling"];
+  const nonEmpty = kinds.filter((k) => (k === "counseling" ? p.counseling : p.telecalling) > 0);
+  if (nonEmpty.length === 1) return nonEmpty[0];
+  return kinds.includes(current) ? current : "telecalling";
+}
 
 export default function TransferWork() {
   const [branches, setBranches] = useState<BranchRow[]>([]);
@@ -62,16 +71,22 @@ export default function TransferWork() {
 
   const from = people.find((p) => p.id === fromId) || null;
 
-  useEffect(() => {
-    if (from && from.role === "telecaller" && kind === "counseling") setKind("telecalling");
-  }, [from, kind]);
+  // Picking an employee sets the work type in the same update, so their list loads once, straight away.
+  const chooseFrom = (id: string) => {
+    setFromId(id);
+    setKind((current) => pickKind(people.find((p) => p.id === id), current));
+  };
 
-  const loadItems = (id: string, k: Kind) =>
-    Promise.all([
+  // Only the newest request may fill the list: an older, slower answer for another employee is dropped.
+  const itemsRequest = useRef(0);
+  const loadItems = (id: string, k: Kind) => {
+    const request = ++itemsRequest.current;
+    return Promise.all([
       api<{ items: Item[]; allowCrossBranch?: boolean }>(`/transfer-work/${encodeURIComponent(id)}/items?kind=${k}`),
       api<{ receivers: Receiver[] }>(`/transfer-work/${encodeURIComponent(id)}/receivers?kind=${k}`),
     ])
       .then(([data, rec]) => {
+        if (request !== itemsRequest.current) return;
         const cross = Boolean(data.allowCrossBranch);
         setAllowCross(cross);
         setItems(data.items);
@@ -79,7 +94,10 @@ export default function TransferWork() {
         // The owner (Super Admin) moves everything; branch Admins start with their branch's records.
         setPicked(new Set(data.items.filter((i) => cross || i.branchId === branchId).map((i) => i.id)));
       })
-      .catch((err) => setError(err instanceof Error ? err.message : "Could not load this person's work."));
+      .catch((err) => {
+        if (request === itemsRequest.current) setError(err instanceof Error ? err.message : "Could not load this person's work.");
+      });
+  };
 
   useEffect(() => {
     setItems([]); setReceivers([]); setPicked(new Set()); setToId(""); setReviewing(false); setResult(null);
@@ -108,11 +126,14 @@ export default function TransferWork() {
         method: "POST",
         body: { toUserId: to.id, kind, leadIds: [...picked], reason: reason.trim() },
       });
+      // Reload the shared data BEFORE saying it worked: every page (Leads, Students, Dashboard) reads it,
+      // so by the time "Moved" shows, none of them can still show the old owner.
+      await refreshStore();
       const names = new Map(items.map((i) => [i.id, i.name]));
       setResult({ ...res, skipped: res.skipped.map((s) => ({ ...s, id: names.get(s.id) || s.id })) });
       setReviewing(false);
       setReason("");
-      await Promise.all([refreshStore(), loadPeople(branchId), loadItems(from.id, kind)]);
+      await Promise.all([loadPeople(branchId), loadItems(from.id, kind)]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not transfer this work.");
     } finally {
@@ -157,7 +178,7 @@ export default function TransferWork() {
         </div>
         <div className="space-y-1.5">
           <Label>Whose work is moving</Label>
-          <Select id="tw-from" value={fromId} disabled={!branchId} onChange={(e) => setFromId(e.target.value)}>
+          <Select id="tw-from" value={fromId} disabled={!branchId} onChange={(e) => chooseFrom(e.target.value)}>
             <option value="">{branchId ? "Choose an employee" : "Choose a branch first"}</option>
             {people.map((p) => (
               <option key={p.id} value={p.id}>
@@ -237,7 +258,7 @@ export default function TransferWork() {
               <option value="">{allowCross ? "Choose anyone, in any branch" : "Choose a colleague in this branch"}</option>
               {receivers.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.name} · {p.role === "counselor" ? "Counselor" : "Telecaller"}{allowCross && branchLabel(p.branchIds) ? ` · ${branchLabel(p.branchIds)}` : ""} · {p.load} {word}s now
+                  {p.name} · {p.role === "counselor" ? "Counselor" : "Telecaller"}{allowCross && branchLabel(p.branchIds) ? ` · ${branchLabel(p.branchIds)}` : ""}{p.isActive === false ? " · access suspended" : ""} · {p.load} {word}s now
                 </option>
               ))}
             </Select>

@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { format } from "date-fns";
 import { Download, FileText } from "lucide-react";
 import { api } from "@admin/lib/api";
@@ -16,7 +17,11 @@ function isPending(status: string) {
 export default function Documents() {
   const store = useAdminStore();
   const [query, setQuery] = useState("");
-  const [statusFilter, setStatusFilter] = useState("uploaded");
+  const [searchParams] = useSearchParams();
+  // A link (the dashboard's "Docs to review" tile) can open a given view.
+  const [statusFilter, setStatusFilter] = useState(() =>
+    ["uploaded", "approved", "rejected", "all"].includes(searchParams.get("status") || "") ? String(searchParams.get("status")) : "uploaded",
+  );
   const [reviewId, setReviewId] = useState<string | null>(null);
   const [comments, setComments] = useState("");
   const [busy, setBusy] = useState(false);

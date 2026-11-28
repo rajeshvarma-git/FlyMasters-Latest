@@ -38,8 +38,10 @@ const fail = (status, code, error) => ({ ok: false, status, code, error });
  * @param {string} input.reason
  * @param {boolean} [input.allowCrossBranch]  true only for the Super Admin (the owner): no branch limit. Records that
  *        are not in the receiver's branch move WITH the work, into the receiver's first branch (`newBranchId`).
+ * @param {boolean} [input.allowInactiveTarget]  true only for the Super Admin, who sets the rules: they may move
+ *        work to someone whose access is suspended.
  */
-export function planWorkTransfer({ kind, from, to, leads, leadIds, reason, allowCrossBranch = false }) {
+export function planWorkTransfer({ kind, from, to, leads, leadIds, reason, allowCrossBranch = false, allowInactiveTarget = false }) {
   if (!TRANSFER_KINDS.includes(kind)) return fail(400, "BAD_KIND", "Choose leads or students to transfer.");
   const why = str(reason).trim();
   if (!why) return fail(400, "REASON_REQUIRED", "Say why this work is being transferred.");
@@ -49,7 +51,7 @@ export function planWorkTransfer({ kind, from, to, leads, leadIds, reason, allow
 
   const fromKeys = new Set([from.id, ...(from.keys || [])].map(str).filter(Boolean));
   if (fromKeys.has(str(to.id))) return fail(400, "SAME_PERSON", "Choose a different person to receive the work.");
-  if (to.isActive === false) return fail(400, "TARGET_INACTIVE", "That person's access is suspended. Choose an active colleague.");
+  if (to.isActive === false && !allowInactiveTarget) return fail(400, "TARGET_INACTIVE", "That person's access is suspended. Choose an active colleague.");
 
   const okRole = kind === "counseling" ? to.role === "counselor" : to.role === "telecaller" || to.role === "counselor";
   if (!okRole) {
