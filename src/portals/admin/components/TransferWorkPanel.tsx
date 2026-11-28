@@ -112,10 +112,12 @@ export function TransferWorkPanel({
         method: "POST",
         body: { toUserId: receiver.id, kind, leadIds: [...picked], reason: reason.trim() },
       });
+      // Shared data first, so no page still shows the old owner once "Moved" appears.
+      await refreshStore();
       const names = new Map(items.map((i) => [i.id, i.name]));
       setResult({ ...res, skipped: res.skipped.map((s) => ({ ...s, id: names.get(s.id) || s.id })) });
       setConfirming(false); setReason(""); setToId("");
-      await Promise.all([refreshStore(), load(kind)]);
+      await load(kind);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not transfer this work.");
     } finally {
