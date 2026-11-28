@@ -138,6 +138,7 @@ import { Globe } from "lucide-react";
 import { api } from "@admin/lib/api";
 import { refreshStore, useAdminStore } from "@admin/lib/store";
 import { displayName, isConvertedStudent, telecallerLabel } from "@admin/lib/utils";
+import { canTakeWork } from "@admin/lib/telecallerChoices";
 import { Badge } from "@admin/components/ui/Badge";
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
@@ -222,7 +223,7 @@ export default function Unassigned({ hideHeader = false }: { hideHeader?: boolea
             <p className="mb-1.5 text-sm font-medium text-slate-700">Counselor</p>
             <Select value={counselorId} onChange={(e) => setCounselorId(e.target.value)}>
               <option value="">Choose counselor</option>
-              {store.counselors.map((item) => (
+              {store.counselors.filter(canTakeWork).map((item) => (
                 <option key={item.id} value={item.id}>
                   {displayName(item.first_name, item.last_name, item.email)}
                   {item.specializations?.length ? ` · ${item.specializations.join(", ")}` : ""}

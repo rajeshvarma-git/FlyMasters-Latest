@@ -873,13 +873,15 @@ function loadTelecallers(users, counselors = []) {
     const id = String(c.auth_user_id || c.user_id || c.id || "");
     if (!id || seen.has(id) || c.is_active === false) continue;
     seen.add(id);
+    // Suspension is written on the login (user_roles), not on the counselor record, so read it there.
+    const login = users.find((user) => String(user.id) === id);
     telecallers.push({
       id,
       email: c.email || "",
       first_name: c.first_name || "",
       last_name: c.last_name || "",
       phone: c.phone || "",
-      is_active: true,
+      is_active: login ? login.is_active !== false : true,
       created_at: c.created_at || null,
       can_telecall: true,
       role: "counselor",
@@ -1556,7 +1558,13 @@ async function loadStateUncached(scope = null) {
   const visibleAppIds = new Set(jsonApps.map((app) => String(app.id)));
   return {
     users,
-    counselors,
+    // A suspended counselor keeps is_active (their counselor record is untouched; the Counselors page
+    // still lists them), but `suspended` says their login is switched off, so pickers can leave them out.
+    counselors: counselors.map((c) => {
+      const loginId = String(c.auth_user_id || c.user_id || c.id || "");
+      const login = users.find((user) => String(user.id) === loginId);
+      return { ...c, suspended: Boolean(login && login.is_active === false) };
+    }),
     telecallers: loadTelecallers(users, counselors),
     leads,
     documents: mergeById(sqlDocs.rows.map(asDocument), jsonDocs.map(asDocument)),

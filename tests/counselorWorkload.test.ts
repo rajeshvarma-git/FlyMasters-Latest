@@ -39,3 +39,15 @@ test("the telecaller picker offers only people from the lead's branch, and alway
   assert.deepEqual(ids(telecallerChoices(people, { branch_id: "ameerpet", assigned_telecaller_id: "t-k" })), ["t-a", "t-k", "c-a", "t-old"], "the current assignee vanished from the picker");
   assert.equal(telecallerChoices(people, { branch_id: null }).length, 4, "a lead with no branch yet should offer everyone");
 });
+
+test("a suspended person is never offered as someone to give work to, but a current holder stays visible", () => {
+  const people = [
+    { id: "t-on", first_name: "On", branch_ids: ["ameerpet"], is_active: true },
+    { id: "t-off", first_name: "Off", branch_ids: ["ameerpet"], is_active: false },
+    { id: "c-off", first_name: "Coun", branch_ids: ["ameerpet"], is_active: true, suspended: true },
+  ] as any[];
+  const ids = (rows: any[]) => rows.map((r) => r.id);
+  assert.deepEqual(ids(telecallerChoices(people, { branch_id: "ameerpet" })), ["t-on"]);
+  assert.deepEqual(ids(telecallerChoices(people, { branch_id: null })), ["t-on"], "a lead with no branch offered a suspended person");
+  assert.deepEqual(ids(telecallerChoices(people, { branch_id: "ameerpet", assigned_telecaller_id: "t-off" })), ["t-on", "t-off"], "the current holder vanished from the picker");
+});

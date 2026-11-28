@@ -54,6 +54,8 @@ export interface Counselor {
   bio: string;
   specializations: string[];
   is_active: boolean;
+  /** Their login is suspended ("access suspended"): never offered as someone to give work to. */
+  suspended?: boolean;
   role?: Role;
   created_at: string | null;
 }

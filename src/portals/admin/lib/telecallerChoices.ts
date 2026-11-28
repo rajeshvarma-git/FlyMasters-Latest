@@ -8,17 +8,23 @@ import type { Telecaller } from "./types";
  *  - a lead with a branch offers only people who work in that branch;
  *  - a lead with no branch yet offers everyone (only a Super Admin sees those, and the branch is set first);
  *  - the person already assigned is always kept, so the picker never shows the wrong name;
- *  - someone the server sent without branch information is kept rather than hidden.
+ *  - someone the server sent without branch information is kept rather than hidden;
+ *  - a suspended person is never offered (unless already assigned, so the picker shows who holds it).
  */
+/** Can this person be given new work? Not if their account is suspended or removed. */
+export function canTakeWork(row: { is_active?: boolean | null; suspended?: boolean | null }) {
+  return row.is_active !== false && row.suspended !== true;
+}
+
 export function telecallerChoices(
   telecallers: Telecaller[],
   lead: { branch_id?: string | null; assigned_telecaller_id?: string | null },
 ): Telecaller[] {
   const branch = lead.branch_id ? String(lead.branch_id) : "";
-  if (!branch) return telecallers;
   return telecallers.filter((row) => {
     if (lead.assigned_telecaller_id && String(row.id) === String(lead.assigned_telecaller_id)) return true;
-    if (!row.branch_ids) return true;
+    if (!canTakeWork(row)) return false;
+    if (!branch || !row.branch_ids) return true;
     return row.branch_ids.map(String).includes(branch);
   });
 }

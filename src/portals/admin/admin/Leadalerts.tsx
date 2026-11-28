@@ -1017,6 +1017,7 @@ import {
   leadNeedsAssignment,
   leadSourceLabel,
 } from "@admin/lib/utils";
+import { canTakeWork } from "@admin/lib/telecallerChoices";
 import { Badge } from "@admin/components/ui/Badge";
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
@@ -1239,7 +1240,7 @@ export default function LeadAlerts() {
           {assignMode === "telecaller" ? (
             <Select value={telecallerId} onChange={(e) => setTelecallerId(e.target.value)}>
               <option value="">Choose telecaller</option>
-              {store.telecallers.map((row) => (
+              {store.telecallers.filter(canTakeWork).map((row) => (
                 <option key={row.id} value={row.id}>
                   {displayName(row.first_name, row.last_name, row.email)}
                   {row.can_telecall ? " · Counsellor (can telecall)" : " · Telecaller"}
@@ -1249,7 +1250,7 @@ export default function LeadAlerts() {
           ) : (
             <Select value={counselorId} onChange={(e) => setCounselorId(e.target.value)}>
               <option value="">Choose counselor</option>
-              {store.counselors.map((row) => (
+              {store.counselors.filter(canTakeWork).map((row) => (
                 <option key={row.id} value={row.id}>
                   {displayName(row.first_name, row.last_name, row.email)} · Counsellor
                   {row.specializations?.length ? ` · ${row.specializations.join(", ")}` : ""}
