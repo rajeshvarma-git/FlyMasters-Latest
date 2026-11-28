@@ -18,7 +18,7 @@ type Kind = "telecalling" | "counseling";
 interface BranchRow { id: string; name: string; code?: string; is_active?: boolean }
 interface Person { id: string; name: string; role: "telecaller" | "counselor"; isActive: boolean; telecalling: number; counseling: number }
 interface Item { id: string; name: string; status: string; branchId: string | null; stage: string }
-interface Receiver { id: string; name: string; role: "telecaller" | "counselor"; load: number; branchIds: string[] }
+interface Receiver { id: string; name: string; role: "telecaller" | "counselor"; load: number; branchIds: string[]; isActive?: boolean }
 interface Result { moved: number; skipped: { id: string; reason: string; label: string }[] }
 
 const roleLabel = (p: Person) => (p.role === "counselor" ? "Counselor" : "Telecaller");
@@ -258,7 +258,7 @@ export default function TransferWork() {
               <option value="">{allowCross ? "Choose anyone, in any branch" : "Choose a colleague in this branch"}</option>
               {receivers.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.name} · {p.role === "counselor" ? "Counselor" : "Telecaller"}{allowCross && branchLabel(p.branchIds) ? ` · ${branchLabel(p.branchIds)}` : ""} · {p.load} {word}s now
+                  {p.name} · {p.role === "counselor" ? "Counselor" : "Telecaller"}{allowCross && branchLabel(p.branchIds) ? ` · ${branchLabel(p.branchIds)}` : ""}{p.isActive === false ? " · access suspended" : ""} · {p.load} {word}s now
                 </option>
               ))}
             </Select>

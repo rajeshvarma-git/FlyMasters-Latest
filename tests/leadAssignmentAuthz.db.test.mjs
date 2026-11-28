@@ -335,11 +335,30 @@ test("giving a converted student to a counselor takes the telecaller off, and re
   assert.equal(String(row.converted_by_telecaller_id), String(caller), "who converted the student was lost");
 });
 
-test("a new lead cannot be created with both a telecaller and a counselor", { skip }, async () => {
+test("a branch Admin cannot create a lead with both a telecaller and a counselor; the Super Admin can", { skip }, async () => {
   const caller = await staff("telecaller", A);
   const counselor = await staff("counselor", A);
   const create = layerFor("/api/leads", "post");
-  const r = await call(create, { actor: SUPER, body: { email: `one.owner.${seq}@x.test`, firstName: "One", telecallerId: caller, counselorId: counselor } });
+  const r = await call(create, { actor: adminOf(A), body: { email: `one.owner.${seq}@x.test`, firstName: "One", telecallerId: caller, counselorId: counselor } });
   assert.equal(r.code, 400, JSON.stringify(r.body));
   assert.equal(r.body.code, "ONE_OWNER");
+  const boss = await call(create, { actor: SUPER, body: { email: `one.owner.boss.${seq}@x.test`, firstName: "Two", telecallerId: caller, counselorId: counselor } });
+  assert.equal(boss.code, 200, JSON.stringify(boss.body));
+});
+
+test("asking for both owners on an existing student: refused for a branch Admin, kept for the Super Admin", { skip }, async () => {
+  const caller = await staff("telecaller", A);
+  const counselor = await staff("counselor", A);
+  const id = await lead({ branchId: A, telecallerId: caller });
+  await pool.query(
+    "UPDATE app_records SET data = data || '{\"entity_type\":\"student\",\"lead_status\":\"converted\"}'::jsonb WHERE table_name = 'student_leads' AND id::text = $1",
+    [id],
+  );
+  const body = { assigned_counselor_id: counselor, assigned_telecaller_id: caller };
+  const admin = await call(h.patch, { actor: adminOf(A), params: { id }, body });
+  assert.equal(admin.code, 409, JSON.stringify(admin.body));
+  assert.equal(admin.body.code, "ONE_OWNER");
+  const boss = await call(h.patch, { actor: SUPER, params: { id }, body });
+  assert.equal(boss.code, 200, JSON.stringify(boss.body));
+  assert.equal(await telecallerOf(id), String(caller), "the Super Admin's choice of two owners was overridden");
 });

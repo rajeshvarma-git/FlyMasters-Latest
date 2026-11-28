@@ -62,6 +62,8 @@ test("only the selected records move, and ids that are not theirs are reported, 
 test("needs a reason, an active receiver, and a different person", () => {
   assert.equal(planWorkTransfer({ kind: "telecalling", from: leaver, to: colleague, leads, reason: "  " }).code, "REASON_REQUIRED");
   assert.equal(planWorkTransfer({ kind: "telecalling", from: leaver, to: { ...colleague, isActive: false }, leads, reason }).code, "TARGET_INACTIVE");
+  // The Super Admin sets the rules: they may move work to a suspended person.
+  assert.equal(planWorkTransfer({ kind: "telecalling", from: leaver, to: { ...colleague, isActive: false }, leads, reason, allowInactiveTarget: true }).ok, true);
   assert.equal(planWorkTransfer({ kind: "telecalling", from: leaver, to: { ...colleague, id: "tc-1" }, leads, reason }).code, "SAME_PERSON");
   assert.equal(planWorkTransfer({ kind: "nonsense", from: leaver, to: colleague, leads, reason }).code, "BAD_KIND");
 });

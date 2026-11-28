@@ -3003,7 +3003,7 @@ router.post("/api/leads", auth, async (req, res) => {
   const countries = String(req.body.countries || "").split(",").map((item) => item.trim()).filter(Boolean);
   const telecallerId = req.body.telecallerId || null;
   const counselorId = await resolveCounselorId(req.body.counselorId || null);
-  if (telecallerId && counselorId) {
+  if (telecallerId && counselorId && req.user?.role !== ROLES.SUPER_ADMIN) {
     return res.status(400).json({ error: "A lead has one owner: choose a telecaller or a counselor, not both.", code: "ONE_OWNER" });
   }
   if ((await refuseInactiveAssignee(req, res, telecallerId)) || (await refuseInactiveAssignee(req, res, counselorId))) return;
@@ -3116,6 +3116,19 @@ router.patch("/api/leads/:id", auth, async (req, res) => {
   }
   const jsonLeads = await jsonTable("student_leads");
   const current = findLeadJsonRecord(jsonLeads, req.params.id);
+  // One owner: a telecaller OR a counselor. Assigning a counselor takes the telecaller off (applyLeadPatch);
+  // explicitly asking for both is refused, except for the Super Admin, who sets the rules.
+  if (req.user?.role !== ROLES.SUPER_ADMIN && (patch.assigned_counselor_id || patch.assigned_telecaller_id)) {
+    const nextCounselor = patch.assigned_counselor_id !== undefined ? patch.assigned_counselor_id : current?.assigned_counselor_id;
+    const nextTelecaller = patch.assigned_telecaller_id !== undefined
+      ? patch.assigned_telecaller_id
+      : (patch.assigned_counselor_id ? null : current?.assigned_telecaller_id);
+    const changes = (field) => patch[field] !== undefined && String(patch[field] || "") !== String(current?.[field] || "");
+    // Only a change that CREATES two owners is refused; re-saving an older record that has both is not.
+    if (nextCounselor && nextTelecaller && (changes("assigned_counselor_id") || changes("assigned_telecaller_id"))) {
+      return res.status(409).json({ error: "A lead has one owner: a telecaller or a counselor, not both.", code: "ONE_OWNER" });
+    }
+  }
   // New work never goes to a suspended person. Re-saving the person a lead already has is not new work.
   for (const field of ["assigned_counselor_id", "assigned_telecaller_id"]) {
     const next = patch[field];
@@ -3786,8 +3799,10 @@ router.get("/api/transfer-work/:id/receivers", staffMoveAuth, async (req, res) =
   const theirBranches = new Set(person.branchIds);
   const leads = await loadWorkLeads();
   const counselors = await loadCounselors();
+  const superAdmin = req.user?.role === ROLES.SUPER_ADMIN;
   const shape = (list) => list
-    .filter((u) => String(u.id) !== person.id && u.is_active !== false)
+    // The Super Admin sets the rules: suspended people are offered to them too (marked isActive: false).
+    .filter((u) => String(u.id) !== person.id && (superAdmin || u.is_active !== false))
     .filter((u) => (kind === "counseling" ? u.role === "counselor" : ["telecaller", "counselor"].includes(u.role)))
     .map((u) => {
       const c = u.role === "counselor"
@@ -3800,6 +3815,7 @@ router.get("/api/transfer-work/:id/receivers", staffMoveAuth, async (req, res) =
         counselorRowId: c ? String(c.id) : null,
         name: [u.first_name, u.last_name].filter(Boolean).join(" ") || u.email,
         role: u.role,
+        isActive: u.is_active !== false,
         branchIds: (u.branch_ids || []).map(String),
         load: kind === "counseling"
           ? studentsCounseledBy(leads, keys).length
@@ -3937,6 +3953,7 @@ router.post("/api/transfer-work/:id", staffMoveAuth, async (req, res) => {
       leadIds: Array.isArray(req.body.leadIds) ? req.body.leadIds : null,
       reason: req.body.reason,
       allowCrossBranch: Boolean(req.scope.allBranches),
+      allowInactiveTarget: req.user?.role === ROLES.SUPER_ADMIN,
     });
     if (!plan.ok) return res.status(plan.status).json({ error: plan.error, code: plan.code });
 
