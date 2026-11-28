@@ -78,3 +78,12 @@ test("a telecaller's conversion rate still counts a student a counselor has sinc
   ];
   assert.equal(telecallingConversionRate(rows as any[], "tc"), 50);
 });
+
+test("the Super Admin's picker offers everyone: other branches and suspended people too", () => {
+  const people = [
+    { id: "t-a", first_name: "A", branch_ids: ["ameerpet"], is_active: true },
+    { id: "t-k", first_name: "K", branch_ids: ["kompally"], is_active: true },
+    { id: "t-off", first_name: "Off", branch_ids: ["ameerpet"], is_active: false },
+  ] as any[];
+  assert.deepEqual(telecallerChoices(people, { branch_id: "ameerpet" }, { superAdmin: true }).map((r) => r.id), ["t-a", "t-k", "t-off"]);
+});

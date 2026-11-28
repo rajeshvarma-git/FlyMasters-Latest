@@ -1017,7 +1017,8 @@ import {
   leadNeedsAssignment,
   leadSourceLabel,
 } from "@admin/lib/utils";
-import { canTakeWork } from "@admin/lib/telecallerChoices";
+import { offerableTo, suspendedLabel } from "@admin/lib/telecallerChoices";
+import { useAuth } from "@admin/context/AuthContext";
 import { Badge } from "@admin/components/ui/Badge";
 import { Button } from "@admin/components/ui/Button";
 import { Card } from "@admin/components/ui/Card";
@@ -1071,6 +1072,7 @@ function clockTime(value: string | null) {
 
 export default function LeadAlerts() {
   const store = useAdminStore();
+  const offer = offerableTo(useAuth().user?.role === "super_admin");
   const [status, setStatus] = useState<AlertStatus | null>(null);
   const [assignMode, setAssignMode] = useState<"telecaller" | "counselor">("telecaller");
   const [telecallerId, setTelecallerId] = useState("");
@@ -1240,19 +1242,20 @@ export default function LeadAlerts() {
           {assignMode === "telecaller" ? (
             <Select value={telecallerId} onChange={(e) => setTelecallerId(e.target.value)}>
               <option value="">Choose telecaller</option>
-              {store.telecallers.filter(canTakeWork).map((row) => (
+              {store.telecallers.filter(offer).map((row) => (
                 <option key={row.id} value={row.id}>
                   {displayName(row.first_name, row.last_name, row.email)}
                   {row.can_telecall ? " · Counsellor (can telecall)" : " · Telecaller"}
+                  {suspendedLabel(row)}
                 </option>
               ))}
             </Select>
           ) : (
             <Select value={counselorId} onChange={(e) => setCounselorId(e.target.value)}>
               <option value="">Choose counselor</option>
-              {store.counselors.filter(canTakeWork).map((row) => (
+              {store.counselors.filter(offer).map((row) => (
                 <option key={row.id} value={row.id}>
-                  {displayName(row.first_name, row.last_name, row.email)} · Counsellor
+                  {displayName(row.first_name, row.last_name, row.email)} · Counsellor{suspendedLabel(row)}
                   {row.specializations?.length ? ` · ${row.specializations.join(", ")}` : ""}
                 </option>
               ))}

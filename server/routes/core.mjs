@@ -2980,12 +2980,14 @@ router.get("/api/state", auth, async (req, res) => {
 });
 
 /**
- * Refuses (409) when new work would go to someone whose access is suspended or removed. They keep
+ * Refuses (409) when anyone but the Super Admin gives new work to someone whose access is suspended or removed. They keep
  * their existing records (those are moved away on Transfer work), but nothing new may land on them.
  * Returns true when it has answered.
  */
-async function refuseInactiveAssignee(res, staffId) {
+async function refuseInactiveAssignee(req, res, staffId) {
   if (!staffId) return false;
+  // The Super Admin is the owner and is never refused.
+  if (req.user?.role === ROLES.SUPER_ADMIN) return false;
   const authId = (await staffAuthId(pool, staffId)) || String(staffId);
   const person = (await loadUsers()).find((u) => String(u.id) === String(authId));
   if (!person || person.is_active !== false) return false;
@@ -3004,7 +3006,7 @@ router.post("/api/leads", auth, async (req, res) => {
   if (telecallerId && counselorId) {
     return res.status(400).json({ error: "A lead has one owner: choose a telecaller or a counselor, not both.", code: "ONE_OWNER" });
   }
-  if ((await refuseInactiveAssignee(res, telecallerId)) || (await refuseInactiveAssignee(res, counselorId))) return;
+  if ((await refuseInactiveAssignee(req, res, telecallerId)) || (await refuseInactiveAssignee(req, res, counselorId))) return;
   const assignedAt = new Date().toISOString();
   const payload = {
     id: crypto.randomUUID(),
@@ -3117,7 +3119,7 @@ router.patch("/api/leads/:id", auth, async (req, res) => {
   // New work never goes to a suspended person. Re-saving the person a lead already has is not new work.
   for (const field of ["assigned_counselor_id", "assigned_telecaller_id"]) {
     const next = patch[field];
-    if (next && String(next) !== String(current?.[field] || "") && (await refuseInactiveAssignee(res, next))) return;
+    if (next && String(next) !== String(current?.[field] || "") && (await refuseInactiveAssignee(req, res, next))) return;
   }
 
   // The caller's scope is not the whole question. A Super Admin covers every branch, so scope alone
@@ -3253,7 +3255,7 @@ router.post("/api/leads/bulk-assign", auth, async (req, res) => {
   if (!ids.length) return res.status(400).json({ error: "Select at least one student." });
   if (!counselorId) return res.status(400).json({ error: "Choose a counselor to assign." });
   if (!(await allow(res, checkStaffInScope(pool, req.scope, counselorId)))) return;
-  if (await refuseInactiveAssignee(res, counselorId)) return;
+  if (await refuseInactiveAssignee(req, res, counselorId)) return;
   // Same branch check as the single-lead PATCH route — resolved once here
   // rather than per lead, since the counselor doesn't change across the batch.
   const counselorMembership = await pool
@@ -3324,7 +3326,7 @@ router.post("/api/leads/bulk-assign-telecaller", auth, async (req, res) => {
   const telecallerId = req.body.telecallerId ? String(req.body.telecallerId) : "";
   if (!ids.length || !telecallerId) return res.status(400).json({ error: "Select leads and a telecaller." });
   if (!(await allow(res, checkStaffInScope(pool, req.scope, telecallerId)))) return;
-  if (await refuseInactiveAssignee(res, telecallerId)) return;
+  if (await refuseInactiveAssignee(req, res, telecallerId)) return;
   let count = 0;
   let skippedScope = 0;
   for (const id of ids) {

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { telecallerChoices } from "@admin/lib/telecallerChoices";
+import { suspendedLabel, telecallerChoices } from "@admin/lib/telecallerChoices";
 import { Link, Navigate, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import DeleteButton from "@admin/components/DeleteButton";
 import { format } from "date-fns";
@@ -242,10 +242,11 @@ export default function LeadDetail() {
                 {/* Counselors are offered on purpose - the client gives them telecalling work when
                     short of telecallers, and the lead then shows in their My Leads - but they must
                     be labelled as such, as Lead Alerts does, or a counselor reads as a telecaller. */}
-                {telecallerChoices(store.telecallers, lead).map((row) => (
+                {telecallerChoices(store.telecallers, lead, { superAdmin: currentUser?.role === "super_admin" }).map((row) => (
                   <option key={row.id} value={row.id}>
                     {displayName(row.first_name, row.last_name, row.email)}
                     {row.can_telecall ? " · Counsellor (can telecall)" : ""}
+                    {suspendedLabel(row)}
                   </option>
                 ))}
               </Select>
