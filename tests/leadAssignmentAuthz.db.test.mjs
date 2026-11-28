@@ -279,3 +279,28 @@ test("unassigning is allowed and audited, and a no-op writes no entry", { skip }
   const [entry] = await auditRows("lead.telecaller", id);
   assert.ok(entry, "unassigning was not audited");
 });
+
+test("nobody, not even the Super Admin, can give a lead to someone whose access is suspended", { skip }, async () => {
+  const active = await staff("telecaller", A);
+  const suspended = await staff("telecaller", A);
+  await pool.query("UPDATE user_roles SET is_active = false WHERE user_id = $1", [String(suspended)]);
+  const id = await lead({ branchId: A, telecallerId: active });
+
+  const r = await call(h.patch, { actor: SUPER, params: { id }, body: { assigned_telecaller_id: suspended } });
+  assert.equal(r.code, 409, JSON.stringify(r.body));
+  assert.equal(r.body.code, "ASSIGNEE_SUSPENDED");
+  assert.equal(await telecallerOf(id), String(active), "the lead moved to a suspended person");
+});
+
+test("a lead already held by a suspended person can still be saved, and moved away from them", { skip }, async () => {
+  const suspended = await staff("telecaller", A);
+  const other = await staff("telecaller", A);
+  const id = await lead({ branchId: A, telecallerId: suspended });
+  await pool.query("UPDATE user_roles SET is_active = false WHERE user_id = $1", [String(suspended)]);
+
+  const same = await call(h.patch, { actor: SUPER, params: { id }, body: { assigned_telecaller_id: suspended, priority: "high" } });
+  assert.equal(same.code, 200, JSON.stringify(same.body));
+  const away = await call(h.patch, { actor: SUPER, params: { id }, body: { assigned_telecaller_id: other } });
+  assert.equal(away.code, 200, JSON.stringify(away.body));
+  assert.equal(await telecallerOf(id), String(other));
+});

@@ -2947,11 +2947,29 @@ router.get("/api/state", auth, async (req, res) => {
   }
 });
 
+/**
+ * Refuses (409) when new work would go to someone whose access is suspended or removed. They keep
+ * their existing records (those are moved away on Transfer work), but nothing new may land on them.
+ * Returns true when it has answered.
+ */
+async function refuseInactiveAssignee(res, staffId) {
+  if (!staffId) return false;
+  const authId = (await staffAuthId(pool, staffId)) || String(staffId);
+  const person = (await loadUsers()).find((u) => String(u.id) === String(authId));
+  if (!person || person.is_active !== false) return false;
+  res.status(409).json({
+    error: `${[person.first_name, person.last_name].filter(Boolean).join(" ") || "That person"}'s access is suspended, so they cannot be given new work.`,
+    code: "ASSIGNEE_SUSPENDED",
+  });
+  return true;
+}
+
 router.post("/api/leads", auth, async (req, res) => {
   const studentId = crypto.randomUUID();
   const countries = String(req.body.countries || "").split(",").map((item) => item.trim()).filter(Boolean);
   const telecallerId = req.body.telecallerId || null;
   const counselorId = await resolveCounselorId(req.body.counselorId || null);
+  if ((await refuseInactiveAssignee(res, telecallerId)) || (await refuseInactiveAssignee(res, counselorId))) return;
   const assignedAt = new Date().toISOString();
   const payload = {
     id: crypto.randomUUID(),
@@ -3061,6 +3079,11 @@ router.patch("/api/leads/:id", auth, async (req, res) => {
   }
   const jsonLeads = await jsonTable("student_leads");
   const current = findLeadJsonRecord(jsonLeads, req.params.id);
+  // New work never goes to a suspended person. Re-saving the person a lead already has is not new work.
+  for (const field of ["assigned_counselor_id", "assigned_telecaller_id"]) {
+    const next = patch[field];
+    if (next && String(next) !== String(current?.[field] || "") && (await refuseInactiveAssignee(res, next))) return;
+  }
 
   // The caller's scope is not the whole question. A Super Admin covers every branch, so scope alone
   // would let them put a Vizag telecaller on a Hyderabad lead - the lead would then sit in a queue
@@ -3195,6 +3218,7 @@ router.post("/api/leads/bulk-assign", auth, async (req, res) => {
   if (!ids.length) return res.status(400).json({ error: "Select at least one student." });
   if (!counselorId) return res.status(400).json({ error: "Choose a counselor to assign." });
   if (!(await allow(res, checkStaffInScope(pool, req.scope, counselorId)))) return;
+  if (await refuseInactiveAssignee(res, counselorId)) return;
   // Same branch check as the single-lead PATCH route — resolved once here
   // rather than per lead, since the counselor doesn't change across the batch.
   const counselorMembership = await pool
@@ -3265,6 +3289,7 @@ router.post("/api/leads/bulk-assign-telecaller", auth, async (req, res) => {
   const telecallerId = req.body.telecallerId ? String(req.body.telecallerId) : "";
   if (!ids.length || !telecallerId) return res.status(400).json({ error: "Select leads and a telecaller." });
   if (!(await allow(res, checkStaffInScope(pool, req.scope, telecallerId)))) return;
+  if (await refuseInactiveAssignee(res, telecallerId)) return;
   let count = 0;
   let skippedScope = 0;
   for (const id of ids) {
