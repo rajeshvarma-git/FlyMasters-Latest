@@ -1,0 +1,38 @@
+name: Android APK
+# Builds an installable debug APK of the Fly Masters app. Run it from Actions > Android APK > Run workflow,
+# then download the "fly-masters-debug-apk" file from the finished run and install it on a phone.
+on:
+  workflow_dispatch:
+    inputs:
+      api_base_url:
+        description: Backend the app talks to
+        default: https://flymasters-latest-production.up.railway.app
+permissions:
+  contents: read
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - name: Build the web app for the phone
+        run: npm run build
+        env:
+          VITE_API_BASE_URL: ${{ inputs.api_base_url }}
+      - run: npx cap sync android
+      - name: Build debug APK
+        working-directory: android
+        run: ./gradlew assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fly-masters-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
